@@ -1,9 +1,14 @@
 /**
  * An explanation shown on demand: a control (a button that reads as underlined text) opens a box with a longer text,
  * by every way a page is used — the mouse resting on it (the box stays while the pointer is on the control or the
- * box), a click or a tap, and the keyboard (Enter or Space on the focused control). A click, a tap or Enter on an open
- * box's control closes it; so do Escape and a click anywhere else. The control says whether the box is open
- * (`aria-expanded`) and which box it opens (`aria-controls`).
+ * box), a click or a tap, and the keyboard (Enter or Space on the focused control). A click, a tap or a key on a box
+ * the pointer opened keeps it open; on a box opened that way, or by a key, it closes it; so do Escape and a click
+ * anywhere else. The control says whether the box is open (`aria-expanded`), which box it opens (`aria-controls`) and,
+ * while open, that the box describes it (`aria-describedby`).
+ *
+ * The box is a popover anchored to the control that opened it (the top layer, placed by `explorer.css` under the
+ * control, or above it when there is no room below, in the viewport): it covers what is under it and moves nothing
+ * on the page, and a scrolling container does not clip it.
  *
  * One box can serve several controls (the Database tab's cut cells), each with its own text; the box shows the text of
  * the control that opened it. A page that redraws its figures calls {@link Explanation.refresh}: the box's text is
@@ -19,8 +24,9 @@ import { dataNode } from "./visible-text.ts";
 export interface Explanation {
   /** The box (append it where the explanation belongs). */
   readonly box: HTMLElement;
-  /** Makes `control` open the box with the text `text()` returns (read when it opens and at each refresh). */
-  attach(control: HTMLButtonElement, text: () => string): void;
+  /** Makes `control` open the box with the text `text()` returns (read when it opens and at each refresh): one block,
+   *  or lines, each a block of its own (a line break inside a text is data, drawn as a visible mark). */
+  attach(control: HTMLButtonElement, text: () => string | readonly string[]): void;
   /** Redraws the open box's text when its control's text has changed; the box stays as it is, open or closed. */
   refresh(): void;
   /** The control whose text the box shows, or `null` while it is closed. */
@@ -44,14 +50,26 @@ export function explainControl(field?: string): HTMLButtonElement {
   return b;
 }
 
-/** A box `id` (unique in the document) for explanations; hidden until a control opens it. */
+/** The popover calls the box uses (`source`: the control it is anchored to). */
+type PopoverBox = HTMLElement & { showPopover(options?: { source?: HTMLElement }): void; hidePopover(): void };
+
+/** A box `id` (unique in the document) for explanations; closed until a control opens it. */
 export function explanation(id: string, field?: string): Explanation {
-  const box = document.createElement("div");
+  const box = document.createElement("div") as PopoverBox;
   box.className = "explain-box";
   box.id = id;
-  box.hidden = true;
+  box.setAttribute("popover", "manual");
   if (field !== undefined) box.setAttribute("data-field", field);
-  const texts = new Map<HTMLButtonElement, () => string>();
+  const isOpen = (): boolean => box.matches(":popover-open");
+  const show = (control: HTMLButtonElement): void => {
+    // Anchored to its control: shown again when another control opens it.
+    if (isOpen()) box.hidePopover();
+    box.showPopover({ source: control });
+  };
+  const hide = (): void => {
+    if (isOpen()) box.hidePopover();
+  };
+  const texts = new Map<HTMLButtonElement, () => string | readonly string[]>();
   /** The control the box shows, and how it was opened: the pointer resting on it, or a click, a tap or a key. */
   let current: HTMLButtonElement | null = null;
   let via: "hover" | "press" | null = null;
@@ -67,31 +85,46 @@ export function explanation(id: string, field?: string): Explanation {
   const draw = (): void => {
     const of = current ?? (texts.size === 1 ? [...texts.keys()][0]! : null);
     if (of === null) return;
-    const text = texts.get(of)?.() ?? "";
-    if (text === shown) return;
-    shown = text;
-    box.replaceChildren(dataNode(document, text));
+    const got = texts.get(of)?.() ?? "";
+    const lines = typeof got === "string" ? [got] : got;
+    const key = JSON.stringify(lines);
+    if (key === shown) return;
+    shown = key;
+    box.replaceChildren(
+      ...lines.map((line) => {
+        const d = document.createElement("div");
+        d.className = "explain-line";
+        d.append(dataNode(document, line));
+        return d;
+      }),
+    );
   };
   const cancelLeave = (): void => {
     if (leaveTimer !== undefined) clearTimeout(leaveTimer);
     leaveTimer = undefined;
   };
+  const release = (control: HTMLButtonElement): void => {
+    control.setAttribute("aria-expanded", "false");
+    control.removeAttribute("aria-describedby");
+  };
   const open = (control: HTMLButtonElement, how: "hover" | "press"): void => {
     cancelLeave();
-    if (current !== null && current !== control) current.setAttribute("aria-expanded", "false");
-    if (current !== control && texts.size > 1) shown = null;
+    if (current !== null && current !== control) release(current);
+    const moved = current !== control;
+    if (moved && texts.size > 1) shown = null;
     current = control;
     via = how;
     draw();
-    box.hidden = false;
+    if (moved || !isOpen()) show(control);
     control.setAttribute("aria-expanded", "true");
+    control.setAttribute("aria-describedby", box.id);
   };
   const close = (): void => {
     cancelLeave();
-    current?.setAttribute("aria-expanded", "false");
+    if (current !== null) release(current);
     current = null;
     via = null;
-    box.hidden = true;
+    hide();
   };
   const isMouse = (e: PointerEvent): boolean => e.pointerType === "mouse";
 
@@ -116,7 +149,7 @@ export function explanation(id: string, field?: string): Explanation {
 
   return {
     box,
-    attach(control: HTMLButtonElement, text: () => string): void {
+    attach(control: HTMLButtonElement, text: () => string | readonly string[]): void {
       texts.set(control, text);
       control.setAttribute("aria-controls", box.id);
       control.addEventListener("pointerenter", (e) => {
@@ -132,7 +165,7 @@ export function explanation(id: string, field?: string): Explanation {
         if (quiet === control) quiet = null;
         if (current === control && via === "hover") leaveTimer = setTimeout(close, LEAVE_MS);
       });
-      // A click, a tap, Enter and Space: a box the pointer opened is kept open; an open one is closed.
+      // A click, a tap, Enter and Space: a box the pointer opened is kept open; one opened by them is closed.
       control.addEventListener("click", () => {
         if (current === control && via === "hover") {
           via = "press";

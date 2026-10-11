@@ -18,9 +18,12 @@
  *   request to the site.
  * - `[[browser.shell.explain]]` — the storage line is a control whose explanation opens on demand: a click shows it and a
  *   second click hides it; Escape and a click elsewhere hide it; Enter and Space on the focused control open it; the
- *   mouse resting on it shows it and leaving hides it; a tap shows it and a second tap hides it. Open while the engine
- *   syncs, it stays open across the overview's refreshes, the same box, its text updated in place and always the
- *   explanation of the figures drawn (`storageLine`'s); no native tooltip is left on the overview. No CSP violation.
+ *   mouse resting on it shows it (next to the line, in the viewport, over the page: the controls under it do not move)
+ *   and leaving hides it; a tap shows it and a second tap hides it. Opened while the line
+ *   shows the page's own figures (the engine's status answered without its storage reading, as before a slow worker's
+ *   first reading), it stays open, the same box, when the engine's figures come; open while the engine syncs, it stays
+ *   open across the overview's refreshes, its text updated in place; its text is always the explanation of the
+ *   figures drawn (`storageLine`'s); no native tooltip is left on the overview. No CSP violation.
  * - `[[browser.shell.module-toggle]]` — Token Indexer switched off from its checkbox while the finalized tip rises: the
  *   scan's cursor stays at a block boundary while the archive advances by more than a hundred blocks, `/v1/status`
  *   says `scanner: "off"` and answers, the system snapshot shows the scan off, the tab is gone (a URL naming it shows
@@ -30,7 +33,8 @@
  * - `[[browser.shell.database]]` — the Database tab lists every table of the store as the system snapshot's catalog
  *   statistics do, with estimates and sizes; a picked table shows a page of rows newest first, each value drawn from
  *   the engine's answer, each column with its type, and the pages follow one another; a cut value's cell opens what
- *   the engine sent of it under the table (Enter, a click; Escape and a second click close it); the rows equal the
+ *   the engine sent of it next to the cell, in the viewport (above it at the viewport's bottom), without moving the
+ *   page (Enter, a click; Escape and a second click close it); the rows equal the
  *   store read with SQL by the reader page; a table name that is not the catalog's is refused (by the request and by a
  *   forged picker value) and the refusal is shown; hostile text in rows is drawn as text; a second tab lists the same
  *   tables and rows.
@@ -79,13 +83,16 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const browserExe = findBrowser();
 
+/** An explanation's lines (`\n` between them) as the box draws them: each line with its hidden characters marked. */
+const shownLines = (text: string): string => text.split("\n").map(visibleText).join("\n");
+
 /** The overview's fields as drawn (text), the storage line's explanation (its box, open or not), and the sources it drew
  *  them from. */
 const OVERVIEW = `(() => {
   const p = document.getElementById('engine-panel');
   const fields = {};
   for (const f of p.querySelectorAll('.kv > .v[data-field]')) fields[f.getAttribute('data-field')] = f.textContent;
-  return { fields, storageTitle: document.getElementById('engine-storage-explanation').textContent, inputs: window.umbradbOverview.inputs(),
+  return { fields, storageTitle: [...document.getElementById('engine-storage-explanation').children].map((l) => l.textContent).join('\\n'), inputs: window.umbradbOverview.inputs(),
     tab: document.body.getAttribute('data-tab-shown'), title: document.title, search: location.search, hash: location.hash };
 })()`;
 type OverviewField = "health" | "role" | "network" | "state" | "configuration" | "history" | "synced" | "scanned" | "tip" | "lag" | "rate" | "uptime" | "durability" | "storage";
@@ -231,7 +238,7 @@ describe("the static build's main page in Chrome (served with its headers)", () 
     for (const k of ["health", "role", "network", "configuration", "history", "synced", "scanned", "tip", "lag", "rate", "uptime", "durability", "storage"] as const)
       expect(o.fields[k], k).toBe(visibleText(view[k]));
     expect(o.fields.state).toBe(visibleText(view.stateDetail === "" ? view.state : `${view.state} · ${view.stateDetail}`));
-    expect(o.storageTitle).toBe(visibleText(view.storageTitle));
+    expect(o.storageTitle).toBe(shownLines(view.storageTitle));
     return view;
   }
 
@@ -291,8 +298,8 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(reading.pauseAtBytes).toBe(pauseThresholdBytes(quota));
       expect(o.fields.storage).toBe(`${formatBytes(reading.storeBytes)} · quota ${formatBytes(quota)} · pauses at ${formatBytes(pauseThresholdBytes(quota))} · ${reading.persisted ? "persistent" : "not persistent"}`);
       expect(o.fields.storage.length).toBeLessThan(80);
-      expect(o.storageTitle).toContain(`The browser counts ${formatBytes(reading.usageBytes)} against this site's quota of ${formatBytes(quota)}; while the store is open that count includes the space Chrome reserves`);
-      expect(o.storageTitle).toContain(reading.persisted ? "Persistent:" : "Not persistent: ");
+      expect(o.storageTitle.split("\n")).toContain(`Browser usage: ${formatBytes(reading.usageBytes)} of a ${formatBytes(quota)} quota (higher than the store: Chrome reserves space while it is open)`);
+      expect(o.storageTitle.split("\n").at(-1)).toMatch(reading.persisted ? /^Persistent: / : /^Not persistent: /);
       expect(view.tokenIndexer).toBe(true);
 
       // The snapshot is watched while the overview is shown, and not on another tab.
@@ -343,16 +350,40 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       /** Whether the box is shown, its text, the control's state, and the explanation of the figures drawn. */
       const read = (): Promise<{ shown: boolean; text: string; expanded: string | null; controls: string | null; expected: string; line: string; drawnLine: string }> => p.eval(`(() => {
         const i = window.umbradbOverview.inputs();
-        return { shown: !${BOX}.hidden, text: ${BOX}.textContent, expanded: ${CONTROL}.getAttribute('aria-expanded'), controls: ${CONTROL}.getAttribute('aria-controls'),
+        return { shown: ${BOX}.matches(':popover-open'), text: [...${BOX}.children].map((l) => l.textContent).join('\\n'), expanded: ${CONTROL}.getAttribute('aria-expanded'), controls: ${CONTROL}.getAttribute('aria-controls'),
           inputs: i, line: ${CONTROL}.textContent };
       })()`).then((r: Json) => {
         const model = storageLine(r.inputs.status, r.inputs.pageStorage, r.inputs.persistence);
-        return { shown: r.shown, text: r.text, expanded: r.expanded, controls: r.controls, expected: visibleText(model.title), line: r.line, drawnLine: visibleText(model.text) };
+        return { shown: r.shown, text: r.text, expanded: r.expanded, controls: r.controls, expected: shownLines(model.title), line: r.line, drawnLine: visibleText(model.text) };
       });
       let r = await read();
       expect([r.shown, r.expanded, r.controls, r.line]).toEqual([false, "false", "engine-storage-explanation", r.drawnLine]);
-      expect(r.expected).toMatch(/^The store's own (files take|size is not read yet).* against this site's quota of /);
       expect(await p.eval<number>("document.querySelectorAll('#engine-panel [title]').length")).toBe(0);
+
+      // Until the engine's first storage reading the line and its explanation are the page's own figures (a slow worker
+      // shows them for a while): forced here by the engine's status answered without its reading. The box opened then
+      // stays open, the same box, when the engine's figures come, its text theirs.
+      await p.eval(`(() => {
+        const c = window.umbradbEngine.client;
+        const real = c.status.bind(c);
+        window.__noReading = true;
+        c.status = () => real().then((s) => (window.__noReading ? { ...s, storage: null } : s));
+      })()`);
+      await p.waitFor("(() => { const i = window.umbradbOverview.inputs(); return i !== null && i.status !== null && i.status.storage == null && i.pageStorage !== null; })()", 15_000, "the page's own figures");
+      r = await read();
+      expect(r.line).toMatch(/^size not read yet . quota /);
+      expect(r.expected).toMatch(/^Store: size not read yet\nBrowser usage: [^\n]+ of a [^\n]+ quota\n(Persistent|Not persistent|Persistence)/);
+      await p.eval(`${CONTROL}.click(); ${BOX}.__mark = 1`);
+      r = await read();
+      expect([r.shown, r.expanded, r.text, r.line]).toEqual([true, "true", r.expected, r.drawnLine]);
+      await p.eval("window.__noReading = false");
+      await p.waitFor("window.umbradbOverview.inputs()?.status?.storage != null", 15_000, "the engine's storage reading");
+      r = await read();
+      expect([r.shown, r.expanded, r.text, r.line]).toEqual([true, "true", r.expected, r.drawnLine]);
+      expect(r.expected).toMatch(/^(Paused: [^\n]*\n)?Store: [^\n]+\nBrowser usage: [^\n]+ quota \(higher than the store: Chrome reserves space while it is open\)\n/);
+      expect(await p.eval(`${BOX}.__mark`)).toBe(1);
+      await p.eval(`${CONTROL}.click()`);
+      expect((await read()).shown).toBe(false);
 
       // A click shows it, a second hides it; Escape and a click elsewhere hide it.
       await p.eval(`${CONTROL}.click()`);
@@ -382,13 +413,24 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       // The mouse resting on it shows it; leaving hides it.
       const at = await p.eval<{ x: number; y: number }>(`(() => { ${CONTROL}.scrollIntoView({ block: 'center' }); const r = ${CONTROL}.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
-      await p.waitFor(`!${BOX}.hidden`, 2_000, "the box on hover");
-      expect((await read()).text).toBe((await read()).expected);
+      const controlsAt = (): Promise<number> => p.eval("document.querySelector('#engine-panel .controls').getBoundingClientRect().top");
+      const controlsBefore = await controlsAt();
+      await p.waitFor(`${BOX}.matches(':popover-open')`, 2_000, "the box on hover");
+      // Next to its control, in the viewport, over the page: the controls under it have not moved.
+      const place = await p.eval<{ box: Json; control: Json; vh: number; vw: number }>(`({ box: ${BOX}.getBoundingClientRect().toJSON(), control: ${CONTROL}.getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth })`);
+      expect(place.box.top).toBeGreaterThanOrEqual(place.control.bottom);
+      expect(place.box.top - place.control.bottom).toBeLessThan(16);
+      expect(Math.abs(place.box.left - place.control.left)).toBeLessThan(16);
+      expect(place.box.bottom).toBeLessThanOrEqual(place.vh);
+      expect(place.box.right).toBeLessThanOrEqual(place.vw);
+      expect(await controlsAt()).toBe(controlsBefore);
+      r = await read();
+      expect(r.text).toBe(r.expected);
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
-      await p.waitFor(`${BOX}.hidden`, 2_000, "the box hidden when the mouse leaves");
+      await p.waitFor(`!${BOX}.matches(':popover-open')`, 2_000, "the box hidden when the mouse leaves");
       // Resting on it, then a click keeps it open; a second click hides it though the mouse is still on it.
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
-      await p.waitFor(`!${BOX}.hidden`, 2_000, "the box on hover again");
+      await p.waitFor(`${BOX}.matches(':popover-open')`, 2_000, "the box on hover again");
       for (const type of ["mousePressed", "mouseReleased"] as const) await p.send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: 1 });
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
       await new Promise((res) => setTimeout(res, 400));
@@ -546,13 +588,41 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(drawn.head).toEqual(page.columns.map((c) => c.name));
       expect(drawn.types).toEqual(page.columns.map((c) => c.type));
       expect(drawn.cells).toEqual(page.rows.map((r) => r.map((c) => visibleText(cellText(c).text))));
-      // A cut value (a block hash): its cell is a control; Enter on it shows what the engine sent of it under the table,
-      // Escape hides it; no native tooltip carries it.
+      // A cut value (a block hash): its cell is a control; Enter on it shows what the engine sent of it next to the cell,
+      // in the viewport, without moving the page; Escape hides it; no native tooltip carries it.
       const hashAt = page.columns.findIndex((c) => c.name === "block_hash");
       const hashCell = cellText(page.rows[0]![hashAt]!);
       expect(hashCell.title).not.toBeNull();
-      const valueBox = (): Promise<[boolean, string, string | null]> => p.eval("(() => { const b = document.querySelector('[data-field=\"db-rows.value\"]'); const c = document.querySelectorAll('[data-field=\"db-rows.table\"] tbody tr')[0].cells[" + hashAt + "].querySelector('button'); return [b.hidden, b.textContent, c.getAttribute('aria-expanded')]; })()");
+      const valueBox = (): Promise<[boolean, string, string | null]> => p.eval("(() => { const b = document.querySelector('[data-field=\"db-rows.value\"]'); const c = document.querySelectorAll('[data-field=\"db-rows.table\"] tbody tr')[0].cells[" + hashAt + "].querySelector('button'); return [!b.matches(':popover-open'), b.textContent, c.getAttribute('aria-expanded')]; })()");
       expect((await valueBox())[0]).toBe(true);
+      await p.eval(`(() => { const b = document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[0].cells[${hashAt}].querySelector('button'); b.scrollIntoView({ block: 'center' }); b.focus(); })()`);
+      await key(p, "Enter", 13, "\r");
+      expect(await valueBox()).toEqual([false, `block_hash: ${hashCell.title}`, "true"]);
+      /** Where the box is against the cell's control that opened it, and the viewport. */
+      const placed = (row: number): Promise<{ box: Json; cell: Json; vh: number; vw: number }> => p.eval(`(() => {
+        const b = document.querySelector('[data-field="db-rows.value"]');
+        const c = document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[${row}].cells[${hashAt}].querySelector('button');
+        return { box: b.getBoundingClientRect().toJSON(), cell: c.getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth };
+      })()`);
+      const nextTo = (q: { box: Json; cell: Json; vh: number; vw: number }): void => {
+        expect(q.box.top).toBeGreaterThanOrEqual(0);
+        expect(q.box.bottom).toBeLessThanOrEqual(q.vh);
+        expect(q.box.left).toBeGreaterThanOrEqual(0);
+        expect(q.box.right).toBeLessThanOrEqual(q.vw);
+        // Right under the cell, or right above it.
+        const gap = q.box.top >= q.cell.bottom ? q.box.top - q.cell.bottom : q.cell.top - q.box.bottom;
+        expect(gap, JSON.stringify(q)).toBeGreaterThanOrEqual(0);
+        expect(gap, JSON.stringify(q)).toBeLessThan(16);
+      };
+      nextTo(await placed(0));
+      // The page did not move to show it.
+      const cellTop = (await placed(0)).cell.top;
+      expect(Math.abs(cellTop - (await p.eval<number>("innerHeight")) / 2)).toBeLessThan(60);
+      // A cell at the bottom of the viewport: its box opens above it, in the viewport.
+      await p.eval(`(() => { const b = document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[24].cells[${hashAt}].querySelector('button'); b.scrollIntoView({ block: 'end' }); b.click(); })()`);
+      nextTo(await placed(24));
+      expect((await placed(24)).box.bottom).toBeLessThanOrEqual((await placed(24)).cell.top);
+      await p.eval(`document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[24].cells[${hashAt}].querySelector('button').click()`);
       await p.eval(`document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[0].cells[${hashAt}].querySelector('button').focus()`);
       await key(p, "Enter", 13, "\r");
       expect(await valueBox()).toEqual([false, `block_hash: ${hashCell.title}`, "true"]);
@@ -607,9 +677,9 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(drawn.cells[0]![0]!.endsWith("<img src=x onerror=\"window.__pwned=1\">\u2026 (9,999 characters)")).toBe(true);
       // The cut cell's whole value opens under the table on a click, drawn with marks; a second click hides it.
       await p.eval("document.querySelector('[data-field=\"db-rows.table\"] tbody td button').click()");
-      expect(await p.eval("[document.querySelector('[data-field=\"db-rows.value\"]').hidden, document.querySelector('[data-field=\"db-rows.value\"]').textContent]")).toEqual([false, `${marked}: ${visibleText(longCell.title!)}`]);
+      expect(await p.eval("[!document.querySelector('[data-field=\"db-rows.value\"]').matches(':popover-open'), document.querySelector('[data-field=\"db-rows.value\"]').textContent]")).toEqual([false, `${marked}: ${visibleText(longCell.title!)}`]);
       await p.eval("document.querySelector('[data-field=\"db-rows.table\"] tbody td button').click()");
-      expect(await p.eval("document.querySelector('[data-field=\"db-rows.value\"]').hidden")).toBe(true);
+      expect(await p.eval("document.querySelector('[data-field=\"db-rows.value\"]').matches(':popover-open')")).toBe(false);
       expect(drawn.page).toContain(`by primary key (${marked}), descending`);
       expect(await p.eval<number>("document.querySelectorAll('[data-field=\"db-rows.table\"] .mark-vis').length")).toBeGreaterThan(5);
       expect(await p.eval("({ scripts: document.scripts.length, media: document.querySelectorAll('img, iframe, object, embed, video, audio').length, pwned: window.__pwned === undefined ? null : window.__pwned })")).toEqual({ scripts: 1, media: 0, pwned: null });

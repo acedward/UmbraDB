@@ -218,14 +218,15 @@ describe("a store the browser engine cannot use", () => {
     expect(view({ phase: "unsupported", error: "Chrome only" })).toMatchObject({ state: "unsupported", recoverable: false });
     expect(view({ phase: "ready", error: null })).toMatchObject({ ready: true, recoverable: false });
 
-    // The storage line says "not persistent"; its explanation says why, when the browser refused or asking failed.
-    expect(persistenceSentence(false, { requested: true, persisted: false, error: null })).toBe("Not persistent: the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway.");
-    expect(persistenceSentence(false, { requested: true, persisted: false, error: "denied" })).toBe("Not persistent: asking the browser to keep this site's storage failed (denied), so it may clear the store when space runs low; the engine runs anyway.");
-    expect(persistenceSentence(true, { requested: true, persisted: true, error: null })).toBe("Persistent: the browser keeps this site's storage when space runs low.");
-    expect(persistenceSentence(false, null)).toBe("Not persistent: the browser may clear this site's storage when space runs low.");
-    expect(persistenceSentence(null, undefined)).toBe("Whether the browser keeps this site's storage is not known.");
+    // The storage line says "not persistent"; its explanation's persistence line says what that means, and that asking
+    // failed when it did (a refusal and no request read the same).
+    expect(persistenceSentence(false, { requested: true, persisted: false, error: null })).toBe("Not persistent: the browser may delete this data when the disk runs low");
+    expect(persistenceSentence(false, { requested: true, persisted: false, error: "denied" })).toBe("Not persistent (the request failed: denied): the browser may delete this data when the disk runs low");
+    expect(persistenceSentence(true, { requested: true, persisted: true, error: null })).toBe("Persistent: the browser keeps this data when the disk runs low");
+    expect(persistenceSentence(false, null)).toBe("Not persistent: the browser may delete this data when the disk runs low");
+    expect(persistenceSentence(null, undefined)).toBe("Persistence: unknown");
     const page = panelView({ role: "leader", connectedTabs: 1, status: null, statusError: null, api: null, pageStorage: { usageBytes: 1_000_000, quotaBytes: 2_000_000, persisted: false }, persistence: { requested: true, persisted: false, error: null } });
     expect(page.storage).toBe("size not read yet \u00b7 quota 2.0 MB \u00b7 not persistent");
-    expect(page.storageTitle).toBe("The engine has not read the store's size yet. The browser counts 1.0 MB against this site's quota of 2.0 MB. Not persistent: the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway.");
+    expect(page.storageTitle.split("\n")).toEqual(["Store: size not read yet", "Browser usage: 1.0 MB of a 2.0 MB quota", "Not persistent: the browser may delete this data when the disk runs low"]);
   });
 });

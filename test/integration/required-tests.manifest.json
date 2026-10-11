@@ -1945,7 +1945,7 @@
     {
       "id": "browser.shell.database",
       "file": "token-indexer/test/browser-shell-chrome.test.ts",
-      "description": "in Chromium: the Database tab lists every table as the catalog has it; a picked table's rows newest first equal the store read with SQL, column types shown, a cut value opened by its cell (Enter, a click) under the table; a forged table name is refused; hostile text in rows drawn as text; a second tab shows the same"
+      "description": "in Chromium: the Database tab lists every table as the catalog has it; a picked table's rows newest first equal the store read with SQL, column types shown, a cut value opened by its cell (Enter, a click) next to it, in the viewport; a forged table name is refused; hostile text in rows drawn as text; a second tab shows the same"
     },
     {
       "id": "browser.shell.hostile-text",
@@ -2280,12 +2280,12 @@
     {
       "id": "browser.host.jsonrpc-start-hung",
       "file": "token-indexer/test/browser-jsonrpc.test.ts",
-      "description": "a JSON RPC module start that does not end: the waiting calls are answered module-off when the module is switched off, internal at the start's deadline (the next call starts it again); a start that ends late has its module closed; the worker's close does not wait for it"
+      "description": "one JSON RPC module start at a time: a start that makes its database and then does not end holds one allocation over many calls and deadlines; waiting calls answered internal at its deadline or module-off when switched off, later calls refused at once; when it ends its module is closed and the next call starts the module; the worker's close does not wait for it; a slow start past its deadline is the only start; never more than one start running nor one module open"
     },
     {
       "id": "browser.shell.explain",
       "file": "token-indexer/test/browser-shell-chrome.test.ts",
-      "description": "in Chromium: the storage line's explanation opens on demand (click, Escape, a click elsewhere, Enter, Space, hover, tap), stays open across refreshes with its text updated in place and equal to storageLine's; no native tooltip on the overview; no CSP violation"
+      "description": "in Chromium: the storage line's explanation opens on demand next to the line, over the page (click, Escape, a click elsewhere, Enter, Space, hover, tap), stays open across refreshes with its text updated in place and equal to storageLine's; no native tooltip on the overview; no CSP violation"
     }
   ],
   "deferred": [

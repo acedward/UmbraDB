@@ -49,7 +49,7 @@ PostgreSQL.
 | `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
 | `index.html`, `explorer-page.ts`, `shell.ts`, `explorer.css` | The main page (see [Main page](#main-page)): the header's tabs (Overview, Token Indexer, JSON RPC, Database) and the system status link, the tab in the URL |
 | `engine-panel.ts`, `panel-model.ts` | The overview's indexer section: health, heights, the finalized tip and the lag, blocks per second, uptime, the storage line, and the engine's controls |
-| `explain.ts` | An explanation on demand: a control (underlined text) opening a box by hover, click, tap, Enter or Space, kept open and updated in place across refreshes (the storage line, the Database tab's cut values) |
+| `explain.ts` | An explanation on demand: a control (underlined text) opening a box next to it, over the page (a popover anchored to the control), by hover, click, tap, Enter or Space, kept open and updated in place across refreshes (the storage line, the Database tab's cut values) |
 | `modules.ts`, `modules-view.ts` | The overview's Modules section: the indexer's modules, and the Token Indexer and JSON RPC switches (`module`) |
 | `explorer-host.ts`, `explorer-transport.ts` | The token explorer of `GET /ui` in the Token Indexer tab, reading the API through the engine |
 | `database-view.ts`, `database-model.ts`, `store-tables.ts` | The Database tab: the page, its pure view of the engine's answers, and the worker's reads of the store's tables (`tables`, `rows`) |
@@ -86,13 +86,25 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
 - **The storage line** is one short line: the store's own size (an OPFS walk), the quota, the usage at which the sync
   pauses and whether the site's storage is persistent, e.g. "42.3 MB · quota 11.8 GB · pauses at 10.6 GB · not
   persistent" ("· paused" while the sync is paused; the page's own `navigator.storage` figures until the engine has a
-  reading). The line is a control (dotted underline) whose explanation opens in a box under the figures on demand —
-  the mouse resting on it, a click or a tap, Enter or Space; a second click, Escape or a click elsewhere closes it —
+  reading). The line is a control (dotted underline) whose explanation opens on demand in a box next to it, over the
+  page (a popover anchored to the line, in the viewport: nothing under it moves) — the mouse resting on it, a click or
+  a tap, Enter or Space; a click on a box the mouse opened keeps it open; a second click, Escape or a click elsewhere
+  closes it —
   and stays open, updated in place, across the overview's refreshes (`explain.ts`; no native tooltip, which opens only
-  after a still hover and never on a click, a tap or the keyboard). It explains the usage the browser counts against
-  the quota (larger than the store while it is open, because Chrome reserves space for the open store's files), what
-  the pause does, what "not persistent" means — and that the browser refused to keep the site's storage, or that
-  asking failed, when it did — and the pause's reason.
+  after a still hover and never on a click, a tap or the keyboard). It says, one short line each: the pause's reason
+  (while paused), the store's size, the browser's usage against the quota (higher than the store: Chrome reserves
+  space while it is open), where the sync pauses and resumes, and persistence, e.g.
+
+  ```
+  Store: 42.5 MB
+  Browser usage: 63.3 MB of a 10.8 GB quota (higher than the store: Chrome reserves space while it is open)
+  Sync pauses at 9.7 GB and resumes when space frees up
+  Not persistent: the browser may delete this data when the disk runs low
+  ```
+
+  ("Persistent: the browser keeps this data when the disk runs low", "Persistence: unknown", or "Not persistent (the
+  request failed: …)" when asking failed; before the engine's first reading, "Store: size not read yet" and the
+  page's own usage and quota).
 - **Controls**, each one request (from a follower the leader performs it): **start** (the saved configuration),
   **stop**, **change range** (a start, `tip` or a height, and an optional end, checked before it is sent), **reset**,
   **export snapshot**, **import snapshot** (a file). A range change, a reset or an import on a store that holds blocks
@@ -142,7 +154,8 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
   physical order, the last written row first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
   `bytea` value as the hex of its first 16 bytes and its length (the cell shows 8 of them), any other value as its text
   form's first 256 characters and its length (the cell shows 48); a cut cell is a control that opens what was read
-  in a box under the table on demand, as the storage line's explanation does; each column shows its type under its
+  in a box next to the cell on demand (under it, or above it at the bottom of the viewport), as the storage line's
+  explanation does; each column shows its type under its
   name. The table is
   named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any
   statement names them: anything else is refused (`bad-request`, shown under the table). Each read is an autocommit
@@ -178,9 +191,11 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
     `npm run evm-rpc` does.
   - *database (empty here)*: accounts from the module's `evm_rpc` database — a PGlite database in memory made by the
     module's migrations at its first request, empty here (the wallet monitor and the relayer that fill it run in
-    Node), so they answer as an empty Node deployment does. Its start has a 60 s deadline: past it the waiting calls
-    are answered `internal` and the next call starts it again (a module that comes later is closed at once); switched
-    off meanwhile, the waiting calls are answered `module-off`, and the worker's close does not wait for the start.
+    Node), so they answer as an empty Node deployment does. One start runs at a time, with a 60 s deadline: past it the
+    waiting calls are answered `internal`; a start cannot be cut short, so until it ends later calls are refused at
+    once (`internal`, "an earlier start has not ended yet") rather than starting another, and its module is closed as
+    soon as it comes; then the next call starts the module. Switched off meanwhile, the waiting calls are answered
+    `module-off`, and the worker's close does not wait for the start.
   - *not implemented (-32004)*: callable; each answers `-32004` with its classification and reason.
   - *Node only*: `eth_getLogs` (the log ingest), `eth_sendRawTransaction` (the relayer), `eth_subscribe` and
     `eth_unsubscribe` (the WebSocket server), and the ERC20 views of `eth_call`: listed and described, never called.
@@ -368,8 +383,7 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   (`requestPersistentStorage()` in `client.ts`; the grant is per site, so any tab's request counts; the engine page keeps
   the answer in `window.umbradbEngine.persistence`), and the worker's `storage.persisted` reports the outcome. A
   refusal changes nothing else: the engine runs, and the overview's storage line says "not persistent", its explanation
-  that the browser refused to keep the site's storage (or that asking failed), so the store may be cleared when space
-  runs low.
+  that the browser may delete this data when the disk runs low (and that the request failed, when it did).
 - **Storage quota** (`quota.ts`). Before a sync batch (reading again when the last reading is 10 s old) the worker
   compares `navigator.storage.estimate()`'s usage with its quota. While the store is open that usage includes the space
   Chrome reserves for the store's open files (about 1 GB in the session that creates the store, for about 42 MB of

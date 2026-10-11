@@ -111,12 +111,11 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
   row("uptime", "uptime");
   row("durability", "durability");
   const storageField = row("storage", "storage");
-  // The storage line is a control; its explanation is a box under the figures, opened on demand.
+  // The storage line is a control; its explanation opens on demand in a box next to it, over the page.
   const storageControl = explainControl();
   storageField.append(storageControl);
   const storageExplanation = explanation("engine-storage-explanation", "storage-explanation");
-  storageExplanation.box.classList.add("kv-wide");
-  storageExplanation.attach(storageControl, () => view?.storageTitle ?? "");
+  storageExplanation.attach(storageControl, () => (view?.storageTitle ?? "").split("\n"));
   grid.append(storageExplanation.box);
   root.append(grid);
 

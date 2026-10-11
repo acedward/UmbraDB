@@ -135,23 +135,33 @@ describe("the static build's explorer page (no browser)", () => {
     // count (larger than the store while it is open) and what each figure means in the explanation.
     const pausedView = panelView(inputs({ status: hostStatus({ storage: paused }) }));
     expect(pausedView.storage).toBe("42.5 MB \u00b7 quota 10.0 GB \u00b7 pauses at 9.0 GB \u00b7 not persistent \u00b7 paused");
-    expect(pausedView.storageTitle).toBe(
-      "The store's own files take 42.5 MB. The browser counts 9.5 GB against this site's quota of 10.0 GB; while the store is open that count includes the space Chrome reserves for the store's open files, so it is larger than the store. " +
-      "The sync pauses when that count reaches 9.0 GB, before the quota, and resumes once space frees; the scan and the API go on. " +
-      "Not persistent: the browser may clear this site's storage when space runs low. Paused: the usage is near the quota.");
+    expect(pausedView.storageTitle.split("\n")).toEqual([
+      "Paused: the usage is near the quota",
+      "Store: 42.5 MB",
+      "Browser usage: 9.5 GB of a 10.0 GB quota (higher than the store: Chrome reserves space while it is open)",
+      "Sync pauses at 9.0 GB and resumes when space frees up",
+      "Not persistent: the browser may delete this data when the disk runs low",
+    ]);
     const open = { ...paused, usageBytes: 995_300_000, quotaBytes: 11_732_800_000, pauseAtBytes: 10_559_520_000, paused: false, pausedReason: null, storeBytes: 42_300_000, persisted: true };
     const openView = panelView(inputs({ status: hostStatus({ storage: open }) }));
     expect(openView.storage).toBe("42.3 MB \u00b7 quota 11.7 GB \u00b7 pauses at 10.6 GB \u00b7 persistent");
-    expect(openView.storageTitle).toContain("The browser counts 995.3 MB against this site's quota of 11.7 GB; while the store is open that count includes the space Chrome reserves for the store's open files");
-    expect(openView.storageTitle).toContain("Persistent: the browser keeps this site's storage when space runs low.");
+    expect(openView.storageTitle.split("\n")).toEqual([
+      "Store: 42.3 MB",
+      "Browser usage: 995.3 MB of a 11.7 GB quota (higher than the store: Chrome reserves space while it is open)",
+      "Sync pauses at 10.6 GB and resumes when space frees up",
+      "Persistent: the browser keeps this data when the disk runs low",
+    ]);
     const unread = panelView(inputs({ status: hostStatus({ storage: { ...open, storeBytes: null, pauseAtBytes: null, persisted: null } }) }));
     expect(unread.storage).toBe("size not read yet \u00b7 quota 11.7 GB \u00b7 persistence unknown");
-    expect(unread.storageTitle).toMatch(/^The store's own size is not read yet\. The browser counts 995\.3 MB /);
-    expect(unread.storageTitle).not.toContain("pauses");
+    expect(unread.storageTitle.split("\n")).toEqual([
+      "Store: size not read yet",
+      "Browser usage: 995.3 MB of a 11.7 GB quota (higher than the store: Chrome reserves space while it is open)",
+      "Persistence: unknown",
+    ]);
     // Storage from the page until the engine has a reading.
     const pageOnly = panelView(inputs({ pageStorage: { usageBytes: 1_015_257_540, quotaBytes: 11_752_675_780, persisted: null } }));
     expect(pageOnly.storage).toBe("size not read yet \u00b7 quota 11.8 GB \u00b7 persistence unknown");
-    expect(pageOnly.storageTitle).toBe("The engine has not read the store's size yet. The browser counts 1.0 GB against this site's quota of 11.8 GB. Whether the browser keeps this site's storage is not known.");
+    expect(pageOnly.storageTitle.split("\n")).toEqual(["Store: size not read yet", "Browser usage: 1.0 GB of a 11.8 GB quota", "Persistence: unknown"]);
     expect(panelView(inputs()).storage).toBe("unknown");
     expect(panelView(inputs()).storageTitle).toBe("");
     expect([formatBytes(null), formatBytes(0), formatBytes(42_300_000), formatBytes(999_940_000), formatBytes(1e9), formatBytes(11_732_800_000), formatBytes(1_234_567_000_000)]).toEqual(
