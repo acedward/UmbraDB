@@ -221,9 +221,10 @@ The worker boots as soon as it loads, in phases posted as `boot` notices and rep
   and nothing is opened or started. (`navigator.storage.persist()` exists only in a window; the worker checks
   `persisted()`.)
 - **store**: PGlite opens the store; the first open creates the database (about a second, with a second PGlite heap
-  while it runs). Under the store's lock, an import a previous worker left unfinished (its journal, see Snapshots) is
-  finished first: that replaces the store. Otherwise the store's identity (`<store directory>.store.json` beside the
-  store) is read first. It says "creating" from before PGlite creates the store until its first boot completes, and
+  while it runs). Under the store's lock, a new store the saved settings ask for (the mark a `range` or `reset` that
+  did not finish leaves, see Sync) is made first, and any import journal on file is dropped (the mark is the newer of
+  the two); otherwise an import a previous worker left unfinished (its journal, see Snapshots) is finished first: that
+  replaces the store. Otherwise the store's identity (`<store directory>.store.json` beside the store) is read first. It says "creating" from before PGlite creates the store until its first boot completes, and
   then the PGlite and PostgreSQL versions the store was last opened with:
   - a store another PGlite version wrote is **refused unopened**: the boot ends `failed` with `storeProblem: "version"`
     and "reset it (its data is dropped and synced again) or load a snapshot made by this build";

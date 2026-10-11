@@ -6,12 +6,14 @@
  * 1. `capabilities`: the capability check (`capabilities.ts`). A refusal ends the boot as `unsupported`; nothing is
  *    opened or started.
  * 2. `store`: PGlite opens the store (`store.ts`); on a first open it creates the database (about a second in Chrome,
- *    with a second PGlite heap while it runs). Under the store's lock, first: an import a previous worker left
- *    unfinished (its journal) is finished, which replaces the store (see Snapshots). Otherwise the store's identity
- *    file (`store-identity.ts`) is read: a store another PGlite version wrote is refused unopened, and so is a store
- *    whose identity file cannot be read; a new store is marked "creating" before PGlite creates it. A store marked
- *    "creating" (its first boot never completed: a worker that ended while PGlite created it leaves files PGlite cannot
- *    open, and nothing was stored) is removed and created again. Any other store that fails to open is reported.
+ *    with a second PGlite heap while it runs). Under the store's lock, first: a new store the saved settings ask for
+ *    (the mark of a `range` or `reset` that did not finish) is made, any import journal dropped; otherwise an import a
+ *    previous worker left unfinished (its journal) is finished, which replaces the store (see Snapshots). Otherwise the
+ *    store's identity file (`store-identity.ts`) is read: a store another PGlite version wrote is refused unopened, and
+ *    so is a store whose identity file cannot be read; a new store is marked "creating" before PGlite creates it. A
+ *    store marked "creating" (its first boot never completed: a worker that ended while PGlite created it leaves files
+ *    PGlite cannot open, and nothing was stored) is removed and created again. Any other store that fails to open is
+ *    reported.
  * 3. `ledger`: loads ledger-v9 (WASM) and checks that its classes kept their names: the scan stores a contract action's
  *    class name, so a build that renamed them would write wrong rows. A renamed class fails the boot.
  * 4. `migrate`: both schema lineages, the chain archive's and MIP-0018's, as the Node commands run them.
