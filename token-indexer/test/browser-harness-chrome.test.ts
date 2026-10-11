@@ -15,6 +15,13 @@
  *   another error, a missing module (404) or a failed step is not retried, also while the machine's interfaces change;
  *   a worker's script aborted while the machine's interfaces changed (the state injected) is loaded again, and the same
  *   abort with no change is not.
+ * - `[[browser.harness.load-retry-independent]]` — an aborted load never hides a failure of the page's own: a boot that
+ *   fails with an exception of the application, or a running worker's error, while a stylesheet is aborted is not loaded
+ *   again — the load fails, with one printed line, and the attempt's exceptions, worker errors and boot state stay in
+ *   what the page recorded; an exception that names the aborted load (a dynamic import of it) is the abort's: loaded
+ *   again, and what the aborted attempt recorded is kept in the page's report and counted in the printed line; an image
+ *   aborted is no reason to load again; a step abandoned when its fetch is aborted gets its abort signal and stops (its
+ *   DevTools commands fail) before the page is loaded again, so its action runs once, on the attempt that is kept.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
@@ -40,6 +47,23 @@ const x = 1;
 throw new Error("worker boom " + x);
 `;
 
+// Pages whose first load boots badly (each answered once so, then well): an exception of the application, a running
+// worker's error; and a page whose dynamic import, when it fails, is an exception naming the import.
+const BOOT_FAILS = `<!doctype html><meta charset="utf-8"><title>boot</title><link rel="stylesheet" href="/style-b.css"><script>
+window.booted = "failed"; setTimeout(() => { throw new Error("the application's boot failed"); }, 0);
+</script>`;
+const WORKER_FAILS = `<!doctype html><meta charset="utf-8"><title>boot</title><link rel="stylesheet" href="/style-b.css"><script>
+window.booted = "failed"; new Worker("/w.js");
+</script>`;
+const BOOT_WELL = `<!doctype html><meta charset="utf-8"><title>boot</title><link rel="stylesheet" href="/style-b.css"><script>window.booted = "ready";</script>`;
+// A page whose fetch starts 300 ms after it loads, and one with an image.
+const DELAYED = `<!doctype html><meta charset="utf-8"><title>delayed</title><script>
+window.late = null;
+setTimeout(() => fetch("/late.json").then((r) => r.json()).then((j) => { window.late = j.ok; }, () => { window.late = false; }), 300);
+</script>`;
+const PICTURE = `<!doctype html><meta charset="utf-8"><title>picture</title><img src="/pic.svg"><script>window.booted = "ready";</script>`;
+const DYNAMIC = `<!doctype html><meta charset="utf-8"><title>dynamic</title><script type="module">window.value = (await import("/@fs/repo/dyn.ts")).value;</script>`;
+
 // A page that imports a module the way a dev server serves source files, and one whose module is missing.
 const MODULE = `<!doctype html><meta charset="utf-8"><title>module</title><script type="module">import { value } from "/@fs/repo/mod.ts"; window.value = value;</script>`;
 const MISSING_MODULE = `<!doctype html><meta charset="utf-8"><title>missing</title><script type="module">import "/@fs/repo/missing.ts"; window.value = 1;</script>`;
@@ -55,6 +79,7 @@ new Worker("/hello.js").onmessage = (e) => { window.workerSaid = e.data; };
 describe("the Chromium tests' driver", () => {
   let site: LocalServer;
   let browser: Browser;
+  const answered = new Map<string, number>();
 
   beforeAll(async () => {
     if (browserExe === undefined) throw new Error("no Chromium: set MIP0018_UI_BROWSER or CHROME_BIN");
@@ -69,6 +94,26 @@ describe("the Chromium tests' driver", () => {
       } else if (path === "/module" || path === "/missing-module") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(path === "/module" ? MODULE : MISSING_MODULE);
+      } else if (path === "/boot-fails" || path === "/worker-fails") {
+        const n = (answered.get(path) ?? 0) + 1;
+        answered.set(path, n);
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(n > 1 ? BOOT_WELL : path === "/boot-fails" ? BOOT_FAILS : WORKER_FAILS);
+      } else if (path === "/delayed" || path === "/picture") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(path === "/delayed" ? DELAYED : PICTURE);
+      } else if (path === "/pic.svg") {
+        res.writeHead(200, { "content-type": "image/svg+xml" });
+        res.end('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
+      } else if (path === "/dynamic") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(DYNAMIC);
+      } else if (path === "/style-b.css") {
+        res.writeHead(200, { "content-type": "text/css" });
+        res.end("body { color: rgb(4, 5, 6); }");
+      } else if (path === "/@fs/repo/dyn.ts") {
+        res.writeHead(200, { "content-type": "text/javascript" });
+        res.end("export const value = 8;");
       } else if (path === "/@fs/repo/mod.ts") {
         res.writeHead(200, { "content-type": "text/javascript" });
         res.end("export const value = 7;");
@@ -156,7 +201,7 @@ describe("the Chromium tests' driver", () => {
       const css = await failingPage("/style.css", 1, "ConnectionAborted", aborted);
       await css.page.goto(`${site.origin}/loads`);
       expect(css.failed()).toBe(1);
-      expect(css.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("1 load failed with net::ERR_CONNECTION_ABORTED") }]);
+      expect(css.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("1 load failed with net::ERR_CONNECTION_ABORTED"), dropped: expect.any(Array) }]);
       expect(await css.page.eval("getComputedStyle(document.body).color")).toBe("rgb(1, 2, 3)");
       expect(css.page.requests.filter((r) => r.failed !== undefined)).toEqual([]);
       expect(retryLines(css.page)).toEqual([expect.stringMatching(/: 1 load failed with net::ERR_CONNECTION_ABORTED \(.*\/style\.css\): loading it again \(attempt 2 of 3, /u)]);
@@ -167,7 +212,7 @@ describe("the Chromium tests' driver", () => {
       const mod = await failingPage("/@fs/repo/mod.ts", 1, "ConnectionAborted", aborted);
       await mod.page.goto(`${site.origin}/module`, 30_000, () => mod.page.waitFor("window.value === 7", 10_000, "the module"));
       expect(mod.failed()).toBe(1);
-      expect(mod.page.loadRetries).toEqual([{ url: `${site.origin}/module`, reason: expect.stringContaining("/@fs/repo/mod.ts") }]);
+      expect(mod.page.loadRetries).toEqual([{ url: `${site.origin}/module`, reason: expect.stringContaining("/@fs/repo/mod.ts"), dropped: expect.any(Array) }]);
       expect(retryLines(mod.page)).toHaveLength(1);
       await mod.page.close();
 
@@ -219,7 +264,7 @@ describe("the Chromium tests' driver", () => {
       let state = "eth0=10.0.0.2";
       const changing = await failingPage("/hello.js", 1, "Aborted", { networkState: () => state }, () => { state = "eth0=10.0.0.2;br-test=10.97.0.1"; });
       await changing.page.goto(`${site.origin}/loads`, 30_000, () => changing.page.waitFor("window.workerSaid === 'hi'", 10_000, "the worker"));
-      expect(changing.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("the machine's network interfaces changed while it loaded and 1 worker script failed with net::ERR_ABORTED") }]);
+      expect(changing.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("the machine's network interfaces changed while it loaded and 1 worker script failed with net::ERR_ABORTED"), dropped: expect.any(Array) }]);
       expect(retryLines(changing.page)).toHaveLength(1);
       await changing.page.close();
       const still = await failingPage("/hello.js", 1, "Aborted", { networkState: () => "eth0=10.0.0.2" });
@@ -231,4 +276,69 @@ describe("the Chromium tests' driver", () => {
       printed.mockRestore();
     }
   }, 180_000);
+
+  it("[[browser.harness.load-retry-independent]] an aborted load never hides a failure of the page's own: a boot that fails with an application exception, or a running worker's error, while a stylesheet is aborted is not loaded again and keeps what the attempt recorded; an exception naming the aborted load is the abort's: loaded again, the aborted attempt kept in the report and counted in the printed line; an aborted image is no reason to load again; an abandoned step gets its abort signal and stops before the page is loaded again", async () => {
+    const printed = vi.spyOn(console, "error");
+    const lines = (page: Page): string[] =>
+      printed.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith(`browser page ${page.targetId.slice(0, 8)} `) && /loading it again|not loaded again/u.test(l));
+    const aborted = { environmentalErrors: ["net::ERR_CONNECTION_ABORTED"] };
+    /** The boot check of these pages: booted, and booted well. */
+    const bootedWell = (page: Page) => async (): Promise<void> => {
+      await page.waitFor("window.booted !== undefined", 10_000, "the boot");
+      const booted = await page.eval<string>("window.booted");
+      if (booted !== "ready") throw new Error(`the boot ended ${booted}`);
+    };
+    try {
+      for (const [path, own] of [["/boot-fails", "the application's boot failed"], ["/worker-fails", "worker boom 1"]] as const) {
+        answered.delete(path);
+        const { page, failed } = await failingPage("/style-b.css", 1, "ConnectionAborted", aborted);
+        await expect(page.goto(`${site.origin}${path}`, 30_000, bootedWell(page))).rejects.toThrow(/not loaded again/u);
+        expect(failed()).toBe(1);
+        expect(answered.get(path)).toBe(1);
+        expect(page.loadRetries).toEqual([]);
+        expect([...page.exceptions, ...page.workerErrors.map((e) => e.message)].join("\n")).toContain(own);
+        expect(await page.eval("window.booted")).toBe("failed");
+        expect(page.diagnostics()).toContain(own);
+        expect(lines(page)).toEqual([expect.stringMatching(/1 load failed with net::ERR_CONNECTION_ABORTED .*style-b\.css.*: not loaded again/u)]);
+        await page.close();
+      }
+
+      // The aborted dynamic import throws an exception naming it: the abort's own, loaded again once.
+      const dyn = await failingPage("/@fs/repo/dyn.ts", 1, "ConnectionAborted", aborted);
+      await dyn.page.goto(`${site.origin}/dynamic`, 30_000, () => dyn.page.waitFor("window.value === 8", 10_000, "the import"));
+      expect(dyn.failed()).toBe(1);
+      expect(dyn.page.loadRetries).toEqual([expect.objectContaining({ url: `${site.origin}/dynamic`, reason: expect.stringContaining("/@fs/repo/dyn.ts") })]);
+      expect(dyn.page.exceptions).toEqual([]);
+      expect(dyn.page.diagnostics()).toMatch(/loaded again \(1\):[^]*dropped: exception: .*dyn\.ts/u);
+      expect(lines(dyn.page)).toEqual([expect.stringMatching(/loading it again \(attempt 2 of 3, .*the aborted attempt's records \(kept in the page's report\): \d+, the first: /u)]);
+      await dyn.page.close();
+
+      // An image aborted: no load the page needs, not loaded again.
+      const pic = await failingPage("/pic.svg", 1, "ConnectionAborted", aborted);
+      await pic.page.goto(`${site.origin}/picture`, 30_000, bootedWell(pic.page));
+      expect(pic.failed()).toBe(1);
+      expect(pic.page.loadRetries).toEqual([]);
+      await pic.page.close();
+
+      // A step still waiting when its page's fetch is aborted: abandoned with its signal set; its next command fails, so
+      // its action runs once, in the attempt that is kept.
+      const delayed = await failingPage("/late.json", 1, "ConnectionAborted", aborted);
+      const signals: AbortSignal[] = [];
+      let acted = 0;
+      await delayed.page.goto(`${site.origin}/delayed`, 30_000, async (signal) => {
+        signals.push(signal);
+        await new Promise((r) => setTimeout(r, 4_500));
+        await delayed.page.eval("window.acts = (window.acts || 0) + 1");
+        acted++;
+      });
+      expect(delayed.failed()).toBe(1);
+      expect(delayed.page.loadRetries).toHaveLength(1);
+      expect(signals.map((s) => s.aborted)).toEqual([true, false]);
+      expect(acted).toBe(1);
+      expect(await delayed.page.eval("window.acts")).toBe(1);
+      await delayed.page.close();
+    } finally {
+      printed.mockRestore();
+    }
+  }, 120_000);
 });

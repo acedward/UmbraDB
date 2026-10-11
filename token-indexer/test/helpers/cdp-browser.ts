@@ -31,16 +31,25 @@
  * in a job whose Chrome runs on the runner itself) it fails every request still waiting for a connection, with
  * `net::ERR_NETWORK_CHANGED` — and a dedicated worker's script with `net::ERR_ABORTED`; requests already sent go on.
  * Chrome has no switch to ignore such changes. So an attempt (the navigation, and the `ready` step the caller gives) is
- * taken for the environment's, and made again, only when a load of the page (the document, a script or module, a
- * stylesheet, a fetch, a worker's script) failed with {@link ENVIRONMENTAL_LOAD_ERRORS}, or when the machine's
- * interfaces ({@link networkState}) changed while it ran and the script of a worker the page created failed with
- * `net::ERR_ABORTED`. A failed step, an error of another load or a load answered with an error status is the page's,
- * with or without a network change: it fails as it fails, and so does an attempt aborted {@link LOAD_ATTEMPTS} times.
- * The next attempt starts once the interfaces have stayed the same for three seconds (Chrome passes a change on more
- * than once: a second notice about two seconds after the first fails the requests waiting then too). What an aborted
- * attempt recorded (its requests, console, log entries, exceptions, worker errors and workers) is dropped, and its
- * reason kept in {@link Page.loadRetries}. A step that runs after the page is ready (not in `goto`) is not covered.
+ * aborted by the environment when a load the page needs (the document, a script or module, a stylesheet, a fetch, a
+ * worker's script — not an image, a font or the favicon) failed with {@link ENVIRONMENTAL_LOAD_ERRORS}, or when the
+ * machine's interfaces ({@link networkState}) changed while it ran and the script of a worker the page created failed
+ * with `net::ERR_ABORTED`. The step is not run once the abort is seen; seen while the step runs, the step is no longer
+ * awaited, its abort signal is set and every DevTools command it sends from then on fails, so it stops before the next
+ * attempt (which waits for it, at most ten seconds). An aborted attempt is made again only when nothing else in it
+ * failed: not when the step failed before the abort was seen, nor when the attempt recorded a failure the aborted loads
+ * do not explain — an exception that names none of them, an error event of a worker whose script was not one of them,
+ * a load that failed with another error (`net::ERR_ABORTED`, a load cancelled, aside). Such an attempt fails, its
+ * records kept, with one printed line (`not loaded again`); so does an attempt aborted {@link LOAD_ATTEMPTS} times; and
+ * anything else (a failed step, another load error, a load answered with an error status) with no abort fails as it
+ * fails. The next attempt starts once the interfaces have stayed the same for three seconds (Chrome passes a change on
+ * more than once: a second notice about two seconds after the first fails the requests waiting then too); what the
+ * aborted attempt recorded (its requests, console, log entries, exceptions, worker errors and workers) is dropped from
+ * the page's lists, its reason and its failures kept in {@link Page.loadRetries} and shown by {@link Page.diagnostics},
+ * and the retry's printed line counts them and shows the first. Each attempt runs in the same browser profile (its
+ * storage stays). A step that runs after the page is ready (not in `goto`) is not covered.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -63,6 +72,10 @@ export function findBrowser(env: NodeJS.ProcessEnv = process.env): string | unde
 type Json = any;
 interface Pending { resolve: (v: Json) => void; reject: (e: Error) => void; method: string }
 type Listener = (params: Json, sessionId: string | undefined) => void;
+
+/** The abort signals of the `ready` steps the current code runs in (see {@link Page.goto}): a DevTools command sent from
+ *  a step whose load attempt was abandoned fails, so the step stops at its next command. */
+const STEPS = new AsyncLocalStorage<readonly AbortSignal[]>();
 
 class Connection {
   private nextId = 1;
@@ -87,6 +100,8 @@ class Connection {
     });
   }
   send(method: string, params: Json = {}, sessionId?: string): Promise<Json> {
+    if (STEPS.getStore()?.some((s) => s.aborted) === true)
+      return Promise.reject(new Error(`${method}: not sent: the load attempt this step ran in was abandoned (the network aborted it)`));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject, method });
@@ -124,7 +139,11 @@ export interface PageOptions {
 
 /** The load error Chrome gives the requests it fails when the machine's network changes. */
 export const ENVIRONMENTAL_LOAD_ERRORS: readonly string[] = ["net::ERR_NETWORK_CHANGED"];
-/** The load error Chrome gives a dedicated worker's script it fails when the machine's network changes. */
+/** The loads a page needs (DevTools resource types): an environmental error on one of them aborts a load attempt; on
+ *  any other (an image, a font, the favicon) it does not. */
+const NEEDED_LOADS: ReadonlySet<string> = new Set(["Document", "Script", "Stylesheet", "Fetch", "XHR"]);
+/** The load error Chrome gives a dedicated worker's script it fails when the machine's network changes, and a load it
+ *  cancels (for example the rest of a module graph whose import failed). */
 const WORKER_SCRIPT_ABORT = "net::ERR_ABORTED";
 /** How many times {@link Page.goto} loads a page whose loads the machine's network aborted. */
 export const LOAD_ATTEMPTS = 3;
@@ -133,6 +152,8 @@ export const LOAD_ATTEMPTS = 3;
 const NETWORK_SETTLE_MS = 3_000;
 /** … waited for at most this long. */
 const NETWORK_SETTLE_MAX_MS = 10_000;
+/** How long a load attempt that is made again waits for its abandoned step to stop. */
+const ABANDONED_STEP_MS = 10_000;
 
 /** The machine's network interfaces and their addresses, as one string: what Chrome watches on Linux. */
 export function networkState(): string {
@@ -211,8 +232,11 @@ export class Page {
   ended = false;
   /** The URL last loaded with {@link goto}. */
   url = "about:blank";
-  /** Each load attempt {@link goto} made again, with why. */
-  readonly loadRetries: Array<{ url: string; reason: string }> = [];
+  /** Each load attempt {@link goto} made again: why, and what it recorded that the page's lists dropped (its exceptions,
+   *  worker errors, console errors and warnings, and log entries of those levels). */
+  readonly loadRetries: Array<{ url: string; reason: string; dropped: string[] }> = [];
+  /** Called after each event that can show a load attempt aborted (a failed load, an exception, a worker's error). */
+  private recorded: (() => void) | undefined;
   private environmentalErrors: readonly string[] = ENVIRONMENTAL_LOAD_ERRORS;
   private networkStateOf: () => string = networkState;
   /** The navigation's own error (`Page.navigate`'s `errorText`) in the current load attempt. */
@@ -239,9 +263,13 @@ export class Page {
     conn.on("Network.loadingFailed", mine((p) => {
       const r = page.byId.get(p.requestId);
       if (r !== undefined) { r.failed = p.errorText; if (p.blockedReason !== undefined) r.blockedReason = p.blockedReason; }
+      page.recorded?.();
     }));
     conn.on("Runtime.consoleAPICalled", mine((p, w) => page.console.push({ type: p.type, text: (p.args ?? []).map((a: Json) => a.value ?? a.description ?? "").join(" "), ...tag(w) })));
-    conn.on("Runtime.exceptionThrown", mine((p) => page.exceptions.push(p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "exception")));
+    conn.on("Runtime.exceptionThrown", mine((p) => {
+      page.exceptions.push(p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "exception");
+      page.recorded?.();
+    }));
     conn.on("Log.entryAdded", mine((p, w) => page.logs.push({ source: p.entry.source, level: p.entry.level, text: p.entry.text, url: p.entry.url, ...tag(w) })));
     conn.on("Page.loadEventFired", mine(() => { page.loads++; }));
     conn.on("Inspector.targetCrashed", (_p, s) => { if (s === sessionId) page.crashed = page.ended = true; });
@@ -255,6 +283,7 @@ export class Page {
       }
       page.workerErrors.push(e);
       if (page.workerErrors.length <= 5) console.error(`browser page ${page.targetId.slice(0, 8)} (${page.url}): worker error: ${errorLine(e)}`);
+      page.recorded?.();
     });
     pagesOfFile.push(page);
     if (opts.workers === true) await page.attachWorkers(true, opts.workerScript);
@@ -268,40 +297,69 @@ export class Page {
     return page;
   }
 
-  /** Loads a URL and waits for its load event. */
   /**
    * Loads a URL, waits for its load event, then runs `ready` (the page's own readiness: its engine booted, a view
    * drawn); an attempt the machine's network aborted is made again (see the module documentation), at most
-   * {@link LOAD_ATTEMPTS} times.
+   * {@link LOAD_ATTEMPTS} times. `ready` gets the attempt's abort signal: once the attempt is abandoned it is set, and
+   * every DevTools command the step sends from then on fails.
    */
-  async goto(url: string, timeoutMs = 30_000, ready?: () => Promise<unknown>): Promise<void> {
+  async goto(url: string, timeoutMs = 30_000, ready?: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
     for (let attempt = 1; ; attempt++) {
       const marks = {
         requests: this.requests.length, console: this.console.length, logs: this.logs.length, exceptions: this.exceptions.length,
         workerErrors: this.workerErrors.length, workers: this.workers.length,
       };
       const network = this.watchNetwork();
-      let failure: { error: unknown } | undefined;
+      let failure: { error: unknown; step: boolean } | undefined;
       try {
         await this.load(url, timeoutMs);
-        if (ready !== undefined) await this.unlessAborted(ready(), marks, network);
       } catch (error) {
-        failure = { error };
-      } finally {
-        network.stop();
+        failure = { error, step: false };
       }
+      // The step runs only on a page not already seen aborted; once the abort is seen it is no longer awaited, and its
+      // signal tells it to stop (its DevTools commands fail from then on).
+      const stepper = new AbortController();
+      let step: Promise<unknown> | undefined;
+      if (failure === undefined && ready !== undefined && this.abortedBy(marks, network.changed()) === undefined) {
+        step = STEPS.run([...(STEPS.getStore() ?? []), stepper.signal], () => ready(stepper.signal));
+        try {
+          await this.unlessAborted(step, marks, network);
+        } catch (error) {
+          failure = { error, step: true };
+        }
+      }
+      network.stop();
       const reason = this.abortedBy(marks, network.changed());
       if (reason === undefined) {
         if (failure !== undefined) throw failure.error;
         return;
       }
-      this.loadRetries.push({ url, reason });
+      stepper.abort();
       const last = failure === undefined ? "" : `; the last attempt's error: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`;
+      // A failure of the page's own is kept: the step failed before the abort was seen, or the attempt recorded what
+      // the aborted loads do not explain.
+      const own = (): string[] => [
+        ...(failure?.step === true ? [`the step failed first: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`] : []),
+        ...this.unexplained(marks),
+      ];
+      const notAgain = (found: string[]): Error => {
+        console.error(`browser page ${this.targetId.slice(0, 8)} (${url}): ${reason}, but the attempt also failed on its own (${found.length}: ${found[0]}): not loaded again`);
+        if (failure?.step === true) return failure.error as Error;
+        return new Error(`${url}: the page failed on its own while ${reason}: ${found.join("; ")}; not loaded again`);
+      };
+      if (own().length > 0) throw notAgain(own());
       if (attempt >= LOAD_ATTEMPTS) throw new Error(`${url}: ${reason}, in each of ${attempt} attempts${last}`);
-      // A change comes as several events (an interface, then its addresses): load again once it has settled.
+      // A change comes as several events (an interface, then its addresses): load again once it has settled, and once the
+      // abandoned step has stopped (or a bound has passed: its commands fail anyway).
       const settledMs = await this.networkSettled();
-      console.error(`browser page ${this.targetId.slice(0, 8)} (${url}): ${reason}: loading it again (attempt ${attempt + 1} of ${LOAD_ATTEMPTS}, the network settled for ${settledMs} ms)`);
-      // What the aborted attempt recorded is the environment's, not the page's.
+      if (step !== undefined) await Promise.race([step.catch(() => undefined), sleep(ABANDONED_STEP_MS)]);
+      // What arrived meanwhile counts too.
+      if (own().length > 0) throw notAgain(own());
+      const dropped = this.droppedSince(marks);
+      this.loadRetries.push({ url, reason, dropped });
+      const records = dropped.length === 0 ? "" : `; the aborted attempt's records (kept in the page's report): ${dropped.length}, the first: ${dropped[0]!.slice(0, 200)}`;
+      console.error(`browser page ${this.targetId.slice(0, 8)} (${url}): ${reason}: loading it again (attempt ${attempt + 1} of ${LOAD_ATTEMPTS}, the network settled for ${settledMs} ms)${records}`);
+      // What the aborted attempt recorded is the environment's, not the page's (its failures stay in loadRetries).
       this.requests.length = marks.requests;
       this.console.length = marks.console;
       this.logs.length = marks.logs;
@@ -356,11 +414,11 @@ export class Page {
   /** Why the load attempt that began at `from` (the lengths of the page's lists then) was the environment's, or
    *  `undefined` (see the module documentation). */
   private abortedBy(from: { requests: number; workerErrors: number }, networkChanged: boolean): string | undefined {
-    const loads = this.requests.slice(from.requests).filter((r) => r.failed !== undefined).map((r) => ({ url: r.url, error: r.failed! }));
-    if (this.navigationError !== undefined) loads.unshift({ url: this.url, error: this.navigationError });
+    const loads = this.requests.slice(from.requests).filter((r) => r.failed !== undefined).map((r) => ({ url: r.url, error: r.failed!, type: r.type }));
+    if (this.navigationError !== undefined) loads.unshift({ url: this.url, error: this.navigationError, type: "Document" });
     const described = (list: Array<{ url: string; error: string }>): string =>
       `${[...new Set(list.map((l) => l.url))].slice(0, 3).join(", ")}${list.length > 3 ? ", …" : ""}`;
-    const environmental = loads.filter((l) => this.environmentalErrors.some((e) => l.error.includes(e)));
+    const environmental = loads.filter((l) => NEEDED_LOADS.has(l.type) && this.environmentalErrors.some((e) => l.error.includes(e)));
     if (environmental.length > 0)
       return `${environmental.length} load${environmental.length === 1 ? "" : "s"} failed with ${[...new Set(environmental.map((l) => l.error))].join(", ")} (${described(environmental)})`;
     if (!networkChanged) return undefined;
@@ -377,22 +435,61 @@ export class Page {
     return undefined;
   }
 
-  /** `step`'s outcome, or nothing as soon as the attempt is seen aborted by the environment (`step` then runs on,
-   *  unawaited, against a page about to be loaded again). */
-  private async unlessAborted(step: Promise<unknown>, from: { requests: number; workerErrors: number }, network: { changed(): boolean }): Promise<void> {
-    step.catch(() => { /* awaited below, or abandoned */ });
-    let done = false;
-    const aborted = (async () => {
-      while (!done) {
-        if (this.abortedBy(from, network.changed()) !== undefined) return;
-        await sleep(100);
+  /** Failures the attempt that began at `from` recorded that its failed loads do not explain (see the module
+   *  documentation), each as a line. */
+  private unexplained(from: { requests: number; exceptions: number; workerErrors: number }): string[] {
+    const failed = this.requests.slice(from.requests).filter((r) => r.failed !== undefined);
+    const urls = failed.map((r) => r.url);
+    if (this.navigationError !== undefined) urls.push(this.url);
+    const absolute = (u: string): string => {
+      try {
+        return new URL(u, this.url).href;
+      } catch {
+        return u;
       }
-    })();
-    try {
-      await Promise.race([step, aborted]);
-    } finally {
-      done = true;
-    }
+    };
+    const environmental = (error: string): boolean => error.includes(WORKER_SCRIPT_ABORT) || this.environmentalErrors.some((e) => error.includes(e));
+    return [
+      ...failed.filter((r) => !environmental(r.failed!)).map((r) => `a load failed with ${r.failed}: ${r.url}`),
+      ...this.exceptions.slice(from.exceptions).filter((e) => !urls.some((u) => e.includes(u))).map((e) => `exception: ${e.split("\n")[0]}`),
+      ...this.workerErrors.slice(from.workerErrors).filter((e) => !urls.includes(absolute(e.worker))).map((e) => `worker error: ${errorLine(e)}`),
+    ];
+  }
+
+  /** What the attempt that began at `from` recorded that dropping it would hide, each as a line. */
+  private droppedSince(from: { console: number; logs: number; exceptions: number; workerErrors: number }): string[] {
+    const where = (target?: "worker"): string => (target === "worker" ? "[worker] " : "");
+    return [
+      ...this.exceptions.slice(from.exceptions).map((e) => `exception: ${e.split("\n")[0]}`),
+      ...this.workerErrors.slice(from.workerErrors).map((e) => `worker error: ${errorLine(e)}`),
+      ...this.console.slice(from.console).filter((c) => c.type === "error" || c.type === "warning" || c.type === "assert").map((c) => `${where(c.target)}console ${c.type}: ${c.text}`),
+      ...this.logs.slice(from.logs).filter((l) => l.level === "error" || l.level === "warning").map((l) => `${where(l.target)}log ${l.level}: ${l.text}${l.url === undefined || l.url === "" ? "" : ` (${l.url})`}`),
+    ];
+  }
+
+  /** `step`'s outcome, or nothing as soon as the attempt is seen aborted by the environment — checked at each event
+   *  that can show it, so a step that fails because of the abort is not taken for one that failed first (`step` then
+   *  runs on, unawaited, against a page about to be loaded again). */
+  private unlessAborted(step: Promise<unknown>, from: { requests: number; workerErrors: number }, network: { changed(): boolean }): Promise<void> {
+    step.catch(() => { /* awaited below, or abandoned */ });
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (end: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearInterval(timer);
+        this.recorded = undefined;
+        end();
+      };
+      const check = (): void => {
+        if (this.abortedBy(from, network.changed()) !== undefined) finish(resolve);
+      };
+      // A change of the interfaces alone comes with no event: read it again every 100 ms.
+      const timer = setInterval(check, 100);
+      this.recorded = check;
+      step.then(() => finish(resolve), (error: unknown) => finish(() => reject(error)));
+      check();
+    });
   }
 
   /** Evaluates an expression in the page (promises awaited) and returns its JSON value. */
@@ -544,7 +641,13 @@ export class Page {
     const where = (target?: "worker"): string => (target === "worker" ? "[worker] " : "");
     return [
       `page ${this.targetId.slice(0, 8)} at ${this.url}${this.crashed ? " (crashed)" : this.ended ? " (closed)" : ""}`,
-      ...(this.loadRetries.length === 0 ? [] : section("loaded again", this.loadRetries.map((r) => `${r.url}: ${r.reason}`))),
+      ...(this.loadRetries.length === 0 ? [] : [
+        `  loaded again (${this.loadRetries.length}):`,
+        ...this.loadRetries.flatMap((r) => [
+          `    ${cut(`${r.url}: ${r.reason}`)}`,
+          ...r.dropped.slice(-DIAGNOSTIC_LINES).map((d) => `      dropped: ${cut(d)}`),
+        ]),
+      ]),
       ...section("worker errors", this.workerErrors.map(errorLine)),
       ...section("exceptions", this.exceptions),
       ...section("console", this.console.map((c) => `${where(c.target)}${c.type}: ${c.text}`)),
