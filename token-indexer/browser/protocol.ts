@@ -443,6 +443,9 @@ export const HostStatusSchema = z.strictObject({
   storage: StorageStatusSchema.nullable(),
   /** The last snapshot exported and imported by this worker (manifest summary, file SHA-256 and size). */
   snapshots: SnapshotsSchema,
+  /** Present while the store holds an imported snapshot (from the import until `range` or `reset` replaces the store,
+   *  across workers): a `reset` then starts the build's default configuration (the finalized tip), as on a new store. */
+  storeImported: z.literal(true).optional(),
 });
 export type HostStatus = z.infer<typeof HostStatusSchema>;
 

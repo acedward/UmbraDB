@@ -37,6 +37,9 @@
  *   `reset` replaces the store), `reset` starts over as a new store would, with the build's default configuration (the
  *   finalized tip), not the snapshot's first height: also after a reload and a start that continued the snapshot; a
  *   range chosen afterwards is what a later `reset` runs again.
+ * - `[[browser.host.import-failed-empty]]` — a pending import whose rows fail to load opens the store empty with the
+ *   build's default configuration (the store holds no snapshot any more; the automatic start as it was), so nothing
+ *   starts at the earlier snapshot's first height; the status says while the store holds an imported snapshot.
  * - `[[browser.host.range-saved-first]]` — `range` saves the new range before it replaces the store: when that save
  *   fails nothing changes, and a worker that ends while the store is replaced leaves the new range (with the automatic
  *   start and the mark that the store is to be replaced) saved, so the next boot starts it on the new store.
@@ -737,5 +740,34 @@ describe("replacing the browser engine's store", () => {
     expect(again.engine).toMatchObject({ running: true, config: range });
     const done = await untilStatus(b.host, "the range again", (s) => s.cursors?.sync?.height === U1.from + 4);
     expect(done.cursors!.sync).toEqual({ height: U1.from + 4, startHeight: U1.from + 2 });
+  }, 300_000);
+  it("[[browser.host.import-failed-empty]] a pending import whose rows fail to load opens the store empty with the build's default configuration (the store holds no snapshot any more, the automatic start as it was), so nothing starts at the earlier snapshot's first height; the status says while the store holds an imported snapshot", async () => {
+    const snap = await snapshotAtMid();
+    const { manifest, data } = decodeSnapshotFile(new Uint8Array(await snap.file.arrayBuffer()));
+    const defaultStart: StartConfig = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 25 }, ...FAST };
+    const dir = storeDir();
+    const files = nodeStoreFiles(dir);
+    const identity = memoryStoreIdentity();
+    const saved = memorySettingsStore({ config: { source: { kind: "tape", range: "u1" } }, autoStart: true });
+    const a = host({ dataDir: dir, snapshotFiles: files, storeIdentity: identity, settings: saved, defaultStart });
+    const imported = await result<ImportResult>(a.host, "import", { snapshot: snap.file });
+    expect(imported.status.storeImported, "the status says the store holds an imported snapshot").toBe(true);
+    expect(imported.status.settings).toMatchObject({ config: { startHeight: U1.from }, autoStart: false });
+    await a.host.close();
+    hosts.splice(hosts.indexOf(a), 1);
+
+    // A journal whose rows do not load (its archive height is not the rows'): the next boot opens the store empty.
+    await files.writeJournal(encodeSnapshotFile({ ...manifest, archive: { ...manifest.archive, height: MID - 1 } }, data));
+    const b = host({ dataDir: dir, snapshotFiles: files, storeIdentity: identity, settings: saved, defaultStart });
+    expect(await b.host.boot()).toMatchObject({ phase: "ready", storeProblem: null });
+    const s = await result<HostStatus>(b.host, "status");
+    expect(s.cursors).toEqual({ sync: null, scan: null });
+    expect(s.settings).toEqual({ config: defaultStart, autoStart: false });
+    expect(s.storeImported).toBeUndefined();
+    expect(await saved.load(), "no imported mark on file").toEqual({ config: defaultStart, autoStart: false });
+    // A start runs the build's default: the new archive starts at the tip, not at the snapshot's first height.
+    await result(b.host, "start");
+    const started = await untilStatus(b.host, "the new archive", (x) => x.cursors?.sync !== null && x.cursors?.sync !== undefined);
+    expect(started.cursors!.sync!.startHeight).toBe(U1.from + 25);
   }, 300_000);
 });

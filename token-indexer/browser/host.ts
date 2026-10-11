@@ -705,6 +705,15 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
           // The new store the settings asked for is in place: they are saved again without the mark.
           await usable(() => writeSettings(settings), "the configuration to start on the new store could not be saved");
         }
+        if (importFailure !== undefined) {
+          // A pending import whose rows did not load left the store empty: it holds no snapshot, and the configuration
+          // that continued the earlier store (or snapshot) gives way to the build's default, as on a new store (the
+          // automatic start as it was).
+          const fresh = { config: opts.defaultStart ?? {}, autoStart: settings.autoStart };
+          await usable(() => writeSettings(fresh, { imported: false }), "the configuration of the store opened empty could not be saved");
+          saved = fresh;
+          storeImported = false;
+        }
         if (imported !== undefined) {
           // The journal stays until the configuration that continues the import is saved: a worker that ends before
           // that finishes the import again at its next boot.
@@ -837,6 +846,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       settings: saved === undefined ? null : withModules(saved),
       storage: quota.status(),
       snapshots: { lastExport, lastImport },
+      ...(storeImported && bootState.phase === "ready" ? { storeImported: true as const } : {}),
     };
   }
 

@@ -270,7 +270,7 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 
 | Request | Parameters | Result |
 |---|---|---|
-| `status` | — | boot state, store facts (data directory, created, PostgreSQL version, `fsync`, durability, applied migrations), the last engine's configuration and loop status, the stored cursors, the saved configuration (`settings`) and the storage reading (`storage`) |
+| `status` | — | boot state, store facts (data directory, created, PostgreSQL version, `fsync`, durability, applied migrations), the last engine's configuration and loop status, the stored cursors, the saved configuration (`settings`), the storage reading (`storage`) and, while the store holds an imported snapshot, `storeImported: true` (a reset then starts at the build's default; the panel's reset question says so) |
 | `api` | `method`, `target` | the API's answer `{ status, headers, body }` (`../API.md`) |
 | `start` | `automatic?` (`true`: start the saved configuration only if the saved settings, when the worker runs the request, say to start by itself; else the status, nothing changed: what a restart's restore and the leader tab send), `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status: the configuration is saved (with the automatic start on), then it runs; a source that cannot be reached (a recorded range that does not load) is refused before anything is saved, settings that already say this are not written again (the automatic start runs also while the browser refuses writes), a configuration the browser refuses to save starts nothing (`settings-failed`), and an engine that fails to start puts the settings before it back |
 | `stop` | — | status; the engine no longer starts by itself until the next `start`. The engine always stops; when the browser refuses to save that it should stay stopped, the answer is `settings-failed` (the next page to open the engine starts it again) |
@@ -291,7 +291,7 @@ Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemen
 `boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`,
 `module`, `range` and `reset` changed nothing, `stop` stopped the engine), `module-off` (`jsonrpc` while the JSON RPC module is off, or
 switched off before the answer), `busy` (`jsonrpc` while the module answers 8 requests; nothing was done), `internal`,
-`snapshot-refused` (the message starts with the reason; nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
+`snapshot-refused` (the message starts with the reason; nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty, with the build's default configuration); the client
 adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
 `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
 `failed`), `system` (one snapshot per collection while watched) and `heartbeat` (after a `watchdog` request).
@@ -444,7 +444,10 @@ the start, no end height, and no automatic start (as after `stop`). A `start` th
 snapshot's (and the scan from its cursor). The settings also say that the store holds an imported snapshot, until a
 `range` or `reset` replaces it: a `reset` then starts over as on a new store, with the build's default configuration
 (the finalized tip), not at the snapshot's first height — that height came with the file, and to sync the snapshot's
-history from the network again the user sets a `range` from it.
+history from the network again the user sets a `range` from it. The status says while the store holds an imported
+snapshot (`storeImported`), and the overview's reset question says the reset then starts over at the tip. A pending
+import whose rows do not load leaves the store empty: it then holds no snapshot, and its configuration is the build's
+default (the automatic start as it was), so nothing starts at an earlier snapshot's first height.
 
 A snapshot's rows are trusted data: its SHA-256 detects damage, not who made it, and the explorer shows the rows it
 holds. A file crafted on purpose can only carry rows (never code), but its rows are shown as if indexed. Import

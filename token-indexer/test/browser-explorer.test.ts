@@ -112,9 +112,11 @@ describe("the static build's explorer page (no browser)", () => {
     expect(v).toMatchObject({
       role: "leader (this tab runs the engine) \u00b7 1 tab open", network: "stagenet", state: "running", stateDetail: "sync idle \u00b7 scan following",
       startHeight: 715402, history: historyText(715402), synced: "715433", scanned: "715433", durability: "non-durable",
-      running: true, ready: true, holdsData: true, heldRange: "715402\u2013715433",
+      running: true, ready: true, holdsData: true, heldRange: "715402\u2013715433", storeImported: false,
       configuration: "from block 715402 \u00b7 to block 715433 \u00b7 recorded range u1, replayed offline \u00b7 starts by itself",
     });
+    // A store that holds an imported snapshot: the reset's question says it starts over at the tip.
+    expect(panelView(inputs({ status: hostStatus({ storeImported: true }) })).storeImported).toBe(true);
     // States.
     const state = (over: Partial<PanelInputs>) => { const x = panelView(inputs(over)); return [x.state, x.stateDetail]; };
     expect(state({ status: null })).toEqual(["connecting", ""]);

@@ -294,14 +294,14 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
     confirm.hidden = true;
   }
 
-  /** Runs `go` at once on a store with no blocks; otherwise asks first, offering an export. */
-  function dropping(what: string, go: () => Promise<void>): void {
+  /** Runs `go` at once on a store with no blocks; otherwise asks first, offering an export (`note`: a sentence after). */
+  function dropping(what: string, go: () => Promise<void>, note = ""): void {
     if (view === null || !view.holdsData) {
       void go();
       return;
     }
     pending = { go };
-    draw(confirmText, `This store holds blocks ${view.heldRange}. ${what} drops them; export a snapshot first to keep them.`);
+    draw(confirmText, `This store holds blocks ${view.heldRange}. ${what} drops them; export a snapshot first to keep them.${note === "" ? "" : ` ${note}`}`);
     confirmGo.textContent = `drop the data and ${what.toLowerCase()}`;
     confirm.hidden = false;
   }
@@ -327,7 +327,13 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
     );
   });
   resetButton.addEventListener("click", () => {
-    dropping("Resetting", () => run("reset", () => client.reset(), () => "reset: the store's data was dropped and the engine started again"));
+    dropping(
+      "Resetting",
+      () => run("reset", () => client.reset(), () => "reset: the store's data was dropped and the engine started again"),
+      view?.storeImported === true
+        ? "The store holds an imported snapshot: the reset starts over at the finalized tip, as a new store does (a range from the snapshot's first height syncs its history again)."
+        : "",
+    );
   });
   exportButton.addEventListener("click", () => void exportSnapshot());
   importButton.addEventListener("click", () => {

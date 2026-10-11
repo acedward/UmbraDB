@@ -98,6 +98,8 @@ export interface PanelView {
   holdsData: boolean;
   /** The heights the store holds, for the question before its data is dropped. */
   heldRange: string;
+  /** The store holds an imported snapshot: a reset starts over at the build's default (the finalized tip). */
+  storeImported: boolean;
 }
 
 const int = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null);
@@ -265,6 +267,7 @@ export function panelView(i: PanelInputs): PanelView {
     recoverable: s?.boot.phase === "failed" && s.boot.storeProblem !== null,
     holdsData: syncHeight !== null,
     heldRange: syncHeight === null ? "" : archiveStart === null || archiveStart === undefined ? `up to block ${syncHeight}` : `${archiveStart}\u2013${syncHeight}`,
+    storeImported: s?.storeImported === true,
   };
 }
 
