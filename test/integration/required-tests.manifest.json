@@ -2005,7 +2005,7 @@
     {
       "id": "browser.host.store-identity-states",
       "file": "token-indexer/test/browser-store-replace.test.ts",
-      "description": "a boot that cannot save the identity fails; an unreadable identity is reported and its store neither opened nor removed; a store with files but no identity is reported; one marked creating is created again; a new store is marked creating first; the OPFS file's states"
+      "description": "a boot that cannot save the identity fails; an unreadable identity is reported and its store neither opened nor removed; a store with files but no identity is reported; one marked creating is created again; a new store is marked creating first; the OPFS file's states, an empty file read as absent (its first write never completed) and the store then created"
     },
     {
       "id": "browser.host.range-saved-first",
