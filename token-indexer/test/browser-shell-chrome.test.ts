@@ -83,8 +83,6 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const browserExe = findBrowser();
 
-/** An explanation's lines (`\n` between them) as the box draws them: each line with its hidden characters marked. */
-const shownLines = (text: string): string => text.split("\n").map(visibleText).join("\n");
 
 /** The overview's fields as drawn (text), the storage line's explanation (its box, open or not), and the sources it drew
  *  them from. */
@@ -92,13 +90,13 @@ const OVERVIEW = `(() => {
   const p = document.getElementById('engine-panel');
   const fields = {};
   for (const f of p.querySelectorAll('.kv > .v[data-field]')) fields[f.getAttribute('data-field')] = f.textContent;
-  return { fields, storageTitle: [...document.getElementById('engine-storage-explanation').children].map((l) => l.textContent).join('\\n'), inputs: window.umbradbOverview.inputs(),
+  return { fields, storageLines: [...document.getElementById('engine-storage-explanation').children].map((l) => l.textContent), inputs: window.umbradbOverview.inputs(),
     tab: document.body.getAttribute('data-tab-shown'), title: document.title, search: location.search, hash: location.hash };
 })()`;
 type OverviewField = "health" | "role" | "network" | "state" | "configuration" | "history" | "synced" | "scanned" | "tip" | "lag" | "rate" | "uptime" | "durability" | "storage";
 interface Overview {
   fields: Record<OverviewField, string>;
-  storageTitle: string;
+  storageLines: string[];
   inputs: PanelInputs;
   tab: string;
   title: string;
@@ -238,7 +236,7 @@ describe("the static build's main page in Chrome (served with its headers)", () 
     for (const k of ["health", "role", "network", "configuration", "history", "synced", "scanned", "tip", "lag", "rate", "uptime", "durability", "storage"] as const)
       expect(o.fields[k], k).toBe(visibleText(view[k]));
     expect(o.fields.state).toBe(visibleText(view.stateDetail === "" ? view.state : `${view.state} · ${view.stateDetail}`));
-    expect(o.storageTitle).toBe(shownLines(view.storageTitle));
+    expect(o.storageLines).toEqual(view.storageLines.map(visibleText));
     return view;
   }
 
@@ -298,8 +296,8 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(reading.pauseAtBytes).toBe(pauseThresholdBytes(quota));
       expect(o.fields.storage).toBe(`${formatBytes(reading.storeBytes)} · quota ${formatBytes(quota)} · pauses at ${formatBytes(pauseThresholdBytes(quota))} · ${reading.persisted ? "persistent" : "not persistent"}`);
       expect(o.fields.storage.length).toBeLessThan(80);
-      expect(o.storageTitle.split("\n")).toContain(`Browser usage: ${formatBytes(reading.usageBytes)} of a ${formatBytes(quota)} quota (higher than the store: Chrome reserves space while it is open)`);
-      expect(o.storageTitle.split("\n").at(-1)).toMatch(reading.persisted ? /^Persistent: / : /^Not persistent: /);
+      expect(o.storageLines).toContain(`Browser usage: ${formatBytes(reading.usageBytes)} of a ${formatBytes(quota)} quota (higher than the store: Chrome reserves space while it is open)`);
+      expect(o.storageLines.at(-1)).toMatch(reading.persisted ? /^Persistent: / : /^Not persistent: /);
       expect(view.tokenIndexer).toBe(true);
 
       // The snapshot is watched while the overview is shown, and not on another tab.
@@ -354,7 +352,7 @@ describe("the static build's main page in Chrome (served with its headers)", () 
           inputs: i, line: ${CONTROL}.textContent };
       })()`).then((r: Json) => {
         const model = storageLine(r.inputs.status, r.inputs.pageStorage, r.inputs.persistence);
-        return { shown: r.shown, text: r.text, expanded: r.expanded, controls: r.controls, expected: shownLines(model.title), line: r.line, drawnLine: visibleText(model.text) };
+        return { shown: r.shown, text: r.text, expanded: r.expanded, controls: r.controls, expected: model.lines.map(visibleText).join("\n"), line: r.line, drawnLine: visibleText(model.text) };
       });
       let r = await read();
       expect([r.shown, r.expanded, r.controls, r.line]).toEqual([false, "false", "engine-storage-explanation", r.drawnLine]);

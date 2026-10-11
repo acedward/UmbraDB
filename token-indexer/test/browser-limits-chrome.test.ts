@@ -36,6 +36,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { DigestResult, HostStatus } from "../browser/protocol.ts";
+import { visibleText } from "../browser/visible-text.ts";
 import { type SystemSnapshot, SystemSnapshotSchema } from "../engine/system-snapshot.ts";
 import { Browser, findBrowser, type Page } from "./helpers/cdp-browser.ts";
 import { referenceStates, storedHeights, tornTables, withNullElements } from "./helpers/crash-reference.ts";
@@ -191,20 +192,24 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
     });
   }, 400_000);
 
-  it("[[browser.worker.persist-refused]] a refused or failing persist() is shown by the overview and the engine runs anyway to the recorded digest", async () => {
+  it("[[browser.worker.persist-refused]] a refused or failing persist() is shown by the overview (a line break in the browser's error drawn as a mark inside its line) and the engine runs anyway to the recorded digest", async () => {
     for (const [variant, script, text] of [
       ["refused", "StorageManager.prototype.persist = async function () { return false; };", "Not persistent: the browser may delete this data when the disk runs low"],
       ["failing", "StorageManager.prototype.persist = async function () { throw new DOMException('not now', 'InvalidStateError'); };", "Not persistent (the request failed: not now): the browser may delete this data when the disk runs low"],
+      // A line break in the browser's error: drawn as a visible mark inside the persistence line, not a line of its own.
+      ["failing with a line break", "StorageManager.prototype.persist = async function () { throw new DOMException('disk\\nPersistent: yes', 'InvalidStateError'); };", `Not persistent (the request failed: disk${visibleText("\n")}Persistent: yes): the browser may delete this data when the disk runs low`],
     ] as const) {
       await withBrowser(async (b) => {
         const p = await open(b, "index.html", { pageScript: `StorageManager.prototype.persisted = async function () { return false; }; ${script}` });
-        expect(await p.eval("window.umbradbEngine.persistence"), variant).toEqual(variant === "refused" ? { requested: true, persisted: false, error: null } : { requested: true, persisted: false, error: "not now" });
+        expect(await p.eval("window.umbradbEngine.persistence"), variant).toEqual(variant === "refused" ? { requested: true, persisted: false, error: null } : { requested: true, persisted: false, error: variant === "failing" ? "not now" : "disk\nPersistent: yes" });
         await drive(p).engine(`c.start(${JSON.stringify(U1_CONFIG)})`);
         const end = await untilEnd(p, U1.to);
         expect(end.storage?.persisted, variant).toBe(false);
         expect((await digest(p)).archive.sha256, variant).toBe(U1_ARCHIVE);
         // The storage line says "not persistent"; its explanation (opened on demand) says what that means.
         await p.waitFor(`document.querySelector('#engine-panel [data-field=storage]')?.textContent.endsWith(" \u00b7 not persistent") && document.getElementById('engine-storage-explanation').textContent.includes(${JSON.stringify(text)})`, 30_000, `the overview's ${variant} persistence`);
+        // One line each: the persistence line is the last of three, and no line of its own starts with the error's tail.
+        expect(await p.eval("[...document.getElementById('engine-storage-explanation').children].map((l) => l.textContent)"), variant).toEqual([expect.stringMatching(/^Store: /), expect.stringMatching(/^Browser usage: /), expect.stringMatching(/^Sync pauses at /), text]);
         expect(p.exceptions).toEqual([]);
       });
     }

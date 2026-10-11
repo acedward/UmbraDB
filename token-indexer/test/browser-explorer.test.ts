@@ -135,7 +135,7 @@ describe("the static build's explorer page (no browser)", () => {
     // count (larger than the store while it is open) and what each figure means in the explanation.
     const pausedView = panelView(inputs({ status: hostStatus({ storage: paused }) }));
     expect(pausedView.storage).toBe("42.5 MB \u00b7 quota 10.0 GB \u00b7 pauses at 9.0 GB \u00b7 not persistent \u00b7 paused");
-    expect(pausedView.storageTitle.split("\n")).toEqual([
+    expect(pausedView.storageLines).toEqual([
       "Paused: the usage is near the quota",
       "Store: 42.5 MB",
       "Browser usage: 9.5 GB of a 10.0 GB quota (higher than the store: Chrome reserves space while it is open)",
@@ -145,7 +145,7 @@ describe("the static build's explorer page (no browser)", () => {
     const open = { ...paused, usageBytes: 995_300_000, quotaBytes: 11_732_800_000, pauseAtBytes: 10_559_520_000, paused: false, pausedReason: null, storeBytes: 42_300_000, persisted: true };
     const openView = panelView(inputs({ status: hostStatus({ storage: open }) }));
     expect(openView.storage).toBe("42.3 MB \u00b7 quota 11.7 GB \u00b7 pauses at 10.6 GB \u00b7 persistent");
-    expect(openView.storageTitle.split("\n")).toEqual([
+    expect(openView.storageLines).toEqual([
       "Store: 42.3 MB",
       "Browser usage: 995.3 MB of a 11.7 GB quota (higher than the store: Chrome reserves space while it is open)",
       "Sync pauses at 10.6 GB and resumes when space frees up",
@@ -153,7 +153,7 @@ describe("the static build's explorer page (no browser)", () => {
     ]);
     const unread = panelView(inputs({ status: hostStatus({ storage: { ...open, storeBytes: null, pauseAtBytes: null, persisted: null } }) }));
     expect(unread.storage).toBe("size not read yet \u00b7 quota 11.7 GB \u00b7 persistence unknown");
-    expect(unread.storageTitle.split("\n")).toEqual([
+    expect(unread.storageLines).toEqual([
       "Store: size not read yet",
       "Browser usage: 995.3 MB of a 11.7 GB quota (higher than the store: Chrome reserves space while it is open)",
       "Persistence: unknown",
@@ -161,9 +161,9 @@ describe("the static build's explorer page (no browser)", () => {
     // Storage from the page until the engine has a reading.
     const pageOnly = panelView(inputs({ pageStorage: { usageBytes: 1_015_257_540, quotaBytes: 11_752_675_780, persisted: null } }));
     expect(pageOnly.storage).toBe("size not read yet \u00b7 quota 11.8 GB \u00b7 persistence unknown");
-    expect(pageOnly.storageTitle.split("\n")).toEqual(["Store: size not read yet", "Browser usage: 1.0 GB of a 11.8 GB quota", "Persistence: unknown"]);
+    expect(pageOnly.storageLines).toEqual(["Store: size not read yet", "Browser usage: 1.0 GB of a 11.8 GB quota", "Persistence: unknown"]);
     expect(panelView(inputs()).storage).toBe("unknown");
-    expect(panelView(inputs()).storageTitle).toBe("");
+    expect(panelView(inputs()).storageLines).toEqual([]);
     expect([formatBytes(null), formatBytes(0), formatBytes(42_300_000), formatBytes(999_940_000), formatBytes(1e9), formatBytes(11_732_800_000), formatBytes(1_234_567_000_000)]).toEqual(
       ["unknown", "0.0 MB", "42.3 MB", "999.9 MB", "1.0 GB", "11.7 GB", "1,234.6 GB"]);
     // Nothing indexed yet: no start height, nothing to lose.

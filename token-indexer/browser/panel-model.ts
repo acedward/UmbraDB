@@ -74,9 +74,9 @@ export interface PanelView {
   synced: string;
   scanned: string;
   durability: string;
-  /** The storage line (store size, quota, pause threshold, persistence) and its explanation. */
+  /** The storage line (store size, quota, pause threshold, persistence) and its explanation's lines. */
   storage: string;
-  storageTitle: string;
+  storageLines: string[];
   /** The health line of the system snapshot (its label and reason), or the engine's state until there is one. */
   health: string;
   /** The finalized tip, the lag behind it (blocks and time), blocks per second and the worker's uptime (snapshot). */
@@ -169,12 +169,13 @@ export function persistenceSentence(persisted: boolean | null, request: Persiste
 /**
  * The storage line, one short line — the store's own size, the quota, the usage at which the sync pauses, and whether
  * the storage is persistent (`60.7 MB · quota 10.8 GB · pauses at 9.7 GB · not persistent`, then `· paused` while the
- * sync is paused) — and its explanation, which the line opens on demand (`explain.ts`): one short line each (`title`,
- * lines separated by `\n`), the pause's reason first while the sync is paused, then the store's size, the browser's
+ * sync is paused) — and its explanation, which the line opens on demand (`explain.ts`): one short line each (`lines`;
+ * a line break inside a line, such as in a browser's error, is the line's own text), the pause's reason first while
+ * the sync is paused, then the store's size, the browser's
  * usage against the quota (higher than the store while it is open: Chrome reserves space), where the sync pauses, and
  * persistence. Until the engine has a storage reading, the page's own `navigator.storage` figures.
  */
-export function storageLine(s: HostStatus | null, page: PageStorage | null, request: PersistenceResult | null | undefined): { text: string; title: string } {
+export function storageLine(s: HostStatus | null, page: PageStorage | null, request: PersistenceResult | null | undefined): { text: string; lines: string[] } {
   const st = s?.storage ?? null;
   if (st !== null) {
     const parts = [st.storeBytes === null ? "size not read yet" : formatBytes(st.storeBytes), `quota ${formatBytes(st.quotaBytes)}`];
@@ -187,15 +188,15 @@ export function storageLine(s: HostStatus | null, page: PageStorage | null, requ
     lines.push(`Browser usage: ${formatBytes(st.usageBytes)} of a ${formatBytes(st.quotaBytes)} quota (higher than the store: Chrome reserves space while it is open)`);
     if (st.pauseAtBytes !== null) lines.push(`Sync pauses at ${formatBytes(st.pauseAtBytes)} and resumes when space frees up`);
     lines.push(persistenceSentence(st.persisted, request));
-    return { text: parts.join(" \u00b7 "), title: lines.join("\n") };
+    return { text: parts.join(" \u00b7 "), lines };
   }
   if (page !== null) {
     return {
       text: `size not read yet \u00b7 quota ${formatBytes(page.quotaBytes)} \u00b7 ${persistentWord(page.persisted)}`,
-      title: ["Store: size not read yet", `Browser usage: ${formatBytes(page.usageBytes)} of a ${formatBytes(page.quotaBytes)} quota`, persistenceSentence(page.persisted, request)].join("\n"),
+      lines: ["Store: size not read yet", `Browser usage: ${formatBytes(page.usageBytes)} of a ${formatBytes(page.quotaBytes)} quota`, persistenceSentence(page.persisted, request)],
     };
   }
-  return { text: "unknown", title: "" };
+  return { text: "unknown", lines: [] };
 }
 
 const height = (v: number | null): string => (v === null ? "none" : String(v));
@@ -255,7 +256,7 @@ export function panelView(i: PanelInputs): PanelView {
     scanned: `${height(int(api?.indexedHeight))}${tokenIndexer ? "" : " \u00b7 token indexer off"}`,
     durability: str(api?.durability) ?? s?.store?.durability ?? "unknown",
     storage: storage.text,
-    storageTitle: storage.title,
+    storageLines: storage.lines,
     health: snap === null ? (detail === "" ? state : `${state} \u00b7 ${detail}`) : healthText(snap),
     ...snapshotFigures(snap, tokenIndexer),
     tokenIndexer,

@@ -115,7 +115,7 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
   const storageControl = explainControl();
   storageField.append(storageControl);
   const storageExplanation = explanation("engine-storage-explanation", "storage-explanation");
-  storageExplanation.attach(storageControl, () => (view?.storageTitle ?? "").split("\n"));
+  storageExplanation.attach(storageControl, () => view?.storageLines ?? []);
   grid.append(storageExplanation.box);
   root.append(grid);
 
