@@ -551,21 +551,29 @@ async function execExtended(db: PgliteDatabase, text: string, params: readonly u
   return db.runExclusive(async () => {
     if (db.closed) throw connectionClosed();
     await db._handleBlob(options.blob);
-    const send = (message: Uint8Array): Promise<readonly PgliteBackendMessage[]> => db.execProtocolStream(message, { syncToFs: false });
     const messages: PgliteBackendMessage[] = [];
+    // The answers read as the result, as PGlite's `query` reads them (all but the statement's description), kept one
+    // by one: an answer (Execute's rows) can hold more messages than a function call takes arguments.
+    const send = async (message: Uint8Array, keep = true): Promise<readonly PgliteBackendMessage[]> => {
+      const answer = await db.execProtocolStream(message, { syncToFs: false });
+      if (keep) for (const m of answer) messages.push(m);
+      return answer;
+    };
     try {
-      messages.push(...(await send(w.parse({ text, ...(options.paramTypes === undefined ? {} : { types: options.paramTypes }) }))));
-      const types = w.parameterTypes(await send(w.describe({ type: "S" })));
+      await send(w.parse({ text, ...(options.paramTypes === undefined ? {} : { types: options.paramTypes }) }));
+      const types = w.parameterTypes(await send(w.describe({ type: "S" }), false));
       const values = params.map((v, i) => {
         if (v === null || v === undefined) return null;
         const serialize = options.serializers?.[types[i]!];
         return serialize !== undefined ? serialize(v) : String(v);
       });
-      messages.push(...(await send(w.bind({ values }))), ...(await send(w.describe({ type: "P" }))), ...(await send(w.execute())));
+      await send(w.bind({ values }));
+      await send(w.describe({ type: "P" }));
+      await send(w.execute());
     } catch (error) {
       throw withStatement(error, text, params as unknown[], options);
     } finally {
-      messages.push(...(await send(w.sync())));
+      await send(w.sync());
     }
     await db._cleanupBlob();
     await db.syncToFs();

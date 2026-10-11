@@ -583,6 +583,30 @@ describe("PGlite client", () => {
       }
     });
 
+    it("[[pglite.client.large-results]] a statement with parameters, and a text, whose result holds 150,000 rows answers with every row, for a SELECT and an INSERT … RETURNING alike, and the rows are stored once", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        const N = 150_000;
+        await c`CREATE TABLE big (id int)`;
+        const check = (rows: ArrayLike<{ id: number }>): void => {
+          expect(rows.length).toBe(N);
+          expect([rows[0]!.id, rows[N - 1]!.id]).toEqual([1, N]);
+        };
+        // Parameters (the extended protocol): an INSERT … RETURNING, then a SELECT.
+        check(await c.unsafe(`INSERT INTO big SELECT generate_series(1, $1::int) RETURNING id`, [N]) as unknown as Array<{ id: number }>);
+        expect([...(await c`SELECT count(*)::int AS n FROM big`)]).toEqual([{ n: N }]);
+        check(await c<{ id: number }[]>`SELECT id FROM big WHERE id > ${0} ORDER BY id`);
+        // A text (the simple protocol): the same.
+        await c`TRUNCATE big`;
+        check(await c.unsafe(`INSERT INTO big SELECT generate_series(1, ${N}) RETURNING id`) as unknown as Array<{ id: number }>);
+        expect([...(await c`SELECT count(*)::int AS n FROM big`)]).toEqual([{ n: N }]);
+        check(await c.unsafe("SELECT id FROM big ORDER BY id") as unknown as Array<{ id: number }>);
+      } finally {
+        await own.close();
+      }
+    }, 120_000);
+
     it("[[pglite.client.transaction-isolation]] the session is never handed on inside a transaction: a statement that leaves one open is rolled back and refused, and a reservation released inside one has it rolled back", async () => {
       // A client's hidden BEGIN, then another client's acknowledged write, then the first client's ROLLBACK.
       await expect(a.unsafe("/* caller A */ BEGIN")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
