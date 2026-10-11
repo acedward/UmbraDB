@@ -15,14 +15,18 @@
  *   (status, headers, body) — a result for each served method, `-32004` for each not-implemented one. No CSP
  *   violation, every request to the site.
  * - `[[browser.jsonrpc.answers]]` — every `POST` case of the differential (every method, refused parameters, the
- *   not-implemented and unknown methods, the envelope, notifications, batches, bodies that are not JSON, the size cap)
- *   sent as a `jsonrpc` request gets exactly Node's answer; a request the protocol refuses (no body, a body over its
+ *   not-implemented and unknown methods, the envelope, notifications, batches, bodies that are not JSON, the size cap,
+ *   lone surrogates) sent as a `jsonrpc` request gets exactly Node's answer, as Node's server answers now and as
+ *   recorded (`evm-rpc/test/fixtures/node-answers.json`; the client version aside, which is the build's); a request the protocol refuses (no body, a body over its
  *   bound) is answered `bad-request`.
  * - `[[browser.jsonrpc.hostile]]` — hostile text (control, bidi, zero-width and markup characters) in edited parameters,
  *   in the parser's message about parameters that are not JSON, and in an indexer answer is drawn as text: the request
  *   and the message with visible marks, the indexer's text never passed on (the module answers `-32603`); parameters
  *   nested too deep are refused with a message; nothing comes alive, nothing throws and no raw hidden character is
  *   drawn.
+ * - `[[browser.jsonrpc.concurrent-calls]]` — Call on a slow row and then a fast one: each answer is drawn in its own
+ *   output row under its method, the slow answer never draws over the later call, and the call reported as the last is
+ *   the last one made.
  * - `[[browser.jsonrpc.module-switch]]` — JSON RPC switched off from its checkbox: saved with the settings, its tab gone
  *   (a URL naming it shows the overview), `jsonrpc` requests refused `module-off`; a second tab shows the same and is
  *   refused through the leader; the choice holds when the leader closes (the next leader's worker) and after a reload;
@@ -32,7 +36,7 @@
  * `MIP0018_UI_SCREENSHOTS=<dir>` saves PNGs (never committed).
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { request as httpRequest, type Server } from "node:http";
+import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,6 +48,7 @@ import { registerReadOnlyMethods } from "../../evm-rpc/read-only.js";
 import { MethodRegistry } from "../../evm-rpc/registry.js";
 import { createRpcServer } from "../../evm-rpc/server.js";
 import { differentialCases } from "../../evm-rpc/test/differential-cases.js";
+import { handlerAnswer, loadRecording, sendToServer } from "../../evm-rpc/test/node-answers.js";
 import { HEIGHT, recordedIndexerAnswer, recordedIndexerFetch } from "../../evm-rpc/test/recorded-indexer.js";
 import { answerText, buildRequest, JSONRPC_TAB_NOTE, methodRows, SOURCE_LEGEND } from "../browser/jsonrpc-model.ts";
 import { JSONRPC_CHAIN_ID, jsonRpcClientVersion } from "../browser/jsonrpc-module.ts";
@@ -84,9 +89,9 @@ const ROWS = `[...document.querySelectorAll('[data-field=jsonrpc-methods] tbody 
   nodeOnly: tr.querySelector('[data-field=jsonrpc-node-only]') !== null,
 }))`;
 
-/** The output row as drawn. */
-const OUTPUT = `(() => {
-  const o = document.querySelector('[data-field=jsonrpc-output]');
+/** The output row of `method` as drawn. */
+const OUTPUT = (method: string): string => `(() => {
+  const o = document.querySelector('[data-field=jsonrpc-output][data-output-of=${JSON.stringify(method)}]');
   if (o === null) return null;
   const t = (f) => o.querySelector('[data-field=' + f + ']')?.textContent ?? null;
   return { after: o.previousElementSibling?.getAttribute('data-method') ?? null, method: t('jsonrpc-output-method'), request: t('jsonrpc-request'),
@@ -101,6 +106,8 @@ describe("the JSON RPC module in the static build in Chrome (served with its hea
   /** What the indexer's GraphQL route answers. */
   let indexer: (body: string) => { status: number; body: string } = recordedIndexerAnswer;
   let indexerRequests = 0;
+  /** How long the indexer's route waits before it answers. */
+  let indexerDelayMs = 0;
   let node: Server;
   let nodePort: number;
 
@@ -120,7 +127,7 @@ describe("the JSON RPC module in the static build in Chrome (served with its hea
           }
           indexerRequests += 1;
           const a = indexer(Buffer.concat(chunks).toString("utf8"));
-          res.writeHead(a.status, { "content-type": "application/json" }).end(a.body);
+          setTimeout(() => res.writeHead(a.status, { "content-type": "application/json" }).end(a.body), indexerDelayMs);
         });
         return true;
       },
@@ -172,24 +179,10 @@ describe("the JSON RPC module in the static build in Chrome (served with its hea
     if (out !== undefined) rmSync(out, { recursive: true, force: true });
   });
 
-  /** Node's answer to a `POST` with `body`. */
-  function nodeAnswer(body: string): Promise<Answer> {
-    const bytes = Buffer.from(body, "utf8");
-    return new Promise((resolve, reject) => {
-      const req = httpRequest({ host: "127.0.0.1", port: nodePort, method: "POST", path: "/", headers: { "content-length": bytes.length } }, (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (d: Buffer) => chunks.push(d));
-        res.on("end", () => {
-          const headers: [string, string][] = [];
-          for (let i = 0; i < res.rawHeaders.length; i += 2) {
-            if (!/^(date|connection|keep-alive)$/i.test(res.rawHeaders[i]!)) headers.push([res.rawHeaders[i]!, res.rawHeaders[i + 1]!]);
-          }
-          resolve({ status: res.statusCode!, headers, body: Buffer.concat(chunks).toString("utf8") });
-        });
-      });
-      req.on("error", reject);
-      req.end(bytes);
-    });
+  /** Node's answer to a `POST` with `body` (a connection of its own; a failure names the request). */
+  async function nodeAnswer(body: string): Promise<Answer> {
+    const a = await sendToServer(nodePort, "POST", body);
+    return { status: a.status, headers: a.headers, body: a.body.toString("utf8") };
   }
 
   const on = (p: Page) => (expr: string): Promise<Json> => p.eval(`(async () => { const c = window.umbradbEngine.client; return ${expr}; })()`);
@@ -246,7 +239,7 @@ describe("the JSON RPC module in the static build in Chrome (served with its hea
     const before = await p.eval<number>(`window.umbradbOverview.jsonrpc().calls`);
     await p.eval(`document.querySelector('tr[data-method=${JSON.stringify(method)}] [data-action=jsonrpc-call]').click()`);
     await p.waitFor(`window.umbradbOverview.jsonrpc().calls > ${before} && window.umbradbOverview.jsonrpc().latest.pending === false`, 30_000, `the answer to ${method}`);
-    return (await p.eval<Output>(OUTPUT))!;
+    return (await p.eval<Output>(OUTPUT(method)))!;
   }
 
   it("[[browser.jsonrpc.tab]] on by default: the Modules row and the tab; every method of the registry and the Node-only ones listed with source, state, example parameters and Call; the note; Call on each shows the request and Node's answer; no CSP violation", async () => {
@@ -324,9 +317,12 @@ describe("the JSON RPC module in the static build in Chrome (served with its hea
       const p = await open(b, "/index.html");
       const cases = differentialCases().filter((c) => c.method === "POST");
       expect(cases.length).toBeGreaterThan(120);
+      const recorded = new Map(loadRecording().answers.map((r) => [r.case, r]));
       for (const c of cases) {
         const r = await viaEngine(p, c.body);
         expect("refused" in r ? r : asAnswer(r), c.name).toEqual(await nodeAnswer(c.body));
+        // Node's answer as recorded, but for the client version, which is the build's package version here.
+        if (!("refused" in r) && !c.body.includes("web3_clientVersion")) expect(handlerAnswer(c.name, r, recorded.get(c.name)!), c.name).toEqual(recorded.get(c.name));
       }
       expect(await on(p)(`c.request("jsonrpc", {}).catch((e) => e.code)`)).toBe("bad-request");
       expect(await on(p)(`c.request("jsonrpc", { body: 7 }).catch((e) => e.code)`)).toBe("bad-request");
@@ -402,6 +398,34 @@ describe("the JSON RPC module in the static build in Chrome (served with its hea
       await b.close();
     }
   }, 240_000);
+
+  it("[[browser.jsonrpc.concurrent-calls]] calls on two rows at once: each answer is drawn in its own row, a slow answer never draws over a later call's, and the last call made is the one reported", async () => {
+    const b = await Browser.launch(browserExe!);
+    try {
+      const p = await open(b, "/index.html?tab=jsonrpc");
+      // A slow indexer-backed call, then a fast constant one that answers first.
+      indexerDelayMs = 1_500;
+      try {
+        await p.eval(`document.querySelector('tr[data-method="eth_blockNumber"] [data-action=jsonrpc-call]').click()`);
+        await p.eval(`document.querySelector('tr[data-method="eth_chainId"] [data-action=jsonrpc-call]').click()`);
+        await p.waitFor(`document.querySelector('[data-output-of="eth_chainId"] [data-field=jsonrpc-answer]') !== null`, 15_000, "the fast answer");
+        expect(await p.eval<Output>(OUTPUT("eth_blockNumber"))).toMatchObject({ after: "eth_blockNumber", pending: "calling…", answer: null });
+        await p.waitFor(`document.querySelector('[data-output-of="eth_blockNumber"] [data-field=jsonrpc-answer]') !== null`, 15_000, "the slow answer");
+      } finally {
+        indexerDelayMs = 0;
+      }
+      const slow = await p.eval<Output>(OUTPUT("eth_blockNumber"));
+      const fast = await p.eval<Output>(OUTPUT("eth_chainId"));
+      expect([slow.after, slow.pending, slow.answer?.includes('"0x2a"')]).toEqual(["eth_blockNumber", null, true]);
+      expect([fast.after, fast.pending, fast.answer?.includes('"0x960"')]).toEqual(["eth_chainId", null, true]);
+      // The last call made (eth_chainId), though the other answered after it.
+      expect((await p.eval<Json>("window.umbradbOverview.jsonrpc().latest")).method).toBe("eth_chainId");
+      await clean(p, true);
+      await p.close();
+    } finally {
+      await b.close();
+    }
+  }, 120_000);
 
   it("[[browser.jsonrpc.module-switch]] off from its checkbox: saved, the tab gone, requests refused module-off; a second tab the same; holds through a leader change and a reload; on again, the tab back and Node's answers", async () => {
     const b = await Browser.launch(browserExe!);

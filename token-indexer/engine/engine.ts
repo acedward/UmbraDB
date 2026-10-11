@@ -33,6 +33,7 @@
  *   and to each `subscribe` listener in order. A listener must not throw: a throw inside a loop counts as that step's
  *   error. The Node CLIs print the events they always printed, in their own formats.
  */
+import type { Pacer } from "../../chain-archive-sync/polite-http.js";
 import type { RetryInfo } from "../../chain-archive-sync/retry.js";
 import type { ChainArchiveSyncService, SyncCursor, SyncOnceResult } from "../../chain-archive-sync/sync-service.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
@@ -103,6 +104,9 @@ export interface EngineSyncOptions {
   concurrency?: number;
   /** Minimum spacing of request starts per endpoint. Default 250 ms for a public Midnight host, else 0. */
   minIntervalMs?: number;
+  /** The pacer of an endpoint shared with the other clients of the same endpoint (the browser engine's, one per
+   *  origin), used unless `minIntervalMs` is given. Default: each client paces its own requests. */
+  pacerFor?: (url: string) => Pacer | undefined;
   /** Per-request timeout. Default 30 000 ms. */
   timeoutMs?: number;
   /** Back-off of a failed network call (`retry.ts`) and of a failed batch. */
@@ -445,15 +449,19 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
 
   function newSyncService(mod: SyncModule, startHeight: number | undefined, withLoopOptions: boolean): ChainArchiveSyncService {
     const c = syncCfg!;
-    const pacing = c.minIntervalMs === undefined ? {} : { minIntervalMs: c.minIntervalMs };
+    const pacing = (url: string): { minIntervalMs?: number; pacer?: Pacer } => {
+      if (c.minIntervalMs !== undefined) return { minIntervalMs: c.minIntervalMs };
+      const shared = c.pacerFor?.(url);
+      return shared === undefined ? {} : { pacer: shared };
+    };
     const endpoints = [c.nodeUrl, c.indexerUrl];
     const b = c.backoff ?? {};
     return new mod.ChainArchiveSyncService({
       sql: archiveSql,
       net: opts.network,
       schema: archiveSchema,
-      node: { url: c.nodeUrl, fetchImpl, timeoutMs: c.timeoutMs ?? DEFAULTS.syncTimeoutMs, ...pacing },
-      indexer: { url: c.indexerUrl, fetchImpl, timeoutMs: c.timeoutMs ?? DEFAULTS.syncTimeoutMs, ...pacing },
+      node: { url: c.nodeUrl, fetchImpl, timeoutMs: c.timeoutMs ?? DEFAULTS.syncTimeoutMs, ...pacing(c.nodeUrl) },
+      indexer: { url: c.indexerUrl, fetchImpl, timeoutMs: c.timeoutMs ?? DEFAULTS.syncTimeoutMs, ...pacing(c.indexerUrl) },
       ...(startHeight === undefined ? {} : { startHeight }),
       ...(withLoopOptions && c.endHeight !== undefined ? { endHeight: c.endHeight } : {}),
       concurrency: c.concurrency ?? DEFAULTS.syncConcurrency,

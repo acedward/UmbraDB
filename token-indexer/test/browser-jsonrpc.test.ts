@@ -6,8 +6,8 @@
  *   migrations (every table of the lineage, the three migrations recorded); it serves the read-only registry's
  *   methods; every `POST` case of the differential (every method, refused parameters, the not-implemented and unknown
  *   methods, the envelope, notifications, batches, bodies that are not JSON, the size cap) gets exactly Node's HTTP
- *   answer from `npm run evm-rpc`'s server (status, headers in order, body bytes); once closed it refuses requests and
- *   its database is closed.
+ *   answer as recorded (`evm-rpc/test/fixtures/node-answers.json`) and as `npm run evm-rpc`'s server answers now (status,
+ *   headers in order, body bytes); once closed it refuses requests and its database is closed.
  * - `[[browser.jsonrpc.module-rows]]` — rows written to the module's database (plain `Uint8Array` byte values, as the
  *   browser's PGlite reads them) are what the account and transaction methods answer.
  * - `[[browser.jsonrpc.paced]]` — the module's requests to a public indexer start at least 250 ms apart, and those to
@@ -24,7 +24,8 @@
  * - `[[browser.jsonrpc.model]]` — the tab's rows are the registry's methods, each once (served ones with their source
  *   and example parameters, not-implemented ones with their classification), then the Node-only methods, marked and
  *   not callable; a call's request is a JSON-RPC 2.0 request with the edited parameters (none when empty, refused when
- *   not JSON or too long); an answer is shown with its status and its body indented (as it is when not JSON). * - `[[browser.jsonrpc.model-bounds]]` — parameters the tab cannot send or show are refused with a message, never an
+ *   not JSON or too long); an answer is shown with its status and its body indented (as it is when not JSON).
+ * - `[[browser.jsonrpc.model-bounds]]` — parameters the tab cannot send or show are refused with a message, never an
  *   exception: nesting deeper than the bound (also deep enough to break serialization), and parameters whose indented
  *   text would be too long to show; an answer too long to show is shown cut, with its length.
  * - `[[browser.host.jsonrpc]]` — the worker host answers `jsonrpc` with Node's answers while the module is on (by
@@ -40,7 +41,6 @@
  *   worker or leader tab) refuses while it is off and answers once on; a store replaced by `range`, `reset` or
  *   `import` keeps it off.
  */
-import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { emptyEvmRpcReader } from "../../evm-rpc/db.js";
@@ -49,6 +49,7 @@ import { registerReadOnlyMethods } from "../../evm-rpc/read-only.js";
 import { MethodRegistry } from "../../evm-rpc/registry.js";
 import { createRpcServer } from "../../evm-rpc/server.js";
 import { differentialCases } from "../../evm-rpc/test/differential-cases.js";
+import { handlerAnswer, loadRecording, sendToServer } from "../../evm-rpc/test/node-answers.js";
 import { BLOCK_HASH, HEIGHT, recordedIndexerFetch, TX_HASH } from "../../evm-rpc/test/recorded-indexer.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { METHOD_NOTES, NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
@@ -59,7 +60,10 @@ import { PacingQueue, QueueFullError } from "../browser/pacing-queue.ts";
 import type { WorkerHost } from "../browser/host.ts";
 import { type ApiResult, type ExportResult, type HostStatus, JSONRPC_MAX_BODY_CHARS, parseRequest, PROTOCOL_VERSION, type Response as HostResponse, type StartConfig } from "../browser/protocol.ts";
 import { type EngineSettingsStore, memorySettingsStore } from "../browser/settings.ts";
-import { testHost, U1, untilStatus } from "./helpers/worker-host.ts";
+import { createTapeReplay } from "../../chain-archive-sync/tape-replay.js";
+import { BROWSER_INDEXER_URL, BROWSER_NODE_URL } from "../browser/config.ts";
+import { loadTape } from "../browser/tapes.ts";
+import { fileFetch, testHost, U1, untilStatus } from "./helpers/worker-host.ts";
 
 const INDEXER = "http://127.0.0.1:9/api/v4/graphql";
 const CLIENT_VERSION = jsonRpcClientVersion("0.9.5");
@@ -70,23 +74,10 @@ interface WireAnswer {
   body: string;
 }
 
-function viaHttp(port: number, body: string): Promise<WireAnswer> {
-  const bytes = Buffer.from(body, "utf8");
-  return new Promise((resolve, reject) => {
-    const req = request({ host: "127.0.0.1", port, method: "POST", path: "/", headers: { "content-length": bytes.length } }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (d: Buffer) => chunks.push(d));
-      res.on("end", () => {
-        const headers: [string, string][] = [];
-        for (let i = 0; i < res.rawHeaders.length; i += 2) {
-          if (!/^(date|connection|keep-alive)$/i.test(res.rawHeaders[i]!)) headers.push([res.rawHeaders[i]!, res.rawHeaders[i + 1]!]);
-        }
-        resolve({ status: res.statusCode!, headers, body: Buffer.concat(chunks).toString("utf8") });
-      });
-    });
-    req.on("error", reject);
-    req.end(bytes);
-  });
+/** Node's server's answer to a `POST` of `body` (a connection of its own; a failure names the request). */
+async function viaHttp(port: number, body: string): Promise<WireAnswer> {
+  const a = await sendToServer(port, "POST", body);
+  return { status: a.status, headers: a.headers, body: a.body.toString("utf8") };
 }
 
 describe("the browser engine's JSON RPC module", () => {
@@ -125,10 +116,12 @@ describe("the browser engine's JSON RPC module", () => {
 
       const cases = differentialCases().filter((c) => c.method === "POST");
       expect(cases.length).toBeGreaterThan(120);
+      const recorded = new Map(loadRecording().answers.map((r) => [r.case, r]));
       for (const c of cases) {
-        const node = await viaHttp(port, c.body);
         const answer = await module.handle(c.body);
-        expect({ status: answer.status, headers: Object.entries(answer.headers), body: answer.body }, c.name).toEqual(node);
+        // Node's answer as recorded (status line, headers, body), and as Node's server answers now.
+        expect(handlerAnswer(c.name, answer, recorded.get(c.name)!), c.name).toEqual(recorded.get(c.name));
+        expect({ status: answer.status, headers: Object.entries(answer.headers), body: answer.body }, c.name).toEqual(await viaHttp(port, c.body));
       }
     } finally {
       await module.close();
@@ -160,6 +153,20 @@ describe("the browser engine's JSON RPC module", () => {
       expect(await call("eth_getTransactionCount", [account, "latest"])).toBe("0x1");
       expect(await call("eth_getTransactionByHash", [`0x${TX_HASH.partial}`])).toMatchObject({ from: account, transactionIndex: "0x1", nonce: "0x0" });
       expect(await call("eth_getTransactionReceipt", [`0x${TX_HASH.partial}`])).toMatchObject({ from: account, gasUsed: "0x9", status: "0x0" });
+      // A log row of the transaction: its byte columns read back as hex, in the receipt with a bloom over them.
+      const contract = `0x${"56".repeat(20)}`;
+      const topic0 = `0x${"ab".repeat(32)}`;
+      const topic1 = `0x${"00".repeat(12)}${"12".repeat(20)}`;
+      const contractId = (await sql!<{ id: bigint }[]>`INSERT INTO evm_rpc.address_map (evm_addr, kind) VALUES (${bytes(contract)}, 'contract') RETURNING id`)[0]!.id;
+      await sql!`INSERT INTO evm_rpc.logs (address_id, block_number, block_hash, tx_hash, tx_index, log_index, topic0, topic1, data, source_event_id)
+        VALUES (${contractId}, ${HEIGHT.head}, ${bytes(`0x${BLOCK_HASH.head}`)}, ${bytes(`0x${TX_HASH.partial}`)}, 1, 0, ${bytes(topic0)}, ${bytes(topic1)}, ${bytes("0x0b0c")}, 7)`;
+      const receipt = (await call("eth_getTransactionReceipt", [`0x${TX_HASH.partial}`])) as { logs: unknown[]; logsBloom: string };
+      expect(receipt.logs).toEqual([{
+        address: contract, topics: [topic0, topic1], data: "0x0b0c", blockNumber: "0x2a", blockHash: `0x${BLOCK_HASH.head}`,
+        transactionHash: `0x${TX_HASH.partial}`, transactionIndex: "0x1", logIndex: "0x0", removed: false,
+      }]);
+      expect(receipt.logsBloom).not.toBe(`0x${"00".repeat(256)}`);
+      expect(await call("eth_getCode", [contract, "latest"])).toBe("0x60006000");
     } finally {
       await module.close();
     }
@@ -174,6 +181,8 @@ describe("the browser engine's JSON RPC module", () => {
         clientVersion: CLIENT_VERSION,
         fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
           starts.push(performance.now());
+          // As a real fetch does: a request whose signal is aborted fails without being sent.
+          if (init?.signal?.aborted === true) throw init.signal.reason;
           return recorded(input, init);
         }) as typeof fetch,
       });
@@ -402,10 +411,13 @@ describe("the browser engine's JSON RPC module", () => {
   const BLOCK = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_getBlockByNumber", params: ["latest", true] });
 
   /** Starts modules as the host does, counting them and their closes. */
-  function counted(): { start: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule>; started: number; closed: number; fail: number } {
+  /** Starts modules as the host does, counting them, their closes (once a module's database is closed) and the most
+   *  open at once. */
+  function counted(): { start: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule>; started: number; closed: number; maxOpen: number; fail: number } {
     const c = {
       started: 0,
       closed: 0,
+      maxOpen: 0,
       fail: 0,
       start: async (o: JsonRpcModuleOptions): Promise<JsonRpcModule> => {
         if (c.fail > 0) {
@@ -414,7 +426,8 @@ describe("the browser engine's JSON RPC module", () => {
         }
         const m = await startJsonRpcModule(o);
         c.started++;
-        return { methods: m.methods, handle: (b) => m.handle(b), close: async () => { c.closed++; await m.close(); } };
+        c.maxOpen = Math.max(c.maxOpen, c.started - c.closed);
+        return { methods: m.methods, handle: (b) => m.handle(b), close: async () => { await m.close(); c.closed++; } };
       },
     };
     return c;
@@ -505,7 +518,8 @@ describe("the browser engine's JSON RPC module", () => {
     const paced = (minIntervalMs: number): ReturnType<typeof counted> => {
       const c = counted();
       const start = c.start;
-      c.start = (o) => start({ ...o, minIntervalMs });
+      // A queue of the module's own, the interval apart, instead of the worker's queue of the (local) endpoint.
+      c.start = (o) => start({ ...o, pacer: undefined, minIntervalMs });
       return c;
     };
     const { host } = jsonRpcHost(memorySettingsStore(), paced(20));
@@ -542,6 +556,184 @@ describe("the browser engine's JSON RPC module", () => {
       await slow.host.close();
     }
   }, 120_000);
+
+  /** A `fetch` over the recorded indexer whose answers wait until `release()`, ignoring the abort signal (a request
+   *  already on its way). */
+  function gatedFetch(): { fetch: typeof fetch; release(): void; waiting(): number } {
+    const recorded = recordedIndexerFetch().fetch;
+    let open!: () => void;
+    const opened = new Promise<void>((resolve) => (open = resolve));
+    let waiting = 0;
+    return {
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        waiting++;
+        await opened;
+        waiting--;
+        return recorded(input, init);
+      }) as typeof fetch,
+      release: () => open(),
+      waiting: () => waiting,
+    };
+  }
+
+  it("[[browser.host.jsonrpc-inflight]] switched off with a request in flight: new requests refused at once, the request in flight answered module-off, the database closed only once it has ended; with a fetch that can be cut short, at once", async () => {
+    const gated = gatedFetch();
+    const one = jsonRpcHost(memorySettingsStore(), counted(), { fetch: gated.fetch });
+    try {
+      await one.host.boot();
+      const inFlight = jsonrpc(one.host, BLOCK);
+      await until(() => gated.waiting() === 1, "the request's indexer call in flight");
+      await ok(one.host, "module", { module: "jsonrpc", enabled: false });
+      expect(await jsonrpc(one.host, CHAIN_ID)).toMatchObject({ refused: "module-off" });
+      await new Promise((r) => setTimeout(r, 200));
+      // The request in flight still reads: its database stays open.
+      expect(one.modules.closed).toBe(0);
+      gated.release();
+      expect(await inFlight).toEqual({ refused: "module-off", message: "the JSON RPC module was switched off before this request was answered" });
+      await until(() => one.modules.closed === 1, "the database to close");
+    } finally {
+      await one.host.close();
+    }
+
+    // A fetch that honours the abort, as a browser's does: the request in flight ends at once.
+    const hanging = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)))) as typeof fetch;
+    const two = jsonRpcHost(memorySettingsStore(), counted(), { fetch: hanging });
+    try {
+      await two.host.boot();
+      const inFlight = jsonrpc(two.host, BLOCK);
+      await until(() => two.modules.started === 1, "the module to start");
+      await new Promise((r) => setTimeout(r, 100));
+      const t0 = performance.now();
+      await ok(two.host, "module", { module: "jsonrpc", enabled: false });
+      expect(await inFlight).toMatchObject({ refused: "module-off" });
+      expect(performance.now() - t0).toBeLessThan(1_000);
+      await until(() => two.modules.closed === 1, "the database to close", 1_000);
+    } finally {
+      await two.host.close();
+    }
+  }, 60_000);
+
+  it("[[browser.host.jsonrpc-single]] switched off and on again while a request is in flight: the new module starts only once the old one has closed, never two at once, and answers as Node", async () => {
+    const gated = gatedFetch();
+    const { host, modules } = jsonRpcHost(memorySettingsStore(), counted(), { fetch: gated.fetch });
+    try {
+      await host.boot();
+      const inFlight = jsonrpc(host, BLOCK);
+      await until(() => gated.waiting() === 1, "the request's indexer call in flight");
+      await ok(host, "module", { module: "jsonrpc", enabled: false });
+      await ok(host, "module", { module: "jsonrpc", enabled: true });
+      const next = jsonrpc(host, CHAIN_ID);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(modules.started).toBe(1);
+      gated.release();
+      expect(await inFlight).toMatchObject({ refused: "module-off" });
+      expect(asWire(await next)).toEqual(await viaHttp(port, CHAIN_ID));
+      expect([modules.started, modules.closed, modules.maxOpen]).toEqual([2, 1, 1]);
+    } finally {
+      await host.close();
+    }
+  }, 60_000);
+
+  it("[[browser.host.shared-pacing]] one pacing queue per endpoint origin for the worker: the sync's and the JSON RPC module's requests to the public indexer start 250 ms apart together; the module gets the same queue after an off/on; a 429 to the module holds the origin for its Retry-After", async () => {
+    const replay = createTapeReplay(await loadTape("u1", fileFetch()));
+    const starts: Array<{ origin: string; who: "sync" | "jsonrpc"; at: number }> = [];
+    let throttleNext = false;
+    const recorded = recordedIndexerFetch().fetch;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      const body = await request.text();
+      // The module's queries select the block's author or look a transaction up; the sync's do neither.
+      const who = url.origin === new URL(BROWSER_INDEXER_URL).origin && (body.includes("author") || body.includes("transactions(offset")) ? "jsonrpc" : "sync";
+      starts.push({ origin: url.origin, who, at: performance.now() });
+      if (who === "jsonrpc") {
+        if (throttleNext) {
+          throttleNext = false;
+          return new Response("slow down", { status: 429, headers: { "retry-after": "1" } });
+        }
+        return recorded(input, { ...init, body });
+      }
+      const a = await replay.answer(`${url.origin}${url.pathname}`.replace(/\/$/, "") === BROWSER_NODE_URL ? "/rpc" : "/graphql", body);
+      return new Response(a.body, { status: a.status, headers: a.headers });
+    }) as typeof fetch;
+    const pacers: unknown[] = [];
+    const modules = counted();
+    const start = modules.start;
+    modules.start = (o) => {
+      pacers.push(o.pacer);
+      return start(o);
+    };
+    const { host } = jsonRpcHost(memorySettingsStore(), modules, { nodeUrl: BROWSER_NODE_URL, indexerUrl: BROWSER_INDEXER_URL, fetch: fetchImpl });
+    try {
+      await ok(host, "start", { config: { startHeight: U1.from, endHeight: U1.from + 3, sync: { idleMs: 100 }, scan: { idleMs: 100 } } });
+      // The module's requests while the sync runs.
+      let id = 0;
+      while ((await ok<HostStatus>(host, "status")).engine?.status.sync.phase !== "done") {
+        const a = await jsonrpc(host, JSON.stringify({ jsonrpc: "2.0", id: id++, method: "eth_blockNumber" }));
+        expect(JSON.parse((a as ApiResult).body)).toMatchObject({ result: "0x2a" });
+      }
+      const indexer = starts.filter((x) => x.origin === new URL(BROWSER_INDEXER_URL).origin);
+      expect(indexer.filter((x) => x.who === "sync").length).toBeGreaterThanOrEqual(4);
+      expect(indexer.filter((x) => x.who === "jsonrpc").length).toBeGreaterThanOrEqual(2);
+      const gaps = indexer.slice(1).map((x, i) => Math.round(x.at - indexer[i]!.at));
+      expect(gaps.filter((g) => g < 245), JSON.stringify(gaps)).toEqual([]);
+
+      // Off and on again: the new module paces with the same queue.
+      await ok(host, "module", { module: "jsonrpc", enabled: false });
+      await ok(host, "module", { module: "jsonrpc", enabled: true });
+      expect(JSON.parse(((await jsonrpc(host, CHAIN_ID)) as ApiResult).body)).toMatchObject({ result: "0x960" });
+      expect(pacers.length).toBe(2);
+      expect(pacers[0]).toBeDefined();
+      expect(pacers[1]).toBe(pacers[0]);
+
+      // A 429 (Retry-After: 1) to the module: answered -32603 as Node answers it; the origin's next request waits 1 s.
+      throttleNext = true;
+      const throttled = (await jsonrpc(host, JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber" }))) as ApiResult;
+      expect(JSON.parse(throttled.body)).toEqual({ jsonrpc: "2.0", id: 1, error: { code: -32603, message: "Internal error" } });
+      const at429 = starts.at(-1)!.at;
+      expect(JSON.parse(((await jsonrpc(host, JSON.stringify({ jsonrpc: "2.0", id: 2, method: "eth_blockNumber" }))) as ApiResult).body)).toMatchObject({ result: "0x2a" });
+      expect(starts.at(-1)!.at - at429).toBeGreaterThanOrEqual(995);
+    } finally {
+      await host.close();
+    }
+  }, 120_000);
+
+  it("[[browser.host.jsonrpc-chain-id]] the module reports the chain ID the worker gives it (the build's), and Node's default without one", async () => {
+    const given = jsonRpcHost(memorySettingsStore(), counted(), { jsonRpc: { clientVersion: CLIENT_VERSION, chainId: 2401n } });
+    try {
+      expect(JSON.parse(((await jsonrpc(given.host, CHAIN_ID)) as ApiResult).body)).toMatchObject({ result: "0x961" });
+      expect(JSON.parse(((await jsonrpc(given.host, JSON.stringify({ jsonrpc: "2.0", id: 1, method: "net_version" }))) as ApiResult).body)).toMatchObject({ result: "2401" });
+    } finally {
+      await given.host.close();
+    }
+    const plain = jsonRpcHost(memorySettingsStore());
+    try {
+      expect(JSON.parse(((await jsonrpc(plain.host, CHAIN_ID)) as ApiResult).body)).toMatchObject({ result: "0x960" });
+    } finally {
+      await plain.host.close();
+    }
+  }, 60_000);
+
+  it("[[browser.host.settings-unknown-module]] settings naming a module this build does not know are read (the configuration kept, the known switches applied) and the unknown one written back; other fields keep their rules", async () => {
+    const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.from + 2 };
+    const settings = memorySettingsStore({ config, autoStart: false, modules: { "a-later-module": false, jsonrpc: false } });
+    const { host } = jsonRpcHost(settings);
+    try {
+      expect((await host.boot()).phase).toBe("ready");
+      const s = await ok<HostStatus>(host, "status");
+      expect(s.settings).toEqual({ config, autoStart: false, modules: { "a-later-module": false, jsonrpc: false } });
+      expect(await jsonrpc(host, CHAIN_ID)).toMatchObject({ refused: "module-off" });
+      await ok(host, "module", { module: "token-indexer", enabled: false });
+      expect((await settings.load())?.modules).toEqual({ "a-later-module": false, jsonrpc: false, "token-indexer": false });
+      expect((await send(host, "module", { module: "a-later-module", enabled: true })).ok).toBe(false);
+    } finally {
+      await host.close();
+    }
+    // A file whose other fields break their rules is still not read.
+    expect(await memorySettingsStore({ config, autoStart: false, extra: 1 }).load()).toBeUndefined();
+    expect(await memorySettingsStore({ config, autoStart: false, modules: { jsonrpc: "off" } }).load()).toBeUndefined();
+  }, 60_000);
 
   it("[[browser.host.jsonrpc-restored]] the switch lives in the settings: a new host on them refuses while off and answers once on; range, reset and import keep it off", async () => {
     const settings = memorySettingsStore();

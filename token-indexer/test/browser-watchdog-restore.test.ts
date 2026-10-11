@@ -29,7 +29,8 @@
  * - `[[browser.watchdog.restore-interrupted-import]]` — a worker that stops answering once an import's journal is saved,
  *   with its engine still running (its stop never reported): the new worker's boot finishes the import, and the new
  *   worker starts nothing on the snapshot's store; the configuration that continues the snapshot stays saved, with no
- *   automatic start. * - `[[browser.watchdog.restore-jsonrpc-off]]` — the JSON RPC module switched off stays off on the worker the watchdog
+ *   automatic start.
+ * - `[[browser.watchdog.restore-jsonrpc-off]]` — the JSON RPC module switched off stays off on the worker the watchdog
  *   puts in place and on the next leader tab's worker after a handover (their `jsonrpc` requests refused
  *   `module-off`; nothing sends a `module` request again): both read the switch from the saved settings; switched on
  *   again, they answer.

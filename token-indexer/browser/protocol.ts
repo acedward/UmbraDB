@@ -371,8 +371,15 @@ export const ScanCursorSchema = z.strictObject({ fromHeight: n, nextHeight: n, l
 export const EngineSettingsSchema = z.strictObject({
   config: StartConfigSchema,
   autoStart: z.boolean(),
-  /** The modules switched off or on (`module`); a module not named is on. */
-  modules: z.strictObject({ "token-indexer": z.boolean().optional(), jsonrpc: z.boolean().optional() }).optional(),
+  /**
+   * The modules switched off or on (`module`), by id; a module not named is on. An id this build does not know (a later
+   * build's module) is read and kept as it is, and written back when the settings are saved, so a build reads a later
+   * build's settings without losing them; every value is a boolean.
+   */
+  modules: z
+    .record(z.string().min(1).max(64), z.boolean())
+    .refine((m) => Object.keys(m).length <= 64, { message: "at most 64 modules" })
+    .optional(),
 });
 export type EngineSettings = z.infer<typeof EngineSettingsSchema>;
 

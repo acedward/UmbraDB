@@ -39,7 +39,7 @@ PostgreSQL.
 | `scheduler.ts` | Yields to the worker's event loop before each sync batch and scan step, so messages are served while it runs |
 | `tapes.ts`, `tapes/` | The recorded Stagenet ranges (gzip) the worker can replay with no network, SHA-256 checked |
 | `config.ts` | The network, its default endpoints (fixed when the site is built), the store's location and the build's settings |
-| `settings.ts` | The engine's saved configuration and the modules switched off or on, a file beside the store, with the mark that the store is to be replaced by a new one before they apply |
+| `settings.ts` | The engine's saved configuration and the modules switched off or on (a module this build does not know is kept as it is), a file beside the store, with the mark that the store is to be replaced by a new one before they apply |
 | `store-identity.ts` | Which PGlite wrote the store (or that it is being created), a file beside it: a store of another PGlite version is refused before it is opened |
 | `quota.ts` | The storage guard: pauses the sync before the quota, and after a write the browser refused |
 | `snapshot.ts` | The snapshot file: its manifest, its format (a tar of `manifest.json` and `rows.tar.gz`, the rows of every table) and every check an import makes |
@@ -52,6 +52,7 @@ PostgreSQL.
 | `modules.ts`, `modules-view.ts` | The overview's Modules section: the indexer's modules, and the Token Indexer and JSON RPC switches (`module`) |
 | `explorer-host.ts`, `explorer-transport.ts` | The token explorer of `GET /ui` in the Token Indexer tab, reading the API through the engine |
 | `database-view.ts`, `database-model.ts`, `store-tables.ts` | The Database tab: the page, its pure view of the engine's answers, and the worker's reads of the store's tables (`tables`, `rows`) |
+| `pacing-queue.ts` | The worker's pacing queue of an endpoint origin, shared by the sync's clients and the JSON RPC module: one start at a time, the interval apart, cancellable waits, a hold for `Retry-After` |
 | `jsonrpc-view.ts`, `jsonrpc-model.ts`, `jsonrpc-module.ts` | The JSON RPC tab: the page, its pure view (the methods from the module's registry, a call's request and answer as text), and the worker's JSON RPC module (`jsonrpc`): the EVM JSON-RPC module's read-only methods through the handler Node's `evm-rpc` server uses (`../../evm-rpc/handler.ts`) |
 | `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client, the tabs and the snapshot helpers |
 | `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts`, `build-notices.ts`, `notices/` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, one that makes the explorer page from `GET /ui`'s markup, and one that writes the licence notices of everything the site contains |
@@ -146,8 +147,10 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
   - *Served here* (25): the chain constants and configuration (chain ID 2400, Node's default; the client version
     `umbradb-evm-rpc/<package version>`), blocks and transactions from the network's Midnight indexer (its GraphQL, the
     build's indexer endpoint, which the policy's `connect-src` already admits; each indexer request waits for its turn
-    in a queue (on a public endpoint the turns are 250 ms apart, like the sync's requests) and starts its 20 s timeout,
-    Node's, only then; closing the module ends the waits and the requests in flight), and accounts and transactions from the module's `evm_rpc` database — a PGlite
+    in the worker's queue of that origin, shared with the archive sync (on a public endpoint the worker as a whole starts
+    one request there every 250 ms, whichever part sends it), and starts its 20 s timeout, Node's, only then; a `429`
+    to the module holds the queue for its `Retry-After` (1 s without one) and is answered `-32603`, as Node answers it;
+    closing the module ends the waits and the requests in flight), and accounts and transactions from the module's `evm_rpc` database — a PGlite
     database in memory made by the module's migrations at its first request, empty here (the wallet monitor and the
     relayer that fill it run in Node), so those methods answer as an empty Node deployment does. `eth_call` answers
     `0x`, as `npm run evm-rpc` does.
@@ -158,8 +161,10 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
   Call sends one JSON-RPC 2.0 request (`{"jsonrpc":"2.0","id":n,"method":…,"params":…}`; empty parameters send no
   `params`; parameters that are not JSON, longer than 65,536 characters or nested more than 64 levels deep send nothing
   and say why) as `jsonrpc`; the row under the method then shows the request and the answer: its HTTP status and its
-  body, JSON indented, each cut at 262,144 characters (with its length) when longer. The module answers at most 8
-  requests at once: another is refused `busy` (the tab says so) rather than queued. The answer is what Node's `npm run evm-rpc` server
+  body, JSON indented, each cut at 262,144 characters (with its length) when longer. Each method has its own output
+  row, so calls on several rows at once never draw over each other. The module answers at most 8 requests at once:
+  another is refused `busy` (the tab says so) rather than queued. The chain ID is the build's (`config.ts`), Node's
+  default 2400 unless the build sets one. The answer is what Node's `npm run evm-rpc` server
   answers a `POST` with the same body over the same indexer answers, byte for byte. A note on the tab says that external
   wallets cannot connect to a page: the module has no address for them, only this tab calls it.
 - **Text.** Everything is drawn with DOM nodes and text (no markup is parsed, no `style` attribute). Text that comes
@@ -226,7 +231,7 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
 | `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
 | `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
-| `module` | `module` (`token-indexer` or `jsonrpc`), `enabled` | status: the choice saved with the settings (`settings.modules`; a module not named is on), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`). `token-indexer`: a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced. `jsonrpc`: off, `jsonrpc` is refused from the answer on, the requests the module is answering end at once (`module-off`) and its database is closed; every worker reads the switch from the settings |
+| `module` | `module` (`token-indexer` or `jsonrpc`), `enabled` | status: the choice saved with the settings (`settings.modules`; a module not named is on; a module a later build added is kept in the file as it is), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`). `token-indexer`: a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced. `jsonrpc`: off, `jsonrpc` is refused from the answer on, the requests the module is answering end at once (`module-off`) and its database is closed; every worker reads the switch from the settings |
 | `tables` | — | each schema's tables (name, kind, the table it is a partition of, estimated rows, size) and the database's size, from the catalog |
 | `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
 | `jsonrpc` | `body`: the text of one JSON-RPC 2.0 request (or batch), at most 2,097,152 characters | `{ status, headers, body }`: what Node's `npm run evm-rpc` server answers a `POST` with the UTF-8 bytes of that body (`../../evm-rpc/handler.ts`: 200 with the answer, 204 for notifications only, 413 over its 1 MiB cap, `-32700` for a body that is not JSON; a lone surrogate reads as U+FFFD, as Node decodes it), from the JSON RPC module; refused `module-off` while the module is off or when it is switched off before the answer, `busy` while it answers 8 requests |
@@ -391,7 +396,9 @@ answers for 714485–715183 with no network. `npm run dev:browser` publishes non
 
 ## Build settings
 
-`config.ts` holds the network, its endpoints (see Security headers) and the store's location. A build can also set
+`config.ts` holds the network, its endpoints (see Security headers), the JSON RPC module's chain ID
+(`UMBRADB_BROWSER_CHAIN_ID`, a non-negative decimal integer as Node's `CHAIN_ID` is; Node's default 2400 when unset) and
+the store's location. A build can also set
 `__UMBRADB_BROWSER_CONFIG__` through Vite's `define` (JSON): `autoStart` (default true: the leader tab starts the saved
 configuration), `start` (the configuration a new store starts with, default `{}`) and `quota` (the storage guard's
 `checkEveryMs`, `recheckMs`, `storeEveryMs`). The browser tests use it to turn the automatic start off, or to point it at

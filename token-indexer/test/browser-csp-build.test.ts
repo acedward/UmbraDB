@@ -189,11 +189,15 @@ describe("static build security headers", () => {
     expect(() => staticSecurity({ connectSrc: ["https://node.example/rpc"] })).toThrow("connect-src: https://node.example/rpc is not an origin");
   }, 120_000);
 
-  it("[[browser.csp.chain-config]] the chain comes from UMBRADB_BROWSER_* (https, or http on a loopback host, no credentials, a network id); a build configured with other endpoints admits exactly their origins and carries them", async () => {
+  it("[[browser.csp.chain-config]] the chain comes from UMBRADB_BROWSER_* (https, or http on a loopback host, no credentials, a network id, a decimal chain ID with Node's default 2400); a build configured with other endpoints admits exactly their origins and carries them", async () => {
     expect(browserChainFromEnv({})).toEqual(DEFAULT_BROWSER_CHAIN);
     expect(browserChainFromEnv({ UMBRADB_BROWSER_NETWORK: "", UMBRADB_BROWSER_NODE_URL: "" })).toEqual(DEFAULT_BROWSER_CHAIN);
     const custom = { UMBRADB_BROWSER_NETWORK: "preprod", UMBRADB_BROWSER_NODE_URL: "https://rpc.preprod.example", UMBRADB_BROWSER_INDEXER_URL: "https://indexer.preprod.example/api/v4/graphql" };
-    expect(browserChainFromEnv(custom)).toEqual({ network: "preprod", nodeUrl: "https://rpc.preprod.example", indexerUrl: "https://indexer.preprod.example/api/v4/graphql" });
+    expect(browserChainFromEnv(custom)).toEqual({ network: "preprod", nodeUrl: "https://rpc.preprod.example", indexerUrl: "https://indexer.preprod.example/api/v4/graphql", chainId: "2400" });
+    expect(DEFAULT_BROWSER_CHAIN.chainId).toBe("2400");
+    expect(browserChainFromEnv({ UMBRADB_BROWSER_CHAIN_ID: "2401" }).chainId).toBe("2401");
+    expect(browserChainFromEnv({ UMBRADB_BROWSER_CHAIN_ID: "184467440737095516150" }).chainId).toBe("184467440737095516150");
+    for (const bad of ["-1", "0x960", "02400", "24 00", "2400n"]) expect(() => browserChainFromEnv({ UMBRADB_BROWSER_CHAIN_ID: bad }), bad).toThrow("UMBRADB_BROWSER_CHAIN_ID");
     expect(browserChainFromEnv({ UMBRADB_BROWSER_NODE_URL: "http://127.0.0.1:12345/chain/rpc" }).nodeUrl).toBe("http://127.0.0.1:12345/chain/rpc");
     expect(browserChainFromEnv({ UMBRADB_BROWSER_INDEXER_URL: "http://localhost:9/graphql" }).indexerUrl).toBe("http://localhost:9/graphql");
     expect(() => browserChainFromEnv({ UMBRADB_BROWSER_NODE_URL: "http://rpc.example" })).toThrow("UMBRADB_BROWSER_NODE_URL: http://rpc.example is not https");
@@ -201,7 +205,7 @@ describe("static build security headers", () => {
     expect(() => browserChainFromEnv({ UMBRADB_BROWSER_NODE_URL: "https://user:secret@rpc.example" })).toThrow("the URL carries credentials");
     expect(() => browserChainFromEnv({ UMBRADB_BROWSER_NODE_URL: "rpc.example" })).toThrow("is not an absolute URL");
     expect(() => browserChainFromEnv({ UMBRADB_BROWSER_NETWORK: "Stage Net" })).toThrow("is not a network id");
-    expect(chainOrigins({ network: "x", nodeUrl: "https://chain.example/rpc", indexerUrl: "https://chain.example/graphql" })).toEqual(["https://chain.example"]);
+    expect(chainOrigins({ network: "x", nodeUrl: "https://chain.example/rpc", indexerUrl: "https://chain.example/graphql", chainId: "2400" })).toEqual(["https://chain.example"]);
     expect(chainOrigins(DEFAULT_BROWSER_CHAIN)).toEqual(["https://rpc.stagenet.shielded.tools", "https://indexer.stagenet.shielded.tools"]);
 
     const r = await build({ configFile: CONFIG }, custom);

@@ -6,9 +6,9 @@
  *
  * - A note says what the tab calls and that external wallets cannot connect to a page; a legend explains the sources.
  * - A Node-only method is marked "served by Node only" and has no parameters and no Call button.
- * - A call shows, in a row under its method: the request as sent (JSON, indented) and the answer: its HTTP status and
- *   its body (JSON, indented), or why there is none (parameters that are not JSON, a refusal from the engine, such as
- *   the module switched off).
+ * - A call shows, in a row of its own under its method: the request as sent (JSON, indented) and the answer: its HTTP
+ *   status and its body (JSON, indented), or why there is none (parameters that are not JSON, a refusal from the
+ *   engine, such as the module switched off or busy). Calls on several rows at once each draw in their own row.
  *
  * Every name, request and answer is drawn with the explorer's hidden-character rules (`visible-text.ts`), as text
  * nodes; nothing is parsed as markup and no `style` attribute is set.
@@ -41,7 +41,7 @@ export interface JsonRpcView {
   readonly rows: readonly MethodRow[];
   /** How many times Call was used (for scripted checks). */
   calls(): number;
-  /** The last call (for scripted checks). */
+  /** The last call made, as shown now (for scripted checks). */
   latest(): JsonRpcCall | null;
 }
 
@@ -108,16 +108,30 @@ export function mountJsonRpcView(opts: JsonRpcViewOptions): JsonRpcView {
 
   let nextId = 1;
   let calls = 0;
+  /** The number of the last call made, and that call as shown now (its answer once it has come). */
+  let lastMade = 0;
   let last: JsonRpcCall | null = null;
-  /** The row under the method last called, holding its request and answer. */
-  const output = node("tr", "output");
-  output.setAttribute("data-field", "jsonrpc-output");
-  const outputCell = node("td");
-  outputCell.colSpan = 5;
-  output.append(outputCell);
+  /** Each method's own output row, under its row once it has been called: a call's request and answer are drawn there,
+   *  so calls on several rows at once never draw over each other (a row's Call waits for its answer). */
+  const outputs = new Map<string, HTMLTableCellElement>();
 
-  function show(after: HTMLTableRowElement, call: JsonRpcCall, requestText: string | null): void {
-    last = call;
+  function outputOf(tr: HTMLTableRowElement, method: string): HTMLTableCellElement {
+    let cell = outputs.get(method);
+    if (cell === undefined) {
+      const row = node("tr", "output");
+      row.setAttribute("data-field", "jsonrpc-output");
+      row.setAttribute("data-output-of", method);
+      cell = node("td");
+      cell.colSpan = 5;
+      row.append(cell);
+      tr.after(row);
+      outputs.set(method, cell);
+    }
+    return cell;
+  }
+
+  function show(tr: HTMLTableRowElement, seq: number, call: JsonRpcCall, requestText: string | null): void {
+    if (seq === lastMade) last = call;
     const parts: HTMLElement[] = [];
     const title = node("div", "note");
     title.setAttribute("data-field", "jsonrpc-output-method");
@@ -147,8 +161,7 @@ export function mountJsonRpcView(opts: JsonRpcViewOptions): JsonRpcView {
       error.append(dataNode(document, call.error));
       parts.push(error);
     }
-    outputCell.replaceChildren(...parts);
-    after.after(output);
+    outputOf(tr, call.method).replaceChildren(...parts);
   }
 
   for (const row of rows) {
@@ -179,17 +192,18 @@ export function mountJsonRpcView(opts: JsonRpcViewOptions): JsonRpcView {
       call.setAttribute("data-action", "jsonrpc-call");
       actionCell.append(call);
       call.addEventListener("click", () => {
-        calls++;
+        const seq = ++calls;
+        lastMade = seq;
         const built = buildRequest(nextId++, row.method, params.value);
         if (!built.ok) {
-          show(tr, { method: row.method, body: null, pending: false, answer: null, error: built.error }, null);
+          show(tr, seq, { method: row.method, body: null, pending: false, answer: null, error: built.error }, null);
           return;
         }
         call.disabled = true;
-        show(tr, { method: row.method, body: built.body, pending: true, answer: null, error: null }, built.text);
+        show(tr, seq, { method: row.method, body: built.body, pending: true, answer: null, error: null }, built.text);
         opts.client.request("jsonrpc", { body: built.body }).then(
-          (answer) => show(tr, { method: row.method, body: built.body, pending: false, answer, error: null }, built.text),
-          (e: unknown) => show(tr, { method: row.method, body: built.body, pending: false, answer: null, error: `no answer · ${messageOf(e)}` }, built.text),
+          (answer) => show(tr, seq, { method: row.method, body: built.body, pending: false, answer, error: null }, built.text),
+          (e: unknown) => show(tr, seq, { method: row.method, body: built.body, pending: false, answer: null, error: `no answer · ${messageOf(e)}` }, built.text),
         ).finally(() => {
           call.disabled = false;
         });

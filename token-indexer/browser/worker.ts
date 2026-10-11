@@ -7,7 +7,7 @@
  * through `connectEngineTabs()` (`tabs.ts`), whose leader tab starts the engine.
  */
 import "./zod-jitless.ts"; // first: before any zod schema exists (the static build's CSP refuses zod's JIT)
-import { BROWSER_BUILD_CONFIG, BROWSER_DATA_DIR, BROWSER_INDEXER_URL, BROWSER_NETWORK, BROWSER_NODE_URL, BROWSER_PACKAGE_VERSION } from "./config.ts";
+import { BROWSER_BUILD_CONFIG, BROWSER_CHAIN_ID, BROWSER_DATA_DIR, BROWSER_INDEXER_URL, BROWSER_NETWORK, BROWSER_NODE_URL, BROWSER_PACKAGE_VERSION } from "./config.ts";
 import { createWorkerHost } from "./host.ts";
 import { jsonRpcClientVersion } from "./jsonrpc-module.ts";
 import type { BuildInfo } from "./host-system.ts";
@@ -35,7 +35,7 @@ const host = createWorkerHost({
   build: typeof __UMBRADB_BUILD__ === "undefined" ? null : __UMBRADB_BUILD__,
   system: { connectedTabs },
   defaultStart: StartConfigSchema.parse(BROWSER_BUILD_CONFIG.start ?? {}),
-  jsonRpc: { clientVersion: jsonRpcClientVersion(BROWSER_PACKAGE_VERSION) },
+  jsonRpc: { clientVersion: jsonRpcClientVersion(BROWSER_PACKAGE_VERSION), chainId: BigInt(BROWSER_CHAIN_ID) },
   ...(BROWSER_BUILD_CONFIG.quota === undefined ? {} : { quota: BROWSER_BUILD_CONFIG.quota }),
 });
 

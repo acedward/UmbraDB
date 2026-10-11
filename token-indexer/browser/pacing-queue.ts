@@ -1,17 +1,20 @@
 /**
  * A first-in, first-out queue that lets its callers start one at a time, at least `minIntervalMs` apart (the spacing
- * the archive sync keeps on a public endpoint, `chain-archive-sync/polite-http.ts`), with a bound on how many may wait.
- * The JSON RPC module (`jsonrpc-module.ts`) admits each indexer request through it before the request's timeout starts,
- * so waiting for a slot never uses up a request's time.
+ * the archive sync keeps on a public endpoint, `chain-archive-sync/polite-http.ts`), optionally with a bound on how many
+ * may wait. The browser engine keeps one per endpoint origin (`host.ts`), shared by every client of that endpoint: the
+ * archive sync's clients wait in it (`Pacer.wait`), and the JSON RPC module (`jsonrpc-module.ts`) admits each indexer
+ * request through it before the request's timeout starts, so waiting for a turn never uses up a request's time.
  *
  * - {@link PacingQueue.admit} resolves when the caller may start. A caller that finds `maxWaiting` callers waiting is
  *   refused at once ({@link QueueFullError}).
  * - A wait can be cancelled with an `AbortSignal`: the caller leaves the queue (it is refused with the signal's reason)
  *   and the callers after it move up.
+ * - {@link PacingQueue.holdFor} lets no caller start for a while (an endpoint's `Retry-After`).
  * - {@link PacingQueue.close} refuses every waiting and later caller with its reason.
  *
  * Runtime-neutral; the clock can be replaced (tests).
  */
+import type { Pacer } from "../../chain-archive-sync/polite-http.js";
 
 /** The clock the queue reads and the timer it sets. Default: `performance.now`, `setTimeout`, `clearTimeout`. */
 export interface PacingClock {
@@ -23,8 +26,8 @@ export interface PacingClock {
 export interface PacingQueueOptions {
   /** The least time between two starts (0: no spacing). */
   minIntervalMs: number;
-  /** The most callers that may wait. */
-  maxWaiting: number;
+  /** The most callers that may wait. Default: no bound. */
+  maxWaiting?: number;
   clock?: PacingClock;
 }
 
@@ -49,11 +52,13 @@ const systemClock: PacingClock = {
   clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-export class PacingQueue {
+export class PacingQueue implements Pacer {
   readonly #interval: number;
   readonly #maxWaiting: number;
   readonly #clock: PacingClock;
   #lastStart = Number.NEGATIVE_INFINITY;
+  /** No caller starts before this time (a hold). */
+  #notBefore = Number.NEGATIVE_INFINITY;
   #waiting: Waiter[] = [];
   #timer: unknown;
   #timerSet = false;
@@ -61,15 +66,37 @@ export class PacingQueue {
 
   constructor(opts: PacingQueueOptions) {
     if (!Number.isFinite(opts.minIntervalMs) || opts.minIntervalMs < 0) throw new RangeError(`minIntervalMs must be a non-negative number, got ${opts.minIntervalMs}`);
-    if (!Number.isSafeInteger(opts.maxWaiting) || opts.maxWaiting < 0) throw new RangeError(`maxWaiting must be a non-negative integer, got ${opts.maxWaiting}`);
+    const maxWaiting = opts.maxWaiting ?? Number.POSITIVE_INFINITY;
+    if (!(maxWaiting === Number.POSITIVE_INFINITY || (Number.isSafeInteger(maxWaiting) && maxWaiting >= 0))) throw new RangeError(`maxWaiting must be a non-negative integer, got ${maxWaiting}`);
     this.#interval = opts.minIntervalMs;
-    this.#maxWaiting = opts.maxWaiting;
+    this.#maxWaiting = maxWaiting;
     this.#clock = opts.clock ?? systemClock;
   }
 
   /** Callers waiting now. */
   get waiting(): number {
     return this.#waiting.length;
+  }
+
+  /** The least time between two starts. */
+  get minIntervalMs(): number {
+    return this.#interval;
+  }
+
+  /** {@link PacingQueue.admit} with no cancellation (the archive sync's clients). */
+  wait(): Promise<void> {
+    return this.admit();
+  }
+
+  /** Lets no caller start until `ms` from now (a later hold wins; an earlier one changes nothing). */
+  holdFor(ms: number): void {
+    if (!(ms > 0) || this.#closed !== undefined) return;
+    const until = this.#clock.now() + ms;
+    if (until <= this.#notBefore) return;
+    this.#notBefore = until;
+    // A timer set for an earlier start is set again for the hold.
+    this.#clearTimer();
+    this.#pump();
   }
 
   /** Resolves when the caller may start; see the module documentation for the refusals. */
@@ -119,7 +146,7 @@ export class PacingQueue {
   #pump(): void {
     if (this.#timerSet) return;
     while (this.#waiting.length > 0) {
-      const delay = this.#lastStart + this.#interval - this.#clock.now();
+      const delay = Math.max(this.#lastStart + this.#interval, this.#notBefore) - this.#clock.now();
       if (delay > 0) {
         this.#timerSet = true;
         this.#timer = this.#clock.setTimer(() => {

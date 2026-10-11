@@ -24,7 +24,8 @@ import type { Plugin } from "vite";
 import { type BrowserChain, DEFAULT_BROWSER_CHAIN } from "./config.ts";
 import { ENGINE_WORKER_POLICY } from "./trusted-worker.ts";
 
-/** The chain the build is configured with: the environment's `UMBRADB_BROWSER_*` values over Stagenet's. */
+/** The chain the build is configured with: the environment's `UMBRADB_BROWSER_*` values over Stagenet's (and Node's
+ *  default chain ID). */
 export function browserChainFromEnv(env: Record<string, string | undefined>): BrowserChain {
   const pick = (name: string, fallback: string): string => {
     const v = env[name];
@@ -32,10 +33,14 @@ export function browserChainFromEnv(env: Record<string, string | undefined>): Br
   };
   const network = pick("UMBRADB_BROWSER_NETWORK", DEFAULT_BROWSER_CHAIN.network);
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(network)) throw new Error(`UMBRADB_BROWSER_NETWORK: ${JSON.stringify(network)} is not a network id (lower-case letters, digits and "-")`);
+  const chainId = pick("UMBRADB_BROWSER_CHAIN_ID", DEFAULT_BROWSER_CHAIN.chainId);
+  // The rule of Node's `CHAIN_ID` (`evm-rpc/rpc-cli.ts`): a non-negative decimal integer, no leading zero.
+  if (!/^(?:0|[1-9][0-9]*)$/.test(chainId)) throw new Error(`UMBRADB_BROWSER_CHAIN_ID: ${JSON.stringify(chainId)} is not a non-negative decimal integer`);
   return {
     network,
     nodeUrl: endpointUrl("UMBRADB_BROWSER_NODE_URL", pick("UMBRADB_BROWSER_NODE_URL", DEFAULT_BROWSER_CHAIN.nodeUrl)),
     indexerUrl: endpointUrl("UMBRADB_BROWSER_INDEXER_URL", pick("UMBRADB_BROWSER_INDEXER_URL", DEFAULT_BROWSER_CHAIN.indexerUrl)),
+    chainId,
   };
 }
 

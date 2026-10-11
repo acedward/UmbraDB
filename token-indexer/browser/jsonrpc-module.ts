@@ -7,21 +7,24 @@
  *   body, and answers what Node's server answers: the HTTP status, the headers and the body (a request or a batch, the
  *   1 MiB size cap, notifications answered 204 with no body).
  * - **Blocks and transactions** come from the network's Midnight indexer (GraphQL, the build's indexer URL), as in
- *   Node. Every indexer request first waits for its turn in a pacing queue (`pacing-queue.ts`: requests to a public
- *   endpoint start 250 ms apart, as the archive sync spaces its own) and only then starts, with its own timeout (Node's,
- *   20 s), so waiting never uses up a request's time.
+ *   Node. Every indexer request first waits for its turn in the endpoint's pacing queue (`pacing-queue.ts`; in the
+ *   engine the one queue of that origin, shared with the archive sync, so the worker as a whole starts at most one
+ *   request every 250 ms on a public endpoint) and only then starts, with its own timeout (Node's, 20 s), so waiting
+ *   never uses up a request's time. An answer `429` holds the queue for its `Retry-After` (1 s without one): no request
+ *   to that origin starts before then; the request itself is answered as Node answers it (`-32603`).
  * - **Bounds**: at most {@link JSONRPC_MAX_REQUESTS} requests are answered at once; another one is refused at once
  *   ({@link JsonRpcModuleError} `busy`), never answered with an error of the module's own. A batch dispatches at most
- *   8 entries at a time, so at most 64 indexer requests ever wait for their turn.
+ *   8 entries at a time, so at most 64 of its indexer requests ever wait for their turn.
  * - **The `evm_rpc` database** is a PGlite database in memory, made by the module's own migrations
  *   (`src/postgres/migrations/evm_rpc`) when the module starts and closed when it stops. It is empty: the wallet monitor
  *   and the relayer that fill it in Node do not run here, so its methods answer as an empty Node deployment does.
  *   Nothing of it is stored, and the engine's store (its tables, its snapshots) is not touched.
- * - **Configuration**: the chain ID is Node's default ({@link JSONRPC_CHAIN_ID}) and the client version
+ * - **Configuration**: the chain ID is the build's (`config.ts`, `UMBRADB_BROWSER_CHAIN_ID`), Node's default
+ *   ({@link JSONRPC_CHAIN_ID}) unless the build sets one, as Node's `CHAIN_ID` is; the client version is
  *   `umbradb-evm-rpc/<package version>`, as Node reports it.
  */
 import type { Sql } from "postgres";
-import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
+import { defaultMinIntervalMs, parseRetryAfterMs } from "../../chain-archive-sync/polite-http.js";
 import { BATCH_CONCURRENCY, handleHttpRequest, type HttpAnswer, textBody } from "../../evm-rpc/handler.js";
 import { IndexerGqlClient } from "../../evm-rpc/indexer-gql.js";
 import { registerReadOnlyMethods } from "../../evm-rpc/read-only.js";
@@ -33,11 +36,14 @@ import { EVM_RPC_SCHEMA, evmRpcMigrations } from "../../src/postgres/migrations/
 import { openPgliteClient } from "../../src/postgres/pglite-sql.js";
 import { PacingQueue } from "./pacing-queue.ts";
 
-/** The chain ID the module reports (`eth_chainId`, `net_version`): Node's default `CHAIN_ID`. */
+/** The chain ID the module reports (`eth_chainId`, `net_version`) unless given another: Node's default `CHAIN_ID`. */
 export const JSONRPC_CHAIN_ID = 2400n;
 
 /** The most requests the module answers at once. */
 export const JSONRPC_MAX_REQUESTS = 8;
+
+/** How long a `429` without `Retry-After` holds the endpoint's queue (the sync's first back-off). */
+export const THROTTLE_HOLD_MS = 1_000;
 
 /** A request the module did not answer: `busy` (it was answering {@link JSONRPC_MAX_REQUESTS} requests), `stopped` (the
  *  module was closed before the request was answered, or before it came). */
@@ -60,8 +66,11 @@ export interface JsonRpcModuleOptions {
   chainId?: bigint;
   /** Default: the global `fetch`. */
   fetch?: typeof fetch;
-  /** The least time between two indexer requests' starts. Default: 250 ms for a public endpoint, else 0
-   *  (`polite-http.ts`). */
+  /** The indexer endpoint's pacing queue, shared with the other clients of that origin (the engine's). Default: a queue
+   *  of the module's own, `minIntervalMs` apart. */
+  pacer?: PacingQueue;
+  /** The least time between two indexer requests' starts in a queue of the module's own. Default: 250 ms for a public
+   *  endpoint, else 0 (`polite-http.ts`). */
   minIntervalMs?: number;
   /** Each indexer request's timeout, from its start. Default: Node's (20 s). */
   indexerTimeoutMs?: number;
@@ -99,10 +108,16 @@ export async function startJsonRpcModule(opts: JsonRpcModuleOptions): Promise<Js
   const stopped = (): JsonRpcModuleError => new JsonRpcModuleError("stopped", "the JSON RPC module is stopped");
   // Aborted when the module stops: ends the waits for a turn and the indexer requests in flight.
   const stopping = new AbortController();
-  const turns = new PacingQueue({ minIntervalMs: opts.minIntervalMs ?? defaultMinIntervalMs(opts.indexerUrl), maxWaiting: JSONRPC_MAX_REQUESTS * BATCH_CONCURRENCY });
+  const ownTurns = opts.pacer === undefined
+    ? new PacingQueue({ minIntervalMs: opts.minIntervalMs ?? defaultMinIntervalMs(opts.indexerUrl), maxWaiting: JSONRPC_MAX_REQUESTS * BATCH_CONCURRENCY })
+    : undefined;
+  const turns = opts.pacer ?? ownTurns!;
   const base = opts.fetch ?? globalThis.fetch.bind(globalThis);
-  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
-    base(input, { ...init, signal: init?.signal == null ? stopping.signal : AbortSignal.any([init.signal, stopping.signal]) })) as typeof fetch;
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await base(input, { ...init, signal: init?.signal == null ? stopping.signal : AbortSignal.any([init.signal, stopping.signal]) });
+    if (response.status === 429) turns.holdFor(parseRetryAfterMs(response.headers.get("retry-after")) ?? THROTTLE_HOLD_MS);
+    return response;
+  }) as typeof fetch;
   const ctx: RpcContext = {
     chainId: opts.chainId ?? JSONRPC_CHAIN_ID,
     clientVersion: opts.clientVersion,
@@ -138,7 +153,7 @@ export async function startJsonRpcModule(opts: JsonRpcModuleOptions): Promise<Js
       closing ??= (async () => {
         const reason = stopped();
         stopping.abort(reason);
-        turns.close(reason);
+        ownTurns?.close(reason);
         if (inFlight > 0) await new Promise<void>((resolve) => (drained = resolve));
         await sql.end({ timeout: 5 });
       })();

@@ -107,8 +107,10 @@ import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { KNOWN_GENESIS } from "../mip0018/api-views.ts";
 import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOptions, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
 import { rangeTables } from "../engine/range-tables.ts";
+import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
 import { checkCapabilities } from "./capabilities.ts";
 import { jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
+import { PacingQueue } from "./pacing-queue.ts";
 import { type BuildInfo, createHostSystem, type SystemProviders } from "./host-system.ts";
 import {
   type ApiResult,
@@ -191,8 +193,9 @@ export interface WorkerHostOptions {
   /** `fetch` of a `network` source and of the JSON RPC module. Default: the global `fetch`. */
   fetch?: typeof fetch;
   /** The JSON RPC module: the client version it reports (the worker gives the build's; default
-   *  `jsonRpcClientVersion("unknown")`) and how it starts (default {@link startJsonRpcModule}). */
-  jsonRpc?: { clientVersion?: string; start?: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule> };
+   *  `jsonRpcClientVersion("unknown")`), its chain ID (the worker gives the build's; default the module's, 2400) and how
+   *  it starts (default {@link startJsonRpcModule}). */
+  jsonRpc?: { clientVersion?: string; chainId?: bigint; start?: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule> };
   clock?: EngineClock;
   /** Default: {@link yieldingScheduler}. */
   schedule?: EngineScheduler;
@@ -863,6 +866,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
           maxBlocks: config.sync?.maxBlocks ?? DEFAULT_SYNC_MAX_BLOCKS,
           ...(config.sync?.concurrency === undefined ? {} : { concurrency: config.sync.concurrency }),
           ...(config.sync?.minIntervalMs === undefined ? {} : { minIntervalMs: config.sync.minIntervalMs }),
+          // The network's endpoints are paced by the worker's queue of their origin, shared with the JSON RPC module.
+          ...(config.source?.kind === "tape" ? {} : { pacerFor }),
           ...(config.sync?.idleMs === undefined ? {} : { idleMs: config.sync.idleMs }),
           ...(config.sync?.backoff === undefined ? {} : { backoff: config.sync.backoff }),
         },
@@ -985,6 +990,27 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return start(undefined);
   }
 
+  // ── Pacing ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  /** One pacing queue per endpoint origin for the worker's whole life, shared by every client of that origin (the
+   *  sync's node and indexer clients, the JSON RPC module): on a public endpoint the worker starts at most one request
+   *  every 250 ms there, whichever client sends it. */
+  const pacers = new Map<string, PacingQueue>();
+  function pacerFor(url: string): PacingQueue | undefined {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return undefined;
+    }
+    let pacer = pacers.get(origin);
+    if (pacer === undefined) {
+      pacer = new PacingQueue({ minIntervalMs: defaultMinIntervalMs(url) });
+      pacers.set(origin, pacer);
+    }
+    return pacer;
+  }
+
   // ── The JSON RPC module ───────────────────────────────────────────────────────────────────────────────────────────
 
   /** The JSON RPC module's start (in progress or done) while the module runs. */
@@ -993,15 +1019,20 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   const jsonRpcStopping = new Set<Promise<void>>();
   const jsonRpcEnabled = (): boolean => modules.jsonrpc ?? true;
 
-  /** The module, started now unless it runs; a start that fails is logged and the next request starts it again. */
+  /** The module, started now unless it runs; a start that fails is logged and the next request starts it again. A
+   *  module that is being stopped is closed first, so the worker never holds two (each its own database). */
   function jsonRpcRun(): Promise<JsonRpcModule> {
     if (jsonRpc !== undefined) return jsonRpc;
     const t = monotonic();
-    const started = (opts.jsonRpc?.start ?? startJsonRpcModule)({
+    const closing = [...jsonRpcStopping];
+    const pacer = pacerFor(opts.indexerUrl);
+    const started = Promise.all(closing).then(() => (opts.jsonRpc?.start ?? startJsonRpcModule)({
       indexerUrl: opts.indexerUrl,
       clientVersion: opts.jsonRpc?.clientVersion ?? jsonRpcClientVersion("unknown"),
+      ...(opts.jsonRpc?.chainId === undefined ? {} : { chainId: opts.jsonRpc.chainId }),
       ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }),
-    });
+      ...(pacer === undefined ? {} : { pacer }),
+    }));
     jsonRpc = started;
     started.then(
       (m) => log("info", `the JSON RPC module started: ${m.methods.length} methods, its evm_rpc database in memory (${Math.round(monotonic() - t)} ms)`),
