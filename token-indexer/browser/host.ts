@@ -31,17 +31,18 @@
  * with the saved configuration (replacing the store: PGlite is closed, every file of the store is removed, and the boot
  * runs again from its store phase, so nothing of the old database survives; it saves the settings again without the
  * mark once the new store is in place); all four run one at a time, in arrival order. A boot that finds the mark (a
- * worker ended before the new store was in place) makes the new store first, unless an import's journal is pending
- * (that import finishes instead and its configuration replaces the settings). `digest` computes the store's archive and
- * range-tables digests in one read-only transaction (the loops wait for it); `system` watches or refreshes the system
- * snapshot and `watchdog` sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module` switches the
- * token indexer (the MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary while its sync
- * goes on; on, it continues from its cursor; the choice is saved with the settings before anything is switched (every
- * save of the settings keeps it, also before and after the store is replaced), and every engine the host runs
- * afterwards (a `start`, a reopen, a replaced store, the next worker or tab) starts with it. `tables` and `rows` read
- * the store's catalog and a page of one of its tables for the Database tab (`store-tables.ts`), between the engine's
- * transactions; while the store is replaced they wait for the new one (or answer `boot-failed` when the replacement
- * fails).
+ * worker ended before the new store was in place) makes the new store first and drops any import journal on file: the
+ * mark is the newer of the two, since an import that starts while it is on file clears it right after writing its
+ * journal (a worker that ends in between leaves the mark, and the new store is made). `digest` computes the store's
+ * archive and range-tables digests in one read-only transaction (the loops wait for it); `system` watches or refreshes
+ * the system snapshot and `watchdog` sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module`
+ * switches the token indexer (the MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary
+ * while its sync goes on; on, it continues from its cursor; the choice is saved with the settings before anything is
+ * switched (every save of the settings keeps it, also before and after the store is replaced), and every engine the
+ * host runs afterwards (a `start`, a reopen, a replaced store, the next worker or tab) starts with it. `tables` and
+ * `rows` read the store's catalog and a page of one of its tables for the Database tab (`store-tables.ts`), between the
+ * engine's transactions; while the store is replaced they wait for the new one (or answer `boot-failed` when the
+ * replacement fails).
  *
  * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file (the rows of the store's tables) while the engine
  * runs (a consistent read between two transactions). `import` checks a snapshot file and loads its rows into a trial
@@ -548,13 +549,17 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       }
       creating = true;
     };
+    // Under the store's lock, before the import journal is read: the settings file, and whether a new store is to be made
+    // (a `reset` or `range` now, or one the settings file says a worker left to do). Such a replacement is newer than
+    // any import journal on file (an import that starts after it clears its mark once its own journal is written), so
+    // the journal is dropped.
+    const newStore = async (): Promise<boolean> => {
+      settingsOnFile = await loadSettings();
+      return mode === "reset" || settingsOnFile?.newStore === true;
+    };
     // Under the store's lock, before PGlite opens the store.
     const beforeOpen = async (_dir: string, importing: SnapshotManifest | null): Promise<void> => {
-      settingsOnFile = await loadSettings();
-      // A new store the settings file asks for (a `range` or `reset` that ended before the new store was in place) is
-      // made now, unless an import's journal is pending: that import finishes instead, and the configuration that
-      // continues it replaces the settings, so the store and the settings agree either way.
-      if (mode === "reset" || (importing === null && settingsOnFile?.newStore === true)) {
+      if (mode === "reset" || settingsOnFile?.newStore === true) {
         await snapshotFiles.removeStore();
         await markCreating();
         return;
@@ -573,7 +578,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     try {
       return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, {
         beforeOpen,
-        discardJournal: mode === "reset",
+        discardJournal: newStore,
         ...(lock === undefined ? {} : { lock }),
       }));
     } catch (e) {
@@ -1099,6 +1104,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
     // The file is the journal now, which the boot reads back: this copy is let go first.
     prepared = undefined;
+    // A new store a `range` or `reset` left to do (its boot failed) is older than this journal: its mark is cleared, so
+    // the next boot finishes this import. (A worker that ends before that leaves the mark, and the next boot makes that
+    // new store instead: the import was not answered.)
+    const onFile = await settingsStore.load();
+    if (onFile?.newStore === true) {
+      const { newStore: _mark, ...without } = onFile;
+      try {
+        await settingsStore.save(without);
+      } catch (e) {
+        throw new HostError("settings-failed", `the snapshot's journal is saved, but the store replacement a range or reset left to do could not be set aside (${messageOf(e)}): the next boot makes that new store instead`);
+      }
+    }
     importing = true;
     try {
       await rebootStore("open", live).catch((e: unknown) => {

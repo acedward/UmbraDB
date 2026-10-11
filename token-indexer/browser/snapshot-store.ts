@@ -606,8 +606,9 @@ export interface OpenedStore {
 }
 
 export interface FinishingOptions extends Omit<OpenStoreOptions, "prepare"> {
-  /** Drops a pending import instead of finishing it (the store's files are replaced otherwise: `reset`). */
-  discardJournal?: boolean;
+  /** Drops a pending import instead of finishing it (the store's files are replaced otherwise: `reset`); a function is
+   *  asked under the store's lock, before the journal is read. */
+  discardJournal?: boolean | (() => Promise<boolean>);
   /** Runs under the store's lock before PGlite opens the store, with the manifest of the import that replaces the
    *  store (`null`: none); it may refuse the open by throwing. */
   beforeOpen?: (dataDir: string, importing: SnapshotManifest | null) => Promise<void>;
@@ -631,7 +632,7 @@ export async function openFinishingImport(
   /** The store's files were changed (the pending import began replacing them). */
   let replacing = false;
   const prepare = async (dir: string): Promise<void> => {
-    if (discardJournal) await files.removeJournal();
+    if (typeof discardJournal === "function" ? await discardJournal() : discardJournal) await files.removeJournal();
     else {
       const journal = await files.readJournal();
       if (journal !== undefined) {

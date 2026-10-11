@@ -336,7 +336,10 @@ identity and the configuration that continues the import are saved. A worker tha
 the journal, and the next open finishes the import before the store is used, so a half-built store is never used; a
 journal that cannot be read back whole means the swap never began, and is dropped. `status` and `api` wait during the
 swap. A failure after the journal is saved leaves the store closed, its lock released and `storeProblem` set, so
-`reset`, `range` and `import` are offered (and the next boot finishes the import from the journal).
+`reset`, `range` and `import` are offered (and the next boot finishes the import from the journal). A `range` or
+`reset` asked afterwards is newer than that journal: its new store is made and the journal dropped, also when the worker
+ends before it is in place (the settings carry its mark). An import that starts while a `range` or `reset` has left its
+new store to do clears that mark right after writing its journal, and from then on the import wins.
 
 After an import the engine is stopped and the saved configuration continues the imported archive: its first height as
 the start, no end height, and no automatic start (as after `stop`). A `start` then continues at the height after the
