@@ -356,9 +356,15 @@ snapshots you exported or the build published.
 the recorded IDX range's tape and exports; the build then loads the file's rows into a new store, as an import does, and
 fails unless that store's archive digest, range-tables digest and NULL `bytea[]` elements (which the range-tables digest
 counts as empty bytes; the range has none) equal the recorded live sync of that range. Two builds of one commit write
-the same bytes (the whole `dist-browser/` is reproducible): the file is remade with one time as its `createdAt`, its tar
-entries' times and every write time in its rows (the `timestamp` columns, which the digests do not read) —
-`SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded. A page loads it with
+the same bytes, on any platform (the whole `dist-browser/` is reproducible): the file is remade with one time as its
+`createdAt`, its tar entries' times and every write time in its rows (the `timestamp` columns, which the digests do not
+read) — `SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded — and its rows' gzip
+header without the fields the platform writes (time, extra flags, operating system). The commit shown on the status page
+and written into the manifest is `UMBRADB_APP_COMMIT` when set, else the checkout's `HEAD`, else none, and the build
+prints both and where each came from (`snapshot time … (from …); build commit … (from …)`). A build outside a git
+checkout (a source archive, some CI checkouts) has no commit and takes the recorded range's time, so its bytes differ
+from a checkout's: for a reproducible build anywhere, set both, for example
+`SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) UMBRADB_APP_COMMIT=$(git rev-parse HEAD) npm run build:browser`. A page loads it with
 `window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
 answers for 714485–715183 with no network. `npm run dev:browser` publishes none.
 
@@ -569,9 +575,11 @@ statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest
   included): a download through a `blob:` URL and `<a download>`, which the policy allows. URLs lose their
   credentials, query, fragment and the path segments that look like keys (16 or more characters mixing letters and
   digits), and secret-looking values (tokens, passwords, keys, `Authorization` and `Cookie` headers, Bearer and Basic
-  credentials, JWTs, viewing keys, seed and mnemonic phrases, word by word) are replaced, whole (a JSON member's array
-  or object too, also inside JSON-escaped text), in every string of the snapshot; a log line is redacted as it is
-  written, before an event's fields become JSON.
+  credentials, JWTs, viewing keys, seed and mnemonic phrases, word by word, under any key spelling) are replaced, whole
+  (a JSON member's array or object too, also inside JSON text written as a JSON string, at any depth up to six), in
+  every string of the snapshot; a log line is redacted as it is written, before an event's fields become JSON. A text
+  longer than 4,096 characters (a node's error body, for example) is cut first, saying how much was cut, so the
+  snapshot always validates and redaction costs time in proportion to what is kept.
 - Text from the engine (error messages, log lines, URLs) is drawn as text nodes with the explorer's hidden-character
   rules (`visible-text.ts`, the rule of `../mip0018/ui/page.js`): every control, format, private-use, unassigned or
   surrogate code point, line or paragraph separator and default-ignorable character is drawn as a visible mark

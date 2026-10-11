@@ -17,7 +17,8 @@
  *   the method, status and latency only).
  * - **Logs:** the latest {@link LOG_CAPACITY} lines: every sync and scan event except a batch of zero blocks, the API
  *   handler's error lines, the host's own lines and the hooks' notes. A line is redacted as it is written (an event's
- *   fields before they become JSON) and capped at {@link TEXT_MAX_CHARS}; otherwise it keeps its characters (control,
+ *   fields before they become JSON; a text longer than {@link TEXT_MAX_CHARS} is cut before it is redacted) and capped
+ *   at {@link TEXT_MAX_CHARS}; otherwise it keeps its characters (control,
  *   bidirectional and markup characters included), the snapshot redacts it again, and a page renders it as text.
  * - **Health:** {@link deriveHealth} is the rule behind the overview's health line.
  */
