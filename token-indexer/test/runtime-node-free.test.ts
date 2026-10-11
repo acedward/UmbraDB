@@ -127,6 +127,7 @@ const MUST_REACH = [
   "token-indexer/browser/jsonrpc-view.ts",
   "token-indexer/browser/jsonrpc-model.ts",
   "token-indexer/browser/module-page.ts",
+  "token-indexer/browser/explain.ts",
   "src/postgres/migrations/evm_rpc/index.ts",
 ];
 

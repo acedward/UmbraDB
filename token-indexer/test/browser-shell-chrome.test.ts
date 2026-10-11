@@ -16,6 +16,11 @@
  *   `navigator.storage.estimate()`, with its explanation in the tooltip; the tab is in the URL (picked, reloaded, back,
  *   an explorer route); the overview watches the system snapshot only while it is shown. No CSP violation, every
  *   request to the site.
+ * - `[[browser.shell.explain]]` — the storage line is a control whose explanation opens on demand: a click shows it and a
+ *   second click hides it; Escape and a click elsewhere hide it; Enter and Space on the focused control open it; the
+ *   mouse resting on it shows it and leaving hides it; a tap shows it and a second tap hides it. Open while the engine
+ *   syncs, it stays open across the overview's refreshes, the same box, its text updated in place and always the
+ *   explanation of the figures drawn (`storageLine`'s); no native tooltip is left on the overview. No CSP violation.
  * - `[[browser.shell.module-toggle]]` — Token Indexer switched off from its checkbox while the finalized tip rises: the
  *   scan's cursor stays at a block boundary while the archive advances by more than a hundred blocks, `/v1/status`
  *   says `scanner: "off"` and answers, the system snapshot shows the scan off, the tab is gone (a URL naming it shows
@@ -24,9 +29,11 @@
  *   catches up and the finished store's digests equal the uninterrupted replay's.
  * - `[[browser.shell.database]]` — the Database tab lists every table of the store as the system snapshot's catalog
  *   statistics do, with estimates and sizes; a picked table shows a page of rows newest first, each value drawn from
- *   the engine's answer, and the pages follow one another; the rows equal the store read with SQL by the reader page; a
- *   table name that is not the catalog's is refused (by the request and by a forged picker value) and the refusal is
- *   shown; hostile text in rows is drawn as text; a second tab lists the same tables and rows.
+ *   the engine's answer, each column with its type, and the pages follow one another; a cut value's cell opens what
+ *   the engine sent of it under the table (Enter, a click; Escape and a second click close it); the rows equal the
+ *   store read with SQL by the reader page; a table name that is not the catalog's is refused (by the request and by a
+ *   forged picker value) and the refusal is shown; hostile text in rows is drawn as text; a second tab lists the same
+ *   tables and rows.
  * - `[[browser.shell.hostile-text]]` — text from the engine and from a file, drawn by the overview, with control, bidi,
  *   zero-width and markup characters: a node's error message (the engine's state and the health line while it waits on
  *   the network) and a snapshot whose manifest names a hostile network (the import's refusal): every hidden character
@@ -42,7 +49,7 @@ import { extname, join, normalize, sep } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cellText } from "../browser/database-model.ts";
 import { INDEXER_MODULES } from "../browser/modules.ts";
-import { formatBytes, type PanelInputs, panelView } from "../browser/panel-model.ts";
+import { formatBytes, type PanelInputs, panelView, storageLine } from "../browser/panel-model.ts";
 import type { DigestResult, HostStatus, RowsResult, SystemResult, TablesResult } from "../browser/protocol.ts";
 import { pauseThresholdBytes } from "../browser/quota.ts";
 import { decodeSnapshotFile, encodeSnapshotFile } from "../browser/snapshot.ts";
@@ -72,12 +79,13 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const browserExe = findBrowser();
 
-/** The overview's fields as drawn (text), the storage line's tooltip, and the sources it drew them from. */
+/** The overview's fields as drawn (text), the storage line's explanation (its box, open or not), and the sources it drew
+ *  them from. */
 const OVERVIEW = `(() => {
   const p = document.getElementById('engine-panel');
   const fields = {};
-  for (const f of p.querySelectorAll('.kv [data-field]')) fields[f.getAttribute('data-field')] = f.textContent;
-  return { fields, storageTitle: p.querySelector('[data-field="storage"]').title, inputs: window.umbradbOverview.inputs(),
+  for (const f of p.querySelectorAll('.kv > .v[data-field]')) fields[f.getAttribute('data-field')] = f.textContent;
+  return { fields, storageTitle: document.getElementById('engine-storage-explanation').textContent, inputs: window.umbradbOverview.inputs(),
     tab: document.body.getAttribute('data-tab-shown'), title: document.title, search: location.search, hash: location.hash };
 })()`;
 type OverviewField = "health" | "role" | "network" | "state" | "configuration" | "history" | "synced" | "scanned" | "tip" | "lag" | "rate" | "uptime" | "durability" | "storage";
@@ -205,6 +213,12 @@ describe("the static build's main page in Chrome (served with its headers)", () 
     expect(p.requests.filter((r) => !r.url.startsWith(`${site.origin}/`) && !r.url.startsWith("blob:") && !r.url.startsWith("data:")).map((r) => r.url)).toEqual([]);
   }
 
+  /** A key pressed on the focused element; `text` makes it type (Enter, Space activate a button). */
+  async function key(p: Page, name: string, keyCode: number, text?: string): Promise<void> {
+    await p.send("Input.dispatchKeyEvent", { type: text === undefined ? "rawKeyDown" : "keyDown", key: name, code: name === " " ? "Space" : name, windowsVirtualKeyCode: keyCode, ...(text === undefined ? {} : { text }) });
+    await p.send("Input.dispatchKeyEvent", { type: "keyUp", key: name, code: name === " " ? "Space" : name, windowsVirtualKeyCode: keyCode });
+  }
+
   async function shot(p: Page, name: string): Promise<void> {
     if (SHOTS === undefined || SHOTS === "") return;
     mkdirSync(SHOTS, { recursive: true });
@@ -319,6 +333,110 @@ describe("the static build's main page in Chrome (served with its headers)", () 
     }
   }, 240_000);
 
+  it("[[browser.shell.explain]] the storage line's explanation opens on demand: click, Escape, a click elsewhere, Enter and Space, the mouse resting on it, a tap; it stays open across refreshes, updated in place, always the figures' explanation; no CSP violation", async () => {
+    const b = await Browser.launch(browserExe!);
+    try {
+      const p = await open(b, "/index.html");
+      const CONTROL = "document.querySelector('#engine-panel [data-field=\"storage\"] button')";
+      const BOX = "document.getElementById('engine-storage-explanation')";
+      await p.waitFor(`${CONTROL} !== null && ${CONTROL}.textContent.includes('quota')`, 30_000, "the storage line");
+      /** Whether the box is shown, its text, the control's state, and the explanation of the figures drawn. */
+      const read = (): Promise<{ shown: boolean; text: string; expanded: string | null; controls: string | null; expected: string; line: string; drawnLine: string }> => p.eval(`(() => {
+        const i = window.umbradbOverview.inputs();
+        return { shown: !${BOX}.hidden, text: ${BOX}.textContent, expanded: ${CONTROL}.getAttribute('aria-expanded'), controls: ${CONTROL}.getAttribute('aria-controls'),
+          inputs: i, line: ${CONTROL}.textContent };
+      })()`).then((r: Json) => {
+        const model = storageLine(r.inputs.status, r.inputs.pageStorage, r.inputs.persistence);
+        return { shown: r.shown, text: r.text, expanded: r.expanded, controls: r.controls, expected: visibleText(model.title), line: r.line, drawnLine: visibleText(model.text) };
+      });
+      let r = await read();
+      expect([r.shown, r.expanded, r.controls, r.line]).toEqual([false, "false", "engine-storage-explanation", r.drawnLine]);
+      expect(r.expected).toMatch(/^The store's own (files take|size is not read yet).* against this site's quota of /);
+      expect(await p.eval<number>("document.querySelectorAll('#engine-panel [title]').length")).toBe(0);
+
+      // A click shows it, a second hides it; Escape and a click elsewhere hide it.
+      await p.eval(`${CONTROL}.click()`);
+      r = await read();
+      expect([r.shown, r.expanded, r.text]).toEqual([true, "true", r.expected]);
+      await p.eval(`${CONTROL}.click()`);
+      expect((await read()).shown).toBe(false);
+      await p.eval(`${CONTROL}.click()`);
+      await key(p, "Escape", 27);
+      expect((await read()).shown).toBe(false);
+      await p.eval(`${CONTROL}.click()`);
+      expect((await read()).shown).toBe(true);
+      await p.eval("document.querySelector('#engine-panel h2').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }))");
+      expect((await read()).shown).toBe(false);
+
+      // The keyboard: Enter and Space on the focused control.
+      await p.eval(`${CONTROL}.focus()`);
+      await key(p, "Enter", 13, "\r");
+      expect((await read()).shown).toBe(true);
+      await key(p, "Enter", 13, "\r");
+      expect((await read()).shown).toBe(false);
+      await key(p, " ", 32, " ");
+      expect((await read()).shown).toBe(true);
+      await key(p, "Escape", 27);
+      expect((await read()).shown).toBe(false);
+
+      // The mouse resting on it shows it; leaving hides it.
+      const at = await p.eval<{ x: number; y: number }>(`(() => { ${CONTROL}.scrollIntoView({ block: 'center' }); const r = ${CONTROL}.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
+      await p.waitFor(`!${BOX}.hidden`, 2_000, "the box on hover");
+      expect((await read()).text).toBe((await read()).expected);
+      await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
+      await p.waitFor(`${BOX}.hidden`, 2_000, "the box hidden when the mouse leaves");
+      // Resting on it, then a click keeps it open; a second click hides it though the mouse is still on it.
+      await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
+      await p.waitFor(`!${BOX}.hidden`, 2_000, "the box on hover again");
+      for (const type of ["mousePressed", "mouseReleased"] as const) await p.send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: 1 });
+      await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
+      await new Promise((res) => setTimeout(res, 400));
+      expect((await read()).shown).toBe(true);
+      await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
+      for (const type of ["mousePressed", "mouseReleased"] as const) await p.send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: 1 });
+      expect((await read()).shown).toBe(false);
+      await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
+
+      // A tap shows it, a second tap hides it.
+      await p.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      const tap = async (): Promise<void> => {
+        await p.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: at.x, y: at.y }] });
+        await p.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await new Promise((res) => setTimeout(res, 150));
+      };
+      await tap();
+      expect((await read()).shown).toBe(true);
+      await tap();
+      expect((await read()).shown).toBe(false);
+      await p.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+
+      // Open while the engine syncs: the same box stays open across the refreshes, its text that of the figures drawn.
+      await p.eval(`${CONTROL}.click(); ${BOX}.__mark = 1`);
+      const rising = { source: { kind: "tape", range: "idx", finalizedHeight: IDX.from + 60, advance: { everyMs: 100, by: 5 } }, startHeight: IDX.from, ...FAST };
+      await on(p)(`c.start(${JSON.stringify(rising)})`);
+      const texts = new Set<string>();
+      let refreshes = 0;
+      await p.eval("window.__inputs = window.umbradbOverview.inputs()");
+      for (const end = Date.now() + 45_000; texts.size < 2 || refreshes < 2; ) {
+        if (Date.now() > end) throw new Error(`timed out: ${refreshes} refreshes, ${texts.size} texts`);
+        await new Promise((res) => setTimeout(res, 250));
+        const fresh = await p.eval<boolean>("(() => { const i = window.umbradbOverview.inputs(); const fresh = i !== window.__inputs; window.__inputs = i; return fresh; })()");
+        if (fresh) refreshes++;
+        r = await read();
+        expect([r.shown, r.expanded, r.text, r.line]).toEqual([true, "true", r.expected, r.drawnLine]);
+        expect(await p.eval(`${BOX}.__mark`)).toBe(1);
+        texts.add(r.text);
+      }
+      await on(p)("c.stop()");
+      await shot(p, "shell-storage-explanation.png");
+      await clean(p, true);
+      await p.close();
+    } finally {
+      await b.close();
+    }
+  }, 180_000);
+
   it("[[browser.shell.module-toggle]] Token Indexer off from its checkbox: the scan cursor stays while the archive advances, /v1/status scanner off, the system snapshot shows it, the tab is gone; a second tab shows the same; the choice holds through a leader change and a reload; on again, the scan catches up to the uninterrupted replay's digests", async () => {
     const b = await Browser.launch(browserExe!);
     try {
@@ -415,9 +533,10 @@ describe("the static build's main page in Chrome (served with its headers)", () 
 
       // A table picked: its first page, newest first, each value drawn from the answer.
       const pick = (schema: string, table: string): Promise<void> => p.eval(`(() => { const s = document.getElementById('db-table'); s.value = ${JSON.stringify(JSON.stringify([schema, table]))}; s.dispatchEvent(new Event('change')); })()`);
-      const rowsDrawn = (): Promise<{ title: string; page: string; head: string[]; cells: string[][]; message: string }> => p.eval(`({
+      const rowsDrawn = (): Promise<{ title: string; page: string; head: string[]; types: string[]; cells: string[][]; message: string }> => p.eval(`({
         title: document.querySelector('[data-field="db-rows.title"]').textContent, page: document.querySelector('[data-field="db-rows.page"]').textContent,
-        head: [...document.querySelectorAll('[data-field="db-rows.table"] thead th')].map((t) => t.textContent),
+        head: [...document.querySelectorAll('[data-field="db-rows.table"] thead th [data-field="db-rows.column"]')].map((t) => t.textContent),
+        types: [...document.querySelectorAll('[data-field="db-rows.table"] thead th [data-field="db-rows.type"]')].map((t) => t.textContent),
         cells: [...document.querySelectorAll('[data-field="db-rows.table"] tbody tr')].map((tr) => [...tr.cells].map((c) => c.textContent)),
         message: document.querySelector('[data-field=db-message]').textContent })`);
       const answer = async (): Promise<RowsResult> => (await p.eval<{ rows: RowsResult }>("window.umbradbOverview.database()")).rows;
@@ -425,7 +544,21 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       let drawn = await waitFor("the blocks' rows", rowsDrawn, (d) => d.title === "chain_archive.blocks" && d.cells.length === 25);
       let page = await answer();
       expect(drawn.head).toEqual(page.columns.map((c) => c.name));
+      expect(drawn.types).toEqual(page.columns.map((c) => c.type));
       expect(drawn.cells).toEqual(page.rows.map((r) => r.map((c) => visibleText(cellText(c).text))));
+      // A cut value (a block hash): its cell is a control; Enter on it shows what the engine sent of it under the table,
+      // Escape hides it; no native tooltip carries it.
+      const hashAt = page.columns.findIndex((c) => c.name === "block_hash");
+      const hashCell = cellText(page.rows[0]![hashAt]!);
+      expect(hashCell.title).not.toBeNull();
+      const valueBox = (): Promise<[boolean, string, string | null]> => p.eval("(() => { const b = document.querySelector('[data-field=\"db-rows.value\"]'); const c = document.querySelectorAll('[data-field=\"db-rows.table\"] tbody tr')[0].cells[" + hashAt + "].querySelector('button'); return [b.hidden, b.textContent, c.getAttribute('aria-expanded')]; })()");
+      expect((await valueBox())[0]).toBe(true);
+      await p.eval(`document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[0].cells[${hashAt}].querySelector('button').focus()`);
+      await key(p, "Enter", 13, "\r");
+      expect(await valueBox()).toEqual([false, `block_hash: ${hashCell.title}`, "true"]);
+      await key(p, "Escape", 27);
+      expect(await valueBox()).toEqual([true, `block_hash: ${hashCell.title}`, "false"]);
+      expect(await p.eval<number>("document.querySelectorAll('#database-view [title]').length")).toBe(0);
       const heightAt = page.columns.findIndex((c) => c.name === "height");
       expect(drawn.cells.map((r) => Number(r[heightAt]))).toEqual(Array.from({ length: 25 }, (_, i) => U1.to - i));
       expect(drawn.page).toBe("rows 1–25, more follow · newest first: by net, height, block_hash, descending · up to 25 rows a page");
@@ -468,10 +601,15 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       drawn = await waitFor("the hostile rows", rowsDrawn, (d) => d.title === "chain_archive.watermarks");
       const marked = "⟨U+202E⟩gnp.exe⟨U+200B⟩⟨U+0000⟩<img src=x onerror=\"window.__pwned=1\"><script>window.__pwned=2</script>⟨U+001B⟩[31m⟨U+2066⟩iso⟨U+2069⟩";
       expect(drawn.head).toEqual([marked, "b"]);
+      expect(drawn.types).toEqual([marked, "bytea"]);
       const longCell = cellText({ kind: "text", text: hostile, chars: 9999 });
       expect(drawn.cells).toEqual([[visibleText(longCell.text), "00ff \u00b7 2 bytes"]]);
       expect(drawn.cells[0]![0]!.endsWith("<img src=x onerror=\"window.__pwned=1\">\u2026 (9,999 characters)")).toBe(true);
-      expect(await p.eval("document.querySelector('[data-field=\"db-rows.table\"] tbody td').title")).toBe(visibleText(longCell.title!));
+      // The cut cell's whole value opens under the table on a click, drawn with marks; a second click hides it.
+      await p.eval("document.querySelector('[data-field=\"db-rows.table\"] tbody td button').click()");
+      expect(await p.eval("[document.querySelector('[data-field=\"db-rows.value\"]').hidden, document.querySelector('[data-field=\"db-rows.value\"]').textContent]")).toEqual([false, `${marked}: ${visibleText(longCell.title!)}`]);
+      await p.eval("document.querySelector('[data-field=\"db-rows.table\"] tbody td button').click()");
+      expect(await p.eval("document.querySelector('[data-field=\"db-rows.value\"]').hidden")).toBe(true);
       expect(drawn.page).toContain(`by primary key (${marked}), descending`);
       expect(await p.eval<number>("document.querySelectorAll('[data-field=\"db-rows.table\"] .mark-vis').length")).toBeGreaterThan(5);
       expect(await p.eval("({ scripts: document.scripts.length, media: document.querySelectorAll('img, iframe, object, embed, video, audio').length, pwned: window.__pwned === undefined ? null : window.__pwned })")).toEqual({ scripts: 1, media: 0, pwned: null });

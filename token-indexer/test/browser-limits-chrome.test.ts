@@ -199,8 +199,8 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
         const end = await untilEnd(p, U1.to);
         expect(end.storage?.persisted, variant).toBe(false);
         expect((await digest(p)).archive.sha256, variant).toBe(U1_ARCHIVE);
-        // The storage line says "not persistent"; its explanation (the tooltip) says why.
-        await p.waitFor(`document.querySelector('#engine-panel [data-field=storage]')?.textContent.endsWith(" \u00b7 not persistent") && document.querySelector('#engine-panel [data-field=storage]').title.includes(${JSON.stringify(text)})`, 30_000, `the overview's ${variant} persistence`);
+        // The storage line says "not persistent"; its explanation (opened on demand) says why.
+        await p.waitFor(`document.querySelector('#engine-panel [data-field=storage]')?.textContent.endsWith(" \u00b7 not persistent") && document.getElementById('engine-storage-explanation').textContent.includes(${JSON.stringify(text)})`, 30_000, `the overview's ${variant} persistence`);
         expect(p.exceptions).toEqual([]);
       });
     }

@@ -5,7 +5,9 @@
  * height with "history before block H is not indexed" (`/v1/status` `startHeight`; with the token indexer off and no
  * scan range, the archive's first height), the archive and scanned heights,
  * the finalized tip and the lag behind it (blocks and time), blocks per second, the worker's uptime, durability and the
- * storage line (store size, quota, pause threshold, persistence; the explanation in its tooltip). When the boot failed
+ * storage line (store size, quota, pause threshold, persistence), a control whose explanation opens on demand — the
+ * mouse resting on it, a click, a tap, Enter or Space (`explain.ts`) — and stays open, updated in place, across
+ * refreshes. When the boot failed
  * because of the store (another PGlite version wrote it, or it does not open), the state says so and `reset`, `range`
  * and `import` stay enabled: they replace the store.
  *
@@ -26,10 +28,11 @@ import type { SystemSnapshot } from "../engine/system-snapshot.ts";
 import { type EngineClient, EngineError, type PersistenceResult } from "./client.ts";
 import { type PageStorage, type PanelInputs, type PanelView, panelView, parseRange } from "./panel-model.ts";
 import type { ExportResult, HostStatus, ImportResult } from "./protocol.ts";
+import { explainControl, explanation } from "./explain.ts";
 import { saveSnapshotFile } from "./snapshot-page.ts";
 import { followSystem } from "./system-view.ts";
 import type { EngineTabs } from "./tabs.ts";
-import { dataNode, visibleText } from "./visible-text.ts";
+import { dataNode } from "./visible-text.ts";
 
 export interface EnginePanelOptions {
   client: EngineClient;
@@ -108,6 +111,13 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
   row("uptime", "uptime");
   row("durability", "durability");
   const storageField = row("storage", "storage");
+  // The storage line is a control; its explanation is a box under the figures, opened on demand.
+  const storageControl = explainControl();
+  storageField.append(storageControl);
+  const storageExplanation = explanation("engine-storage-explanation", "storage-explanation");
+  storageExplanation.box.classList.add("kv-wide");
+  storageExplanation.attach(storageControl, () => view?.storageTitle ?? "");
+  grid.append(storageExplanation.box);
   root.append(grid);
 
   const controls = node("div", "row controls");
@@ -202,8 +212,8 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
     set("rate", view.rate);
     set("uptime", view.uptime);
     set("durability", view.durability);
-    set("storage", view.storage);
-    storageField.title = visibleText(view.storageTitle);
+    draw(storageControl, view.storage);
+    storageExplanation.refresh();
     root.setAttribute("data-role", tabs.role());
     root.setAttribute("data-state", view.state);
     root.setAttribute("data-health", snapshot?.overview.health.state ?? "");
