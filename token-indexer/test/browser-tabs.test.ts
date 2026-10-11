@@ -94,6 +94,8 @@ function fakeEngine(name: string, saved: SavedFile): FakeEngine {
       case "api":
         return ok(id, type, { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ engine: name, method: m.method, target: m.target }) });
       case "start":
+        // An automatic start runs the saved configuration, and only if the saved settings say so (as the host does).
+        if (m.automatic === true && (engine.state.engine?.running === true || saved.settings?.autoStart !== true)) return ok(id, type, hostStatus(engine.state.engine, saved.settings));
         if (engine.state.engine?.running === true) return err(id, type, "already-running", "the engine is running; stop it first");
         engine.state.engine = { running: true, config: (m.config as StartConfig | undefined) ?? saved.settings?.config ?? {} };
         saved.settings = { config: engine.state.engine.config, autoStart: true };
@@ -327,7 +329,7 @@ describe("one engine across tabs", () => {
 
     // The new leader resumed the configuration the old one was running.
     await until("the engine resumed", () => nextEngine.state.engine?.running === true);
-    expect(nextEngine.calls.filter((c) => c.type === "start")).toEqual([{ type: "start", params: {} }]);
+    expect(nextEngine.calls.filter((c) => c.type === "start")).toEqual([{ type: "start", params: { automatic: true } }]);
     expect(nextEngine.state.engine?.config).toEqual(TAPE);
 
     // A late answer from the old leader, for a request that has moved to the new leader, is ignored.

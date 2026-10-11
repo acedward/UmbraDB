@@ -240,9 +240,10 @@ export interface PersistenceResult {
   error: string | null;
 }
 
-/** What {@link startSaved} found or did: `started` the saved configuration; found the engine `running` (someone started
- *  it first: a page, another tab); found it `stopped` (an engine ran on this worker and was stopped or failed: left as it
- *  is); or found the saved settings `off` (they do not start it by itself). */
+/** What {@link startSaved} found or did: `started` the saved configuration (or found it running: someone started it
+ *  first, a page or another tab); found it `stopped` (an engine ran on this worker and was stopped or failed: left as it
+ *  is); or found the saved settings `off` (they do not start it by itself, also when that changed just before the start
+ *  ran). */
 export type SavedStart = "started" | "running" | "stopped" | "off";
 
 /**
@@ -250,22 +251,19 @@ export type SavedStart = "started" | "running" | "stopped" | "off";
  * say the engine starts by itself: what a newly booted worker runs (the leader tab's automatic start, the next leader
  * after a handover, a worker the watchdog put in place of a stuck one) comes from the store's own saved settings
  * (`settings.ts`), which every acknowledged `start`, `stop`, `range`, `reset` and import changed before it was answered,
- * never from what a page last saw running. It sends `start` with no configuration, so the worker runs what is saved
- * when the start runs; an engine someone else started first (`already-running`) counts as started. `proceed`, asked
- * once the status is read, can call the start off (`off`). Rejects as `start` does otherwise.
+ * never from what a page last saw running. It sends an automatic `start` (no configuration, `automatic`): the worker
+ * decides when it runs the request, in order with the others, so it runs what is saved then, and starts nothing if a
+ * `stop` or an import answered just before turned the automatic start off; an engine someone else started first
+ * counts as started. `proceed`, asked once the status is read, can call the start off (`off`). Rejects as `start`
+ * does otherwise.
  */
-export async function startSaved(client: Pick<EngineClient, "status" | "start">, proceed: () => boolean = () => true): Promise<SavedStart> {
+export async function startSaved(client: Pick<EngineClient, "status" | "request">, proceed: () => boolean = () => true): Promise<SavedStart> {
   const s = await client.status();
   if (s.engine?.running === true) return "running";
   if (s.engine !== null) return "stopped";
   if (s.settings?.autoStart !== true || !proceed()) return "off";
-  try {
-    await client.start();
-  } catch (e) {
-    if (e instanceof EngineError && e.code === "already-running") return "running";
-    throw e;
-  }
-  return "started";
+  const after = await client.request("start", { automatic: true });
+  return after.engine?.running === true ? "started" : "off";
 }
 
 /** Asks the browser to keep this site's storage (`navigator.storage.persist()`) unless it already does, and reports the

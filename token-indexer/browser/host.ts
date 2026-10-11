@@ -830,9 +830,16 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
 
   /** Saves `config` (or the saved configuration) with the automatic start on, then runs it: a source that cannot be
    *  reached refuses the start before anything is saved, a start the browser refuses to save starts nothing, settings
-   *  that already say this are not written again, and an engine that fails to start puts the settings before it back. */
-  async function start(config: StartConfig | undefined): Promise<HostStatus> {
+   *  that already say this are not written again, and an engine that fails to start puts the settings before it back.
+   *  `automatic` (a restart's restore, the leader tab's start): the saved configuration, and only if the saved settings
+   *  say to start by itself now, in the serialized order of requests (a `stop` or an import answered before it holds);
+   *  otherwise, or with the engine running, the status, nothing changed. */
+  async function start(config: StartConfig | undefined, automatic = false): Promise<HostStatus> {
     const s = await ready();
+    if (automatic) {
+      if (active !== undefined || saved?.autoStart !== true) return status();
+      config = undefined;
+    }
     if (active !== undefined) throw new HostError("already-running", "the engine is running; stop it first");
     const effective = config ?? saved?.config ?? opts.defaultStart ?? {};
     // The chain first: a source that cannot be reached (a recorded range that does not load) refuses the start before
@@ -1380,7 +1387,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       case "import":
         return serial(() => importStore(r.snapshot));
       case "start":
-        return serial(() => start(r.config));
+        return serial(() => start(r.config, r.automatic === true));
       case "range":
         return serial(() => range(r.startHeight, r.endHeight));
       case "reset":

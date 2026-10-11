@@ -14,6 +14,10 @@
  *   always stops the engine and, when the setting that keeps it stopped cannot be saved, answers so, the status keeping
  *   the automatic start on; and while the browser refuses writes, a start of what the settings already say (the
  *   automatic start, a restart's restore) runs, as it writes nothing.
+ * - `[[browser.host.automatic-start-gap]]` — an automatic start (`start` with `automatic`, as `startSaved()` sends it for
+ *   a restart's restore, the next leader and the leader's own start) runs only if the saved settings say to start by
+ *   itself when the worker runs it: a `stop` or an `import` answered between its status read and its start is not
+ *   undone; with the settings still saying so it runs, and on a running engine it changes nothing.
  * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the store's saved configuration when its saved
  *   settings say to start by itself, whatever the previous leader last reported (a configuration they no longer hold,
  *   or an engine they no longer start, is not run), else nothing; with the build's automatic start off, only after a
@@ -48,7 +52,7 @@ import { type CapabilityReport, type DigestResult, type HostStatus, PROTOCOL_VER
 import { pauseThresholdBytes, QUOTA_RULE, type StorageEnvironment } from "../browser/quota.ts";
 import { memorySettingsStore } from "../browser/settings.ts";
 import { resumeOrAutoStart } from "../browser/tabs.ts";
-import type { EngineClient } from "../browser/client.ts";
+import { type EngineClient, startSaved } from "../browser/client.ts";
 import { loadTape } from "../browser/tapes.ts";
 import { nodeStoreFiles } from "./helpers/worker-host.ts";
 
@@ -218,10 +222,13 @@ describe("browser engine host: sync", () => {
     const saved = memorySettingsStore();
     let failing = false;
     let tapeFails = false;
+    /** Settings writes attempted (refused ones included). */
+    let writes = 0;
     const h = newHost({
       settings: {
         ...saved,
         save: async (x) => {
+          writes++;
           if (failing) throw Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
           await saved.save(x);
         },
@@ -248,9 +255,11 @@ describe("browser engine host: sync", () => {
     expect(s.settings).toEqual(stopped);
     expect(await saved.load()).toEqual(stopped);
 
-    // A source that cannot be reached: refused before anything is saved.
+    // A source that cannot be reached: refused before anything is saved (no write at all, not one put back).
     tapeFails = true;
+    const writesBefore = writes;
     expect((await errorOf(h, "start", { config: other })).code).toBe("start-failed");
+    expect(writes, "settings writes during the refused start").toBe(writesBefore);
     tapeFails = false;
     expect((await result<HostStatus>(h, "status")).settings).toEqual(stopped);
     expect(await saved.load()).toEqual(stopped);
@@ -273,6 +282,44 @@ describe("browser engine host: sync", () => {
     expect((await result<HostStatus>(h, "start")).engine).toMatchObject({ running: true, config });
     failing = false;
     expect(await saved.load()).toEqual({ config, autoStart: true });
+  }, 120_000);
+
+  it("[[browser.host.automatic-start-gap]] an automatic start (a restart's restore, the next leader, the leader's own) runs only if the saved settings say to start by itself when the worker runs it: a stop or an import answered between its status read and its start is not undone", async () => {
+    const config: StartConfig = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, endHeight: U1.from + 5, ...FAST };
+    for (const between of ["stop", "import"] as const) {
+      const settings = memorySettingsStore({ config, autoStart: true });
+      const exporter = newHost({ settings: memorySettingsStore() });
+      let snapshot: Blob | undefined;
+      if (between === "import") {
+        await result(exporter, "start", { config });
+        await until(exporter, "the range to export", (s) => s.cursors?.scan?.nextHeight === U1.from + 6);
+        await result(exporter, "stop");
+        snapshot = (await result<{ file: Blob }>(exporter, "export")).file;
+      }
+      const h = newHost({ settings });
+      await h.boot();
+      /** A page's client of `h` whose start is preceded by `between`, answered first (it lands in the gap). */
+      const inGap = async (): Promise<void> => {
+        if (between === "stop") await result(h, "stop");
+        else await result(h, "import", { snapshot });
+      };
+      const client = {
+        status: () => result<HostStatus>(h, "status"),
+        start: async (c?: StartConfig) => { await inGap(); return result<HostStatus>(h, "start", c === undefined ? {} : { config: c }); },
+        request: async (type: string, params: Record<string, unknown>) => { if (type === "start") await inGap(); return result(h, type, params); },
+      } as unknown as EngineClient;
+      const found = await startSaved(client);
+      expect(found, between).toBe("off");
+      const s = await result<HostStatus>(h, "status");
+      expect(s.engine?.running ?? false, `${between}: the engine stays stopped`).toBe(false);
+      expect(s.settings?.autoStart, between).toBe(false);
+    }
+    // With the settings still saying so, the automatic start runs; started already, it changes nothing.
+    const h = newHost({ settings: memorySettingsStore({ config, autoStart: true }) });
+    await h.boot();
+    const client = { status: () => result<HostStatus>(h, "status"), request: (type: string, params: Record<string, unknown>) => result(h, type, params) } as unknown as EngineClient;
+    expect(await startSaved(client)).toBe("started");
+    expect((await result<HostStatus>(h, "start", { automatic: true })).engine).toMatchObject({ running: true, config });
   }, 120_000);
 
   it("[[browser.host.range-reset]] range replaces the store and starts the new range; reset runs it again to the same digests; range tip follows again; a reopened store keeps the range's end", async () => {
@@ -519,6 +566,15 @@ describe("leader tab: automatic start", () => {
         starts.push(config);
         return status as HostStatus;
       },
+      // The automatic start (`startSaved`): a start of the saved configuration, run by the worker only if its settings
+      // say so; here the status has `autoStart` as the test gives it.
+      request: async (type: string, params: { config?: StartConfig; automatic?: true }) => {
+        if (type === "start") {
+          starts.push(params.config);
+          return { ...status, engine: { running: status.settings?.autoStart === true } } as HostStatus;
+        }
+        throw new Error(`unexpected ${type}`);
+      },
     } as unknown as EngineClient;
     return { client, starts };
   }
@@ -530,7 +586,7 @@ describe("leader tab: automatic start", () => {
 
     const resumed = fakeClient(saved(true));
     await resumeOrAutoStart(true)({ running: true, config }, resumed.client);
-    expect(resumed.starts).toEqual([undefined]); // a start with no configuration: the saved one
+    expect(resumed.starts).toEqual([undefined]); // an automatic start: the saved configuration
 
     const fresh = fakeClient(saved(true));
     await resumeOrAutoStart(true)(null, fresh.client);

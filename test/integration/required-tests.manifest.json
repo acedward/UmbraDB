@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 432), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 433), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -1191,6 +1191,11 @@
       "id": "browser.host.start-stop-unsaved",
       "file": "token-indexer/test/browser-sync-host.test.ts",
       "description": "a start whose settings cannot be saved starts nothing and changes nothing; one whose source cannot be reached is refused before anything is saved; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on; while writes are refused, a start of what the settings say runs"
+    },
+    {
+      "id": "browser.host.automatic-start-gap",
+      "file": "token-indexer/test/browser-sync-host.test.ts",
+      "description": "an automatic start (a restart's restore, the next leader, the leader's own) runs only if the saved settings say to start by itself when the worker runs it: a stop or an import answered between its status read and its start is not undone"
     },
     {
       "id": "browser.host.range-reset",

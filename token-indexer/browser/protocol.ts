@@ -253,7 +253,10 @@ const envelope = { v: z.literal(PROTOCOL_VERSION), id: intIn(1, Number.MAX_SAFE_
 export const REQUEST_SCHEMAS = {
   status: z.strictObject({ ...envelope, type: z.literal("status") }),
   api: z.strictObject({ ...envelope, type: z.literal("api"), method: z.string().min(1).max(32), target: z.string().min(1).max(65_536) }),
-  start: z.strictObject({ ...envelope, type: z.literal("start"), config: StartConfigSchema.optional() }),
+  /** `automatic`: start the saved configuration only if the saved settings, when the worker runs the request, say the
+   *  engine starts by itself (else, or with the engine running, answer the status and change nothing); what a restart's
+   *  restore and the leader tab send (`client.ts` `startSaved`). */
+  start: z.strictObject({ ...envelope, type: z.literal("start"), config: StartConfigSchema.optional(), automatic: z.literal(true).optional() }),
   stop: z.strictObject({ ...envelope, type: z.literal("stop") }),
   range: z.strictObject({ ...envelope, type: z.literal("range"), startHeight: z.union([height, z.literal("tip")]), endHeight: height.optional() }),
   reset: z.strictObject({ ...envelope, type: z.literal("reset") }),
