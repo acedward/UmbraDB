@@ -44,11 +44,13 @@
  * - it succeeds: the attempt stands, as it is;
  * - it has not ended (its page never got what it waits for): it is abandoned — its abort signal is set and every
  *   DevTools command it sends from then on fails, so it stops before the next attempt, which waits for it (at most ten
- *   seconds) — and the page is loaded again, as it is when there is no step, unless the attempt recorded a failure the
- *   aborted loads do not explain: an exception, or an error-level console call or log entry (a CSP violation's report
- *   among them), that names none of them; an error event of a worker whose script was not one of them; a load that
- *   failed with another error (`net::ERR_ABORTED`, a load cancelled, aside); the load itself never ending (its load
- *   event never came), unless the document was what the network aborted. Such an attempt fails like a failed step.
+ *   seconds); if it fails meanwhile with anything but that ({@link StepAbandonedError}: a command it sent before can
+ *   still answer, a boot that ended "failed"), it is a failed step — and otherwise the page is loaded again, as it is
+ *   when there is no step, unless the attempt recorded a failure the aborted loads do not explain: an exception, or an
+ *   error-level console call or log entry (a CSP violation's report among them), that names none of them; an error
+ *   event of a worker whose script was not one of them; a load that failed with another error (`net::ERR_ABORTED`, a
+ *   load cancelled, aside); the load itself never ending (its load event never came), unless the document was what the
+ *   network aborted. Such an attempt fails like a failed step.
  *   Each attempt runs in the same browser profile (its storage stays), so a failure only a first boot would show is
  *   not repeated by the next attempt: it must be caught in the attempt it happened in.
  * An attempt aborted {@link LOAD_ATTEMPTS} times fails; anything with no abort (a failed step, another load error, a
@@ -87,6 +89,14 @@ type Listener = (params: Json, sessionId: string | undefined) => void;
  *  a step whose load attempt was abandoned fails, so the step stops at its next command. */
 const STEPS = new AsyncLocalStorage<readonly AbortSignal[]>();
 
+/** The error a DevTools command of an abandoned step fails with: the driver's own, never the page's. */
+export class StepAbandonedError extends Error {
+  constructor(method: string) {
+    super(`${method}: not sent: the load attempt this step ran in was abandoned (the network aborted it)`);
+    this.name = "StepAbandonedError";
+  }
+}
+
 class Connection {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -111,7 +121,7 @@ class Connection {
   }
   send(method: string, params: Json = {}, sessionId?: string): Promise<Json> {
     if (STEPS.getStore()?.some((s) => s.aborted) === true)
-      return Promise.reject(new Error(`${method}: not sent: the load attempt this step ran in was abandoned (the network aborted it)`));
+      return Promise.reject(new StepAbandonedError(method));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject, method });
@@ -353,6 +363,12 @@ export class Page {
         return;
       }
       stepper.abort();
+      // The abandoned step goes on until its next command fails; one already sent can still answer. How it ends counts
+      // until the page is loaded again: a failure that is not the driver's own abandonment is the page's.
+      let lateFailure: { error: unknown } | undefined;
+      const stepEnded = step === undefined ? Promise.resolve() : step.then(() => undefined, (error: unknown) => {
+        if (!(error instanceof StepAbandonedError)) lateFailure = { error };
+      });
       const last = failure === undefined ? "" : `; the last attempt's error: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`;
       // A failure of the page's own is kept: the step failed (whatever made it fail: it ended), or the attempt recorded
       // what the aborted loads do not explain.
@@ -360,6 +376,7 @@ export class Page {
       const documentAborted = this.navigationError !== undefined && this.environmentalErrors.some((e) => this.navigationError!.includes(e));
       const own = (): string[] => [
         ...(failure?.step === true ? [`the step failed: ${message(failure.error)}`] : []),
+        ...(lateFailure !== undefined ? [`the step failed after it was abandoned: ${message(lateFailure.error)}`] : []),
         // The load itself failed (its load event never came): the page's own, unless its document was aborted.
         ...(failure?.step === false && !documentAborted ? [`the load failed: ${message(failure.error)}`] : []),
         ...this.unexplained(marks),
@@ -367,6 +384,7 @@ export class Page {
       const notAgain = (found: string[]): Error => {
         console.error(`browser page ${this.targetId.slice(0, 8)} (${url}): ${reason}, but the attempt also failed on its own (${found.length}: ${found[0]}): not loaded again`);
         if (failure?.step === true) return failure.error as Error;
+        if (lateFailure !== undefined) return lateFailure.error as Error;
         return new Error(`${url}: the page failed on its own while ${reason}: ${found.join("; ")}; not loaded again`);
       };
       if (own().length > 0) throw notAgain(own());
@@ -374,7 +392,7 @@ export class Page {
       // A change comes as several events (an interface, then its addresses): load again once it has settled, and once the
       // abandoned step has stopped (or a bound has passed: its commands fail anyway).
       const settledMs = await this.networkSettled();
-      if (step !== undefined) await Promise.race([step.catch(() => undefined), sleep(ABANDONED_STEP_MS)]);
+      await Promise.race([stepEnded, sleep(ABANDONED_STEP_MS)]);
       // What arrived meanwhile counts too.
       if (own().length > 0) throw notAgain(own());
       const dropped = this.droppedSince(marks);

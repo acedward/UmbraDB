@@ -23,8 +23,9 @@
  *   application, with a running worker's error, or that only reports it ended "failed" (no exception, no worker error),
  *   while a stylesheet is aborted fails the load with the step's error and one printed line, the attempt's exceptions,
  *   worker errors and boot state kept in what the page recorded; a failure of the page's own that comes while the
- *   network settles, after the step was abandoned, stops the reload too, and so do an error on the console of a first
- *   boot whose step is still waiting and a load that never ends (its load event never comes); a boot that succeeds although a stylesheet was
+ *   network settles, after the step was abandoned, stops the reload too, and so do the abandoned step's own failure
+ *   when a question it asked before answers then (a boot that ended "failed"), an error on the console of a first boot
+ *   whose step is still waiting, and a load that never ends (its load event never comes); a boot that succeeds although a stylesheet was
  *   aborted stands, not loaded again; an exception that names the aborted load (a dynamic import of it) is the abort's: loaded
  *   again, and what the aborted attempt recorded is kept in the page's report and counted in the printed line; an image
  *   aborted is no reason to load again; a step abandoned when its fetch is aborted gets its abort signal and stops (its
@@ -76,7 +77,11 @@ const CONSOLE_FAILURE = `<!doctype html><meta charset="utf-8"><title>console</ti
 console.error("the first boot failed quietly");
 </script>`;
 const HANGS = `<!doctype html><meta charset="utf-8"><title>hangs</title><link rel="stylesheet" href="/style-b.css"><img src="/hang.svg"><script>window.booted = "ready";</script>`;
-const BOOT_WELL = `<!doctype html><meta charset="utf-8"><title>boot</title><link rel="stylesheet" href="/style-b.css"><script>window.booted = "ready";</script>`;
+// A boot whose result comes 2.2 s after the page runs: "failed" on the first answer (then it boots well).
+const LATE_BOOT = `<!doctype html><meta charset="utf-8"><title>late boot</title><link rel="stylesheet" href="/style-b.css"><script>
+window.lateBoot = new Promise((resolve) => setTimeout(() => resolve("failed"), 2_200));
+</script>`;
+const BOOT_WELL = `<!doctype html><meta charset="utf-8"><title>boot</title><link rel="stylesheet" href="/style-b.css"><script>window.booted = "ready"; window.lateBoot = "ready";</script>`;
 // A page whose fetch starts 300 ms after it loads, and one with an image.
 const DELAYED = `<!doctype html><meta charset="utf-8"><title>delayed</title><script>
 window.late = null;
@@ -115,12 +120,12 @@ describe("the Chromium tests' driver", () => {
       } else if (path === "/module" || path === "/missing-module") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(path === "/module" ? MODULE : MISSING_MODULE);
-      } else if (["/boot-fails", "/worker-fails", "/boot-reports-failure", "/boot-well", "/late-failure", "/console-failure", "/hangs"].includes(path)) {
+      } else if (["/boot-fails", "/worker-fails", "/boot-reports-failure", "/boot-well", "/late-failure", "/console-failure", "/hangs", "/late-boot"].includes(path)) {
         const n = (answered.get(path) ?? 0) + 1;
         answered.set(path, n);
         const first: Record<string, string> = {
           "/boot-fails": BOOT_FAILS, "/worker-fails": WORKER_FAILS, "/boot-reports-failure": BOOT_REPORTS_FAILURE, "/late-failure": LATE_FAILURE,
-          "/console-failure": CONSOLE_FAILURE, "/hangs": HANGS,
+          "/console-failure": CONSOLE_FAILURE, "/hangs": HANGS, "/late-boot": LATE_BOOT,
         };
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
         res.end(n > 1 || path === "/boot-well" ? BOOT_WELL : first[path]!);
@@ -326,7 +331,7 @@ describe("the Chromium tests' driver", () => {
     }
   }, 180_000);
 
-  it("[[browser.harness.load-retry-independent]] an aborted load never hides a failure of the page's own: the ready step always runs and a step that fails is never loaded again — a boot that fails with an application exception, with a running worker's error, or that only reports it failed, while a stylesheet is aborted, keeps what the attempt recorded; a failure of the page's own while the network settles stops the reload too, as do an error on the console and a load that never ends; a boot that succeeds stands; an exception naming the aborted load is the abort's: loaded again when the step cannot end, the aborted attempt kept in the report and counted in the printed line; an aborted image is no reason to load again; an abandoned step gets its abort signal and stops before the page is loaded again", async () => {
+  it("[[browser.harness.load-retry-independent]] an aborted load never hides a failure of the page's own: the ready step always runs and a step that fails is never loaded again — a boot that fails with an application exception, with a running worker's error, or that only reports it failed, while a stylesheet is aborted, keeps what the attempt recorded; a failure of the page's own while the network settles stops the reload too, as do the abandoned step's own later failure, an error on the console and a load that never ends; a boot that succeeds stands; an exception naming the aborted load is the abort's: loaded again when the step cannot end, the aborted attempt kept in the report and counted in the printed line; an aborted image is no reason to load again; an abandoned step gets its abort signal and stops before the page is loaded again", async () => {
     const printed = vi.spyOn(console, "error");
     const lines = (page: Page): string[] =>
       printed.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith(`browser page ${page.targetId.slice(0, 8)} `) && /loading it again|not loaded again/u.test(l));
@@ -406,6 +411,19 @@ describe("the Chromium tests' driver", () => {
       expect(answered.get("/hangs")).toBe(1);
       expect(hanging.loadRetries).toEqual([]);
       await hanging.close();
+
+      // A boot whose failure the step sees only after it was abandoned (its question to the page was sent before and
+      // answers after the 1 s wait, while the network settles): a failed step, not loaded again.
+      answered.delete("/late-boot");
+      const lateBoot = await failingPage("/style-b.css", 1, "ConnectionAborted", { ...aborted, readySettleMs: 1_000 });
+      await expect(lateBoot.page.goto(`${site.origin}/late-boot`, 30_000, async () => {
+        const booted = await lateBoot.page.eval<string>("window.lateBoot");
+        if (booted !== "ready") throw new Error(`the boot ended ${booted}`);
+      })).rejects.toThrow("the boot ended failed");
+      expect(answered.get("/late-boot")).toBe(1);
+      expect(lateBoot.page.loadRetries).toEqual([]);
+      expect(lines(lateBoot.page)).toEqual([expect.stringMatching(/style-b\.css.*the step failed after it was abandoned: the boot ended failed.*not loaded again/u)]);
+      await lateBoot.page.close();
 
       // A boot that succeeds although a stylesheet was aborted: the attempt stands, not loaded again.
       const stands = await failingPage("/style-b.css", 1, "ConnectionAborted", aborted);

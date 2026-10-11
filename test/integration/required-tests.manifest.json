@@ -1785,7 +1785,7 @@
     {
       "id": "engine.telemetry.redaction-cut-secrets",
       "file": "token-indexer/test/engine-telemetry.test.ts",
-      "description": "a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads, show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark"
+      "description": "a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads (also with no whitespace near it), show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark"
     },
     {
       "id": "engine.telemetry.redaction-key-forms",
@@ -1845,7 +1845,7 @@
     {
       "id": "browser.harness.load-retry-independent",
       "file": "token-indexer/test/browser-harness-chrome.test.ts",
-      "description": "an aborted load never hides a failure of the page's own: the ready step always runs and a step that fails is never loaded again — a boot that fails with an application exception, with a running worker's error, or that only reports it failed, while a stylesheet is aborted, keeps what the attempt recorded; a failure of the page's own while the network settles stops the reload too, as do an error on the console and a load that never ends; a boot that succeeds stands; an exception naming the aborted load is the abort's: loaded again when the step cannot end, the aborted attempt kept in the report and counted in the printed line; an aborted image is no reason to load again; an abandoned step gets its abort signal and stops before the page is loaded again"
+      "description": "an aborted load never hides a failure of the page's own: the ready step always runs and a step that fails is never loaded again — a boot that fails with an application exception, with a running worker's error, or that only reports it failed, while a stylesheet is aborted, keeps what the attempt recorded; a failure of the page's own while the network settles stops the reload too, as do the abandoned step's own later failure, an error on the console and a load that never ends; a boot that succeeds stands; an exception naming the aborted load is the abort's: loaded again when the step cannot end, the aborted attempt kept in the report and counted in the printed line; an aborted image is no reason to load again; an abandoned step gets its abort signal and stops before the page is loaded again"
     },
     {
       "id": "engine.start-tip.follows",
