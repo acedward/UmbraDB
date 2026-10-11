@@ -583,6 +583,59 @@ describe("PGlite client", () => {
       }
     });
 
+    it("[[pglite.client.blob-copy-failure]] a pgliteBlobQuery that fails on a transaction handle fails the transaction even when the callback caught it: begin rejects with its error and nothing of the transaction is kept; on a savepoint handle the savepoint rejects and the transaction goes on; on a client it may not start a transaction block; a COPY TO that fails part-way leaves nothing for the next one", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        await c`CREATE TABLE cf (id int)`;
+        const garbage = new Blob(["not a binary COPY file"]);
+        const copyIn = "COPY cf FROM '/dev/blob' WITH (FORMAT binary)";
+        const ids = async (): Promise<number[]> => [...(await c<{ id: number }[]>`SELECT id FROM cf ORDER BY id`)].map((r) => r.id);
+
+        // The callback catches the failed copy and returns: begin still rejects with the copy's error, the insert is gone.
+        let caught: string | undefined;
+        await expect(c.begin(async (tx) => {
+          await tx`INSERT INTO cf VALUES (1)`;
+          await pgliteBlobQuery(tx, copyIn, garbage).catch((e: { code?: string }) => { caught = e.code; });
+          return "success";
+        })).rejects.toMatchObject({ code: "22P04" });
+        expect(caught).toBe("22P04");
+        expect(await ids()).toEqual([]);
+        expect(own.isInTransaction()).toBe(false);
+
+        // In a savepoint: the savepoint rejects with it and is rolled back; the transaction keeps the rest.
+        let savepoint: string | undefined;
+        await c.begin(async (tx) => {
+          await tx`INSERT INTO cf VALUES (1)`;
+          await tx.savepoint(async (sp) => {
+            await sp`INSERT INTO cf VALUES (99)`;
+            await pgliteBlobQuery(sp, copyIn, garbage).catch(() => undefined);
+            return "inner";
+          }).catch((e: { code?: string }) => { savepoint = e.code; });
+          await tx`INSERT INTO cf VALUES (2)`;
+        });
+        expect(savepoint).toBe("22P04");
+        expect(await ids()).toEqual([1, 2]);
+
+        // On a client: a statement that starts a transaction block is refused, as a top-level statement is.
+        await expect(pgliteBlobQuery(c, "BEGIN")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
+        expect(own.isInTransaction()).toBe(false);
+        expect(await ids()).toEqual([1, 2]);
+
+        // A COPY … TO that fails part-way (with parameters or as a text) leaves nothing for the next one, which gives
+        // its own file only.
+        const one = "COPY (SELECT 1) TO '/dev/blob' WITH (FORMAT binary)";
+        const size = (await pgliteBlobQuery(c, one)).blob!.size;
+        const partWay = "COPY (SELECT 1 / (5000 - g) FROM generate_series(1, 10000) g) TO '/dev/blob' WITH (FORMAT binary)";
+        await expect(pgliteBlobQuery(c, partWay)).rejects.toMatchObject({ code: "22012" });
+        expect((await pgliteBlobQuery(c, one)).blob!.size).toBe(size);
+        await expect(c.unsafe(partWay)).rejects.toMatchObject({ code: "22012" });
+        expect((await pgliteBlobQuery(c, one)).blob!.size).toBe(size);
+      } finally {
+        await own.close();
+      }
+    });
+
     it("[[pglite.client.large-results]] a statement with parameters, and a text, whose result holds 150,000 rows answers with every row, for a SELECT and an INSERT … RETURNING alike, and the rows are stored once", async () => {
       const own = await PGlite.create();
       try {

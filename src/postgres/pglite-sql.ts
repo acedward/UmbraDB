@@ -476,6 +476,13 @@ const pgliteWire = (): Promise<PgliteWire> =>
     parameterTypes: (messages) => parse.parseDescribeStatementResults(messages as Parameters<typeof parse.parseDescribeStatementResults>[0]),
   })));
 
+/** Forgets the file a statement read (`COPY … FROM '/dev/blob'`) and drops any a statement wrote (`COPY … TO`), also
+ *  part of one, so that none is handed to a later statement. */
+async function dropBlobs(db: PgliteDatabase): Promise<void> {
+  await db._cleanupBlob();
+  await db._getWrittenBlob();
+}
+
 /** A server error of `text` carries the statement and its parameters, as PGlite's `query` and `exec` give them. */
 function withStatement(error: unknown, text: string, params: readonly unknown[] | undefined, options?: PgliteQueryOptions): unknown {
   if (isServerError(error)) Object.assign(error, { query: text, params, queryOptions: options });
@@ -502,10 +509,9 @@ async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Re
       throw withStatement(error, text, undefined);
     } finally {
       await db.execProtocolStream(w.sync(), { syncToFs: false });
+      await dropBlobs(db).catch(() => undefined);
     }
-    await db._cleanupBlob();
     await db.syncToFs();
-    await db._getWrittenBlob();
     const out: SimpleStatement[] = [];
     let fields: Array<{ name: string; dataTypeID: number }> = [];
     let rows: Array<Record<string, unknown>> = [];
@@ -571,6 +577,8 @@ async function execExtended(db: PgliteDatabase, text: string, params: readonly u
       await send(w.describe({ type: "P" }));
       await send(w.execute());
     } catch (error) {
+      // What a failed `COPY … TO '/dev/blob'` wrote is dropped, so that the next one gives its own file only.
+      await dropBlobs(db).catch(() => undefined);
       throw withStatement(error, text, params as unknown[], options);
     } finally {
       await send(w.sync());
@@ -1205,21 +1213,30 @@ async function releaseHolder(state: ClientState, holder: Holder): Promise<void> 
   }
 }
 
-/** The client and the holder behind each handle ({@link pgliteBlobQuery}): a client's own has no holder. */
-const HANDLES = new WeakMap<object, { state: ClientState; holder: Holder | undefined; ended: () => boolean }>();
+/** What {@link pgliteBlobQuery} needs of a handle: its client, its holder (a client's own has none), whether it has
+ *  ended, and (a transaction handle) how its scope records a failed statement. */
+interface HandleOf {
+  state: ClientState;
+  holder: Holder | undefined;
+  ended: () => boolean;
+  failed?: (error: unknown) => void;
+}
+const HANDLES = new WeakMap<object, HandleOf>();
 
 /**
  * Runs `text` (a `COPY … FROM '/dev/blob'` or `COPY … TO '/dev/blob'`) on the session of `sql` — a client (a statement
  * of its own), a transaction handle or a reserved handle (in its turn) — as PGlite's `query` with its `blob` option:
  * `blob` is the file a `COPY … FROM` reads; the result's `blob` is the file a `COPY … TO` wrote. postgres.js has no such
- * call; it is how a store's rows travel as files (the browser engine's snapshots).
+ * call; it is how a store's rows travel as files (the browser engine's snapshots). It is a statement of the handle like
+ * any other: on a transaction handle its failure fails the transaction (its `begin` or `savepoint` rejects with it, also
+ * when the callback caught it); on a client it may not start a transaction block (`UNSAFE_TRANSACTION`).
  */
 export async function pgliteBlobQuery(sql: ISql<{ bigint: bigint }>, text: string, blob?: Blob): Promise<{ affectedRows: number; blob: Blob | undefined }> {
   const handle = HANDLES.get(sql);
   if (handle === undefined) throw new PgliteSqlError("NOT_SUPPORTED", "pgliteBlobQuery needs a handle of the PGlite client");
   const { state } = handle;
   if (handle.ended()) throw new PgliteSqlError("TRANSACTION_ENDED", "the handle has ended; it cannot run statements");
-  const run = (holder: Holder) => holder.run(async () => {
+  const exec = async (): Promise<{ affectedRows: number; blob: Blob | undefined }> => {
     if (state.session.db.closed) throw connectionClosed();
     state.debug?.(state.id, text, [], []);
     try {
@@ -1228,14 +1245,30 @@ export async function pgliteBlobQuery(sql: ISql<{ bigint: bigint }>, text: strin
     } catch (error) {
       throw databaseError(state, error);
     }
-  });
-  if (handle.holder !== undefined) return run(handle.holder);
+  };
+  if (handle.holder !== undefined) {
+    const done = handle.holder.run(exec);
+    if (handle.failed !== undefined) done.catch(handle.failed);
+    return done;
+  }
   if (state.ended) throw connectionEnded();
   return track(state, (async () => {
     const holder = await acquireHolder(state, "statement");
     try {
-      await holder.run(() => applySearchPath(state));
-      return await run(holder);
+      return await holder.run(async () => {
+        await applySearchPath(state);
+        if (startsTransactionBlock(text)) throw unsafeTransaction();
+        let result: { affectedRows: number; blob: Blob | undefined } | undefined;
+        let failure: { error: unknown } | undefined;
+        try {
+          result = await exec();
+        } catch (error) {
+          failure = { error };
+        }
+        if (await rollBackOpenTransaction(state, holder)) throw unsafeTransaction();
+        if (failure !== undefined) throw failure.error;
+        return result!;
+      });
     } finally {
       await releaseHolder(state, holder);
     }
@@ -1290,7 +1323,7 @@ async function transactionScope(
     holder.run(() => runStatement(state, holder, q, false)).then(q.resolve, q.reject);
   };
   const tx = makeSql(state, handler);
-  HANDLES.set(tx, { state, holder, ended: () => holder.done });
+  HANDLES.set(tx, { state, holder, ended: () => holder.done, failed: (error) => { uncaught ??= error; } });
   tx.savepoint = function savepoint(this: unknown, label: unknown, body?: (tx: SqlFunction) => unknown): Promise<unknown> {
     if (label !== null && typeof label === "object" && Array.isArray((label as { raw?: unknown }).raw)) {
       const args = arguments;
