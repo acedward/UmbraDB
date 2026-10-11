@@ -39,10 +39,11 @@
  *   range chosen afterwards is what a later `reset` runs again.
  * - `[[browser.host.import-failed-empty]]` — a pending import whose rows fail to load opens the store empty with the
  *   build's default configuration (the store holds no snapshot any more; the automatic start as it was), so nothing
- *   starts at the earlier snapshot's first height; the status says while the store holds an imported snapshot. The
- *   import's journal stays until that configuration is saved: a boot whose save of it fails, or a worker that ends
- *   before it, leaves the next boot to open the store empty with the default configuration again, never the earlier
- *   snapshot's.
+ *   starts at the earlier snapshot's first height; the status says while the store holds an imported snapshot.
+ * - `[[browser.host.import-failed-durable]]` — the journal of an import whose rows fail to load stays until the build's
+ *   default configuration is saved: a boot whose save of it fails (the boot fails, the journal and the earlier
+ *   configuration stay), or a worker that ends during that save, leaves the next boot to open the store empty with the
+ *   default configuration and remove the journal, never to start at the earlier snapshot's first height.
  * - `[[browser.host.range-saved-first]]` — `range` saves the new range before it replaces the store: when that save
  *   fails nothing changes, and a worker that ends while the store is replaced leaves the new range (with the automatic
  *   start and the mark that the store is to be replaced) saved, so the next boot starts it on the new store.
@@ -774,7 +775,7 @@ describe("replacing the browser engine's store", () => {
     expect(started.cursors!.sync!.startHeight).toBe(U1.from + 25);
   }, 300_000);
 
-  it("[[browser.host.import-failed-empty]] the journal of an import whose rows fail to load stays until the default configuration is saved: a boot whose save of it fails, or a worker that ends before it, leaves the next boot to open the store empty with the default configuration, never the earlier snapshot's", async () => {
+  it("[[browser.host.import-failed-durable]] the journal of an import whose rows fail to load stays until the default configuration is saved: a boot whose save of it fails, or a worker that ends before it, leaves the next boot to open the store empty with the default configuration, never the earlier snapshot's", async () => {
     const snap = await snapshotAtMid();
     const { manifest, data } = decodeSnapshotFile(new Uint8Array(await snap.file.arrayBuffer()));
     const defaultStart: StartConfig = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 25 }, ...FAST };

@@ -15,9 +15,11 @@
  *   times, takes the highest answer, and reads again while even that is far below the indexer's tip (an `error` event
  *   says so), so the archive starts at the true finalized tip, never at the stale height; while it follows, the
  *   finalized tip the telemetry reports never goes back; block hashes the stale backend answers `null` for are asked
- *   again; every height is archived once. With an indexer 588 blocks ahead of the node's finality, a first reading of
- *   honest answers and then two readings of stale ones: the highest answer of all the readings is the start, never a
- *   stale height.
+ *   again; every height is archived once.
+ * - `[[engine.start-tip.stale-after-lag]]` — an indexer 588 blocks ahead of the node's finality, a first reading of
+ *   honest answers (read again: too far below the indexer's tip) and then two readings from the backend 38,000 blocks
+ *   behind: the start keeps the highest answer of every reading, so the archive starts at the node's finalized height,
+ *   never at the stale one.
  * - `[[engine.start-tip.follows]]` — the archive and scan heights follow the finalized tip for 10 minutes, in simulated
  *   time: the recorded IDX range with a finalized tip that rises one block every 6 s of the manual clock (Midnight's
  *   block time; the live Stagenet runs saw about one every 8.7 s, so this is the faster case), the engine with the browser's settings (20 heights per sync batch, 10 blocks per scan step) and the
@@ -319,7 +321,7 @@ describe("indexer engine: start at the finalized tip", () => {
     expect(blocks).toEqual({ n: U1.to - TIP + 1, lo: String(TIP), hi: String(U1.to) });
   }, 120_000);
 
-  it("[[engine.start-tip.stale-node]] an indexer 588 blocks ahead of the node's finality, a first reading of honest answers, then two readings from the backend 38,000 blocks behind: the start keeps the highest answer of every reading, so the archive starts at the node's finalized height, never at the stale one", async () => {
+  it("[[engine.start-tip.stale-after-lag]] an indexer 588 blocks ahead of the node's finality, a first reading of honest answers, then two readings from the backend 38,000 blocks behind: the start keeps the highest answer of every reading, so the archive starts at the node's finalized height, never at the stale one", async () => {
     const sql = database.client("lag_mip");
     clients.push(sql);
     const TIP = 715412;
