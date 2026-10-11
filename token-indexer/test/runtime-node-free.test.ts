@@ -125,6 +125,8 @@ const MUST_REACH = [
   "evm-rpc/logs/keccak256.ts",
   "token-indexer/browser/jsonrpc-module.ts",
   "token-indexer/browser/jsonrpc-view.ts",
+  "token-indexer/browser/jsonrpc-model.ts",
+  "token-indexer/browser/module-page.ts",
   "src/postgres/migrations/evm_rpc/index.ts",
 ];
 

@@ -53,7 +53,8 @@ PostgreSQL.
 | `explorer-host.ts`, `explorer-transport.ts` | The token explorer of `GET /ui` in the Token Indexer tab, reading the API through the engine |
 | `database-view.ts`, `database-model.ts`, `store-tables.ts` | The Database tab: the page, its pure view of the engine's answers, and the worker's reads of the store's tables (`tables`, `rows`) |
 | `pacing-queue.ts` | The worker's pacing queue of an endpoint origin, shared by the sync's clients and the JSON RPC module: one start at a time, the interval apart, cancellable waits, a hold for `Retry-After` |
-| `jsonrpc-view.ts`, `jsonrpc-model.ts`, `jsonrpc-module.ts` | The JSON RPC tab: the page, its pure view (the methods from the module's registry, a call's request and answer as text), and the worker's JSON RPC module (`jsonrpc`): the EVM JSON-RPC module's read-only methods through the handler Node's `evm-rpc` server uses (`../../evm-rpc/handler.ts`) |
+| `module-page.ts` | A module tab's page with the token explorer page's structure and look: header (title, subtitle, sub-tabs, strip, refresh), banner, view, footer |
+| `jsonrpc-view.ts`, `jsonrpc-model.ts`, `jsonrpc-module.ts` | The JSON RPC tab: the page (the JSON-RPC explorer and the module's status), its pure view (the methods from the module's registry in groups, the typed fields, requests, answer trees and their next calls, the URL, the history, the status figures), and the worker's JSON RPC module (`jsonrpc`, `jsonrpc-state`): the EVM JSON-RPC module's read-only methods through the handler Node's `evm-rpc` server uses (`../../evm-rpc/handler.ts`) |
 | `engine.html`, `engine-page.ts` | A page that joins the tabs, asks for persistent storage, shows its role and the engine's status; `window.umbradbEngine` holds the client, the tabs and the snapshot helpers |
 | `vite.config.ts`, `build-guard.ts`, `build-csp.ts`, `build-explorer.ts`, `build-notices.ts`, `notices/` | The build (Node tooling): every `*.html` here is a page, ES module worker, `esnext`, class names kept, `vite-plugin-wasm` for ledger-v9's WASM module, assets as files, a plugin that fails the build if postgres.js or a Node built-in would be bundled, a plugin that writes the pages' security headers, one that makes the explorer page from `GET /ui`'s markup, and one that writes the licence notices of everything the site contains |
 
@@ -140,42 +141,75 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
   named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any
   statement names them: anything else is refused (`bad-request`, shown under the table). Each read is an autocommit
   statement of its own (the catalog, then the page), so the engine's block transactions take their turns between them.
-- **JSON RPC** (`jsonrpc-view.ts`, `jsonrpc-model.ts`; the worker's side `jsonrpc-module.ts`). Every method of the EVM
-  JSON-RPC module (`../../evm-rpc/`, `METHODS.md`), from the module's own registry (`../../evm-rpc/read-only.ts`, the
-  same build's) and the methods only `npm run evm-rpc:all` serves (`../../evm-rpc/method-info.ts`), one row each: the
-  name, the source of its answer (`config`, `const`, `indexer`, `pg:<table>`, `relay`, explained under the note), its
-  state and, for a method the engine answers, an editable example of its parameters (JSON on one line) and a Call
-  button:
-  - *Served here* (25): the chain constants and configuration (chain ID 2400, Node's default; the client version
-    `umbradb-evm-rpc/<package version>`), blocks and transactions from the network's Midnight indexer (its GraphQL, the
-    build's indexer endpoint, which the policy's `connect-src` already admits; each indexer request waits for its turn
-    in the worker's queue of that origin, shared with the archive sync (on a public endpoint the worker as a whole starts
-    one request there every 250 ms, whichever part sends it), and starts its 20 s timeout, Node's, only then; a `429`
-    to the module holds the queue for its `Retry-After` (1 s without one) and is answered `-32603`, as Node answers it;
-    closing the module ends the waits and the requests in flight), and accounts and transactions from the module's `evm_rpc` database — a PGlite
-    database in memory made by the module's migrations at its first request, empty here (the wallet monitor and the
-    relayer that fill it run in Node), so those methods answer as an empty Node deployment does. `eth_call` answers
-    `0x`, as `npm run evm-rpc` does.
-  - *Not implemented (-32004)* (21): callable; each answers `-32004` with its classification and reason.
-  - *Served by Node only* (4): `eth_getLogs` (the log ingest), `eth_sendRawTransaction` (the relayer), `eth_subscribe`
-    and `eth_unsubscribe` (the WebSocket server), and the ERC20 views of `eth_call`: marked, not callable.
+- **Module pages** (`module-page.ts`). A module's tab has the token explorer page's structure and look: a header with
+  the module's title and subtitle (the wordmark and its rule hidden inside a tab, as the explorer's), its sub-tabs, a
+  strip of live figures and a refresh button; a banner for what could not be read; the view; a footer note. The Token
+  Indexer tab is the explorer itself; the JSON RPC tab is such a page.
+- **JSON RPC** (`jsonrpc-view.ts`, `jsonrpc-model.ts`; the worker's side `jsonrpc-module.ts`). The "JSON-RPC explorer"
+  ("Ethereum-style eth_* endpoints over Midnight"), with two sub-tabs, **methods** and **status**. Its view and its
+  chosen method are in the URL's query (`?tab=jsonrpc&rpc=status&rpc-method=eth_getBalance`), beside the shell's tab:
+  the token explorer's routes are the fragment (`#/…`), so neither changes the other; a reload or a shared link opens
+  the same view and method, and back and forward move between the sub-tabs. The footer says that external wallets
+  cannot connect to a page: the module has no address for them, only this tab calls it.
 
-  Call sends one JSON-RPC 2.0 request (`{"jsonrpc":"2.0","id":n,"method":…,"params":…}`; empty parameters send no
-  `params`; parameters that are not JSON, longer than 65,536 characters or nested more than 64 levels deep send nothing
-  and say why) as `jsonrpc`; the row under the method then shows the request and the answer: its HTTP status and its
-  body, JSON indented, each cut at 262,144 characters (with its length) when longer. Each method has its own output
-  row, so calls on several rows at once never draw over each other. The module answers at most 8 requests at once:
-  another is refused `busy` (the tab says so) rather than queued. The chain ID is the build's (`config.ts`), Node's
-  default 2400 unless the build sets one. The answer is what Node's `npm run evm-rpc` server
-  answers a `POST` with the same body over the same indexer answers, byte for byte. A note on the tab says that external
-  wallets cannot connect to a page: the module has no address for them, only this tab calls it.
+  **methods.** On the left, every method of the EVM JSON-RPC module (`../../evm-rpc/`, `METHODS.md`), from the module's
+  own registry (`../../evm-rpc/read-only.ts`, the same build's) and the methods only `npm run evm-rpc:all` serves
+  (`../../evm-rpc/method-info.ts`), with a search (every word in the name, source or summary), in groups by where the
+  answer comes from in this browser, each sorted by name:
+  - *indexer* and *configuration and constants*: the chain constants and configuration (chain ID 2400, Node's
+    default; the client version `umbradb-evm-rpc/<package version>`), and blocks and transactions from the network's
+    Midnight indexer (its GraphQL, the build's indexer endpoint, which the policy's `connect-src` already admits; each
+    indexer request waits for its turn in the worker's queue of that origin, shared with the archive sync (on a public
+    endpoint the worker as a whole starts one request there every 250 ms, whichever part sends it), and starts its 20 s
+    timeout, Node's, only then; a `429` to the module holds the queue for its `Retry-After` (1 s without one) and is
+    answered `-32603`, as Node answers it; closing the module ends the waits and the requests in flight). A method that
+    reads the database first and the indexer next is in the indexer group. `eth_call` answers `0x`, as
+    `npm run evm-rpc` does.
+  - *database (empty here)*: accounts from the module's `evm_rpc` database — a PGlite database in memory made by the
+    module's migrations at its first request, empty here (the wallet monitor and the relayer that fill it run in
+    Node), so they answer as an empty Node deployment does.
+  - *not implemented (-32004)*: callable; each answers `-32004` with its classification and reason.
+  - *Node only*: `eth_getLogs` (the log ingest), `eth_sendRawTransaction` (the relayer), `eth_subscribe` and
+    `eth_unsubscribe` (the WebSocket server), and the ERC20 views of `eth_call`: listed and described, never called.
+
+  The list is used with the keyboard: Down or Enter in the search goes to the methods, the arrows, Home and End move
+  through them, Escape goes back to the search. On the right, the chosen method: its name, source and one-line
+  summary, and a form with one typed field per parameter (`ParamSpec` in `method-info.ts`): an address, a hash, data,
+  a number (decimal or `0x` hex, sent as a canonical quantity), a block (one of Node's tags `latest`, `earliest`,
+  `pending`, `safe`, `finalized`, a block number, a block hash where the method takes one, or left out when optional),
+  a checkbox, percentiles, a JSON object; each field says what is wrong with it as it is typed, and a method keeps its
+  own edits. The parameters can also be written as JSON (the form's parameters are carried over, and back when they
+  are a list of the method's parameters). The request the editor makes is shown live (with the id the next call gets),
+  and can be copied as JSON or as a `curl` command for Node's `npm run evm-rpc` (`http://127.0.0.1:8545`). Call (or
+  Ctrl+Enter) sends one JSON-RPC 2.0 request (`{"jsonrpc":"2.0","id":n,"method":…,"params":…}`; no `params` for an
+  empty JSON text; parameters that are not JSON, longer than 65,536 characters or nested more than 64 levels deep make
+  no request and say why) as `jsonrpc`. The answer is shown with its HTTP status and the time it took, as a tree (each
+  quantity also in decimal; a block number, a block hash, a parent hash and a transaction hash each open the call
+  that reads it — `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getTransactionByHash` and
+  `eth_getTransactionReceipt` — and make it; at most 2,000 nodes) or as text (JSON indented, cut at 262,144 characters
+  with its length). Each method keeps its last answer, so calls on several methods at once never draw over each other;
+  a method's Call waits for its answer. The module answers at most 8 requests at once: another is refused `busy` (the
+  tab says so) rather than queued. The chain ID is the build's (`config.ts`), Node's default 2400 unless the build
+  sets one. The answer is what Node's `npm run evm-rpc` server answers a `POST` with the same body over the same
+  indexer answers, byte for byte. Below, the history of the page's calls (at most 50, newest first: time, method,
+  parameters, outcome), each opened in the editor or run again; it is kept in the tab's `sessionStorage` when the
+  browser lets the page use it (what is read back is checked: unknown methods and parameters the tab could not send
+  are dropped), else in memory, and can be cleared. On a narrow screen the list is above the method.
+
+  **status.** The module's state, each figure from the engine's `jsonrpc-state` answer: on or off, its database (none
+  until the first call, open, being closed), its methods (served here, not implemented, Node only), the chain ID, the
+  client version, the indexer, the calls since the engine started (answered, in flight, refused busy, refused off,
+  failed), the pacing queue of the indexer's origin (its interval, the requests waiting, a `Retry-After` hold) and the
+  last error (a failed start, or an indexer request that failed or answered an HTTP error, with how long ago). The
+  strip shows the switch, the calls answered and in flight and the requests waiting on every view; the state is read
+  when the tab is shown, every 5 s while it is, after each call and by the refresh button.
 - **Text.** Everything is drawn with DOM nodes and text (no markup is parsed, no `style` attribute). Text that comes
   from the engine or from a file — error messages, refusal reasons (a snapshot's manifest fields among them), names,
   table values, JSON-RPC requests and answers — is drawn with the explorer's hidden-character rules (`visible-text.ts`): every hidden character as a
   visible mark `⟨U+XXXX⟩`, each value in its own bidirectional island.
 - The page joins the tabs like the engine page (`window.umbradbEngine`, persistent storage asked at load) and gets the
   build's policy like every page. For scripted use, `window.umbradbOverview` holds the overview's last sources, the
-  tabs, the Database tab's last answers and the JSON RPC tab's last call.
+  tabs, the Database tab's last answers and the JSON RPC tab's calls and what it shows.
 
 ## Boot
 
@@ -236,6 +270,7 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `module` | `module` (`token-indexer` or `jsonrpc`), `enabled` | status: the choice saved with the settings (`settings.modules`; a module not named is on; a module a later build added is kept in the file as it is), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`). `token-indexer`: a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced. `jsonrpc`: off, `jsonrpc` is refused from the answer on, the requests the module is answering end at once (`module-off`) and its database is closed; every worker reads the switch from the settings |
 | `tables` | — | each schema's tables (name, kind, the table it is a partition of, estimated rows, size) and the database's size, from the catalog |
 | `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
+| `jsonrpc-state` | — | the JSON RPC module's state: `enabled`, `database` (`none`, `starting`, `open`, `closing`), `chainId`, `clientVersion`, `indexerUrl`, `methods` (`served`, `notImplemented`, `nodeOnly`), `calls` since the worker started (`answered`, `inFlight`, `refusedBusy`, `refusedOff`, `failed`), `pacing` of the indexer's origin (`origin`, `minIntervalMs`, `waiting`, `heldForMs`), `lastError` (`{ at, message }` or `null`: a failed start, an indexer request that failed or answered an HTTP error; kept when the module stops) |
 | `jsonrpc` | `body`: the text of one JSON-RPC 2.0 request (or batch), at most 2,097,152 characters | `{ status, headers, body }`: what Node's `npm run evm-rpc` server answers a `POST` with the UTF-8 bytes of that body (`../../evm-rpc/handler.ts`: 200 with the answer, 204 for notifications only, 413 over its 1 MiB cap, `-32700` for a body that is not JSON; a lone surrogate reads as U+FFFD, as Node decodes it), from the JSON RPC module; refused `module-off` while the module is off or when it is switched off before the answer, `busy` while it answers 8 requests |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
@@ -269,8 +304,8 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   previous leader last reported does not decide what runs: it may have closed in the middle of an import, a `range` or
   a `reset`, and the new worker's boot finishes that first (the snapshot's store with its engine stopped, or a new
   store for the new settings).
-  Requests in flight to the closed leader: `status`, `api`, `export`, `digest`, `system`, `tables`, `rows` and `jsonrpc`
-  are sent again to the next leader; any other request (`module` among them) fails with `leader-changed` (it may or may not have
+  Requests in flight to the closed leader: `status`, `api`, `export`, `digest`, `system`, `tables`, `rows`, `jsonrpc`
+  and `jsonrpc-state` are sent again to the next leader; any other request (`module` among them) fails with `leader-changed` (it may or may not have
   been applied); a request made while no leader
   is known waits up to 10 s, then fails with `leader-unavailable`.
 - **Store lock.** The worker opens the store only under `umbradb-store:<store>`, held until it closes the store or ends,

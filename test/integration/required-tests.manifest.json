@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 414), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 423), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -1965,7 +1965,7 @@
     {
       "id": "browser.jsonrpc.model",
       "file": "token-indexer/test/browser-jsonrpc.test.ts",
-      "description": "the JSON RPC tab's rows are the registry's methods and the Node-only ones, marked; requests and answers as text"
+      "description": "the JSON RPC tab's rows are the registry's methods and the Node-only ones, marked, grouped by where their answer comes from in this browser and sorted by name; requests and answers as text"
     },
     {
       "id": "browser.host.jsonrpc",
@@ -1985,7 +1985,7 @@
     {
       "id": "browser.jsonrpc.tab",
       "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
-      "description": "in Chromium: JSON RPC on by default; its tab lists every registry method and the Node-only ones with source, state, example parameters and Call; Call on each shows the request and Node's answer; no CSP violation"
+      "description": "in Chromium: JSON RPC on by default; its tab lists every registry method and the Node-only ones in their groups, each shown as the model has it; each callable method's example makes the example's request and Call shows Node's answer; no 'no estimate' text; no CSP violation"
     },
     {
       "id": "browser.jsonrpc.answers",
@@ -1995,7 +1995,7 @@
     {
       "id": "browser.jsonrpc.hostile",
       "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
-      "description": "in Chromium: hostile text in parameters, in the parser's message and in indexer answers is drawn as text with visible marks or never passed on; nothing comes alive"
+      "description": "in Chromium: hostile text in parameters written as JSON, in the parser's message, in a form field, in the stored history and in indexer answers is drawn as text with visible marks or never passed on; nothing comes alive"
     },
     {
       "id": "browser.jsonrpc.module-switch",
@@ -2070,7 +2070,52 @@
     {
       "id": "browser.jsonrpc.concurrent-calls",
       "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
-      "description": "in Chromium: calls on two rows at once each draw in their own row; a slow answer never draws over a later call; the last call made is the one reported"
+      "description": "in Chromium: calls on two methods at once each keep their answer with their method; a slow answer is shown while awaited and once it comes, never over the other's; the last call made is the one reported"
+    },
+    {
+      "id": "evm-rpc.method-info.param-specs",
+      "file": "evm-rpc/test/method-info.test.ts",
+      "description": "every method has a one-line summary; each served method's parameter kinds fit its example and are exactly what the method takes: its required ones alone, all of them and every block tag answered, one more refused -32602"
+    },
+    {
+      "id": "browser.jsonrpc.explorer-model",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "the JSON RPC explorer's form gives back every example and checks each kind of field; the search, the curl command (through a POSIX shell), the answer tree's decimals and next calls on Node's answers, the URL's view and method, the history"
+    },
+    {
+      "id": "browser.jsonrpc.status-model",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "the JSON RPC status view's figures and strip, each from its field of the module's state"
+    },
+    {
+      "id": "browser.host.jsonrpc-state",
+      "file": "token-indexer/test/browser-jsonrpc.test.ts",
+      "description": "the worker host's jsonrpc-state: switch, database, method counts, chain ID, client version and indexer, the calls as they happen, the origin's pacing queue (interval, waiting, Retry-After hold), the last error kept when the module stops"
+    },
+    {
+      "id": "browser.jsonrpc.page-structure",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: the JSON RPC tab's page has the token explorer page's structure and computed look (header, sub-tabs, strip, refresh, banner, view, footer), its own title, subtitle and footer note; its strip is the module's state"
+    },
+    {
+      "id": "browser.jsonrpc.routes",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: the JSON RPC view and method in the URL's query never disturb the token explorer's fragment routes nor make it draw again, and the other way round; reloads and shared URLs open the same view and method"
+    },
+    {
+      "id": "browser.jsonrpc.explorer",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: the method list's groups, search and keyboard; typed fields checked as typed; the live request; JSON mode; copy as JSON and curl; Ctrl+Enter; a Node-only method never called; the narrow layout"
+    },
+    {
+      "id": "browser.jsonrpc.next-calls",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: answers as a tree or text; block numbers, block hashes and transaction hashes in an answer open their calls, answered as Node; the history opens and reruns calls, survives a reload and is cleared"
+    },
+    {
+      "id": "browser.jsonrpc.status",
+      "file": "token-indexer/test/browser-jsonrpc-chrome.test.ts",
+      "description": "in Chromium: the JSON RPC status view's figures equal their sources (the engine's state, the build's chain and indexer, Node's answers, the list's counts, the tab's calls, an indexer error), read again by refresh and every 5 s"
     }
   ],
   "deferred": [

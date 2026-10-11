@@ -21,10 +21,23 @@
  *   refused `busy` at once, and accepted again once one is answered.
  * - `[[browser.jsonrpc.stop-cancels]]` — closing the module while its requests wait for pacing slots ends them at once
  *   (refused `stopped`, their indexer calls never made) and closes its database without waiting for their slots.
- * - `[[browser.jsonrpc.model]]` — the tab's rows are the registry's methods, each once (served ones with their source
- *   and example parameters, not-implemented ones with their classification), then the Node-only methods, marked and
- *   not callable; a call's request is a JSON-RPC 2.0 request with the edited parameters (none when empty, refused when
- *   not JSON or too long); an answer is shown with its status and its body indented (as it is when not JSON).
+ * - `[[browser.jsonrpc.model]]` — the tab's rows are the registry's methods, each once (served ones with their source,
+ *   summary, parameter kinds and example, not-implemented ones with their classification), and the Node-only methods,
+ *   marked and not callable, grouped by where their answer comes from in this browser (indexer, configuration and
+ *   constants, the database that is empty here, not implemented, Node only) and sorted by name in each group; a call's
+ *   request is a JSON-RPC 2.0 request with the edited parameters (none when empty, refused when not JSON or too long);
+ *   an answer is shown with its status and its body indented (as it is when not JSON).
+ * - `[[browser.jsonrpc.explorer-model]]` — the explorer's form: every served method's example put in its typed fields
+ *   gives back the example, and the request is the example's; each kind of field checks what it holds and says what is
+ *   wrong (a number in decimal or hex becomes a canonical quantity; a block is a tag, a number, a hash or left out; an
+ *   optional field is left out only after the last one given); the search keeps the methods holding every word; the
+ *   `curl` command, run by a POSIX shell, sends exactly the request (quotes, `$(…)`, backticks and line breaks in it
+ *   included); the answer tree of Node's answers shows quantities in decimal, and its block numbers, block hashes and
+ *   transaction hashes open the calls that read them (and nothing else does), bounded in nodes; the URL's view and
+ *   method keep the shell's tab and the explorer's fragment; the history keeps the newest calls, at most 50, and what
+ *   is read back from storage is checked.
+ * - `[[browser.jsonrpc.status-model]]` — the status view's figures and the strip, each from its field of the engine's
+ *   `jsonrpc-state` answer.
  * - `[[browser.jsonrpc.model-bounds]]` — parameters the tab cannot send or show are refused with a message, never an
  *   exception: nesting deeper than the bound (also deep enough to break serialization), and parameters whose indented
  *   text would be too long to show; an answer too long to show is shown cut, with its length.
@@ -37,6 +50,11 @@
  * - `[[browser.host.jsonrpc-bounded]]` — the worker host refuses a `jsonrpc` request beyond the module's bound `busy` (85
  *   at once: 8 answered as Node does, the rest refused, none answered with an error of the module's own), and requests
  *   waiting for pacing slots when the module is switched off are answered `module-off` at once.
+ * - `[[browser.host.jsonrpc-state]]` — the worker host's `jsonrpc-state`: the switch, the database (none before the first
+ *   call, open after it), the methods' counts (the registry's and the Node-only list's), the chain ID, client version
+ *   and indexer the worker was given, the calls answered, in flight, refused busy, refused off and failed (each counted
+ *   as it happens), the indexer origin's pacing queue (its interval, the requests waiting, a Retry-After hold), and the
+ *   last error (a failed start, an indexer that answers an HTTP error, kept when the module stops).
  * - `[[browser.host.jsonrpc-restored]]` — the switch lives in the settings: a new host on them (a reload, the next
  *   worker or leader tab) refuses while it is off and answers once on; a store replaced by `range`, `reset` or
  *   `import` keeps it off.
@@ -54,11 +72,43 @@ import { BLOCK_HASH, HEIGHT, recordedIndexerFetch, TX_HASH } from "../../evm-rpc
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { METHOD_NOTES, NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
 import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
-import { answerText, buildRequest, MAX_PARAMS_CHARS, MAX_PARAMS_DEPTH, MAX_SHOWN_CHARS, methodRows, registryMethods } from "../browser/jsonrpc-model.ts";
+import { execFileSync } from "node:child_process";
+import {
+  agoText,
+  answerText,
+  answerTree,
+  buildRequest,
+  curlCommand,
+  type FieldValue,
+  fieldsFromParams,
+  filterRows,
+  groupOfSource,
+  type HistoryEntry,
+  MAX_HISTORY,
+  MAX_PARAMS_CHARS,
+  MAX_PARAMS_DEPTH,
+  MAX_SHOWN_CHARS,
+  MAX_TREE_NODES,
+  METHOD_GROUPS,
+  methodRows,
+  NODE_EVM_RPC_URL,
+  outcomeOf,
+  paramsFromFields,
+  parseHistory,
+  registryMethods,
+  requestFor,
+  rpcRouteOf,
+  statusFigures,
+  stripParts,
+  type TreeNode,
+  urlWithRpcRoute,
+  withHistory,
+} from "../browser/jsonrpc-model.ts";
+import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
 import { JSONRPC_CHAIN_ID, JSONRPC_MAX_REQUESTS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, openEvmRpcDatabase, startJsonRpcModule } from "../browser/jsonrpc-module.ts";
 import { PacingQueue, QueueFullError } from "../browser/pacing-queue.ts";
 import type { WorkerHost } from "../browser/host.ts";
-import { type ApiResult, type ExportResult, type HostStatus, JSONRPC_MAX_BODY_CHARS, parseRequest, PROTOCOL_VERSION, type Response as HostResponse, type StartConfig } from "../browser/protocol.ts";
+import { type ApiResult, type ExportResult, type HostStatus, JSONRPC_MAX_BODY_CHARS, type JsonRpcStateResult, JsonRpcStateResultSchema, parseRequest, PROTOCOL_VERSION, type Response as HostResponse, type StartConfig } from "../browser/protocol.ts";
 import { type EngineSettingsStore, memorySettingsStore } from "../browser/settings.ts";
 import { createTapeReplay } from "../../chain-archive-sync/tape-replay.js";
 import { BROWSER_INDEXER_URL, BROWSER_NODE_URL } from "../browser/config.ts";
@@ -335,7 +385,7 @@ describe("the browser engine's JSON RPC module", () => {
     await expect(module.handle(CHAIN_ID)).rejects.toMatchObject({ code: "stopped" });
   }, 30_000);
 
-  it("[[browser.jsonrpc.model]] the rows are the registry's methods and the Node-only ones; requests and answers as text", () => {
+  it("[[browser.jsonrpc.model]] the rows are the registry's methods and the Node-only ones, grouped by where their answer comes from; requests and answers as text", () => {
     expect(registryMethods()).toEqual(registry.listMethods());
     const rows = methodRows();
     const names = rows.map((r) => r.method);
@@ -344,16 +394,24 @@ describe("the browser engine's JSON RPC module", () => {
     const stubs = new Map(NOT_IMPLEMENTED_METHODS.map((m) => [m.method, m]));
     for (const r of rows) {
       if (stubs.has(r.method)) {
-        expect(r).toMatchObject({ kind: "not-implemented", callable: true, params: "[]", state: `not implemented (-32004): ${stubs.get(r.method)!.classification}`, note: stubs.get(r.method)!.reason });
+        expect(r).toMatchObject({ kind: "not-implemented", group: "not-implemented", callable: true, params: "[]", paramSpecs: [], example: [], state: `not implemented (-32004): ${stubs.get(r.method)!.classification}`, note: stubs.get(r.method)!.reason });
       } else if (registry.getMethod(r.method) !== undefined) {
         const note = METHOD_NOTES[r.method]!;
-        expect(r).toMatchObject({ kind: "served", callable: true, state: "served here", source: note.source, params: JSON.stringify(note.params) });
+        expect(r).toMatchObject({ kind: "served", group: groupOfSource(note.source), callable: true, state: "served here", source: note.source, summary: note.summary, paramSpecs: note.paramSpecs, example: note.params, params: JSON.stringify(note.params) });
       } else {
         expect(NODE_ONLY_METHODS.map((m) => m.method)).toContain(r.method);
-        expect(r).toMatchObject({ kind: "node-only", callable: false, state: "served by Node only", params: "" });
+        expect(r).toMatchObject({ kind: "node-only", group: "node-only", callable: false, state: "served by Node only", params: "", paramSpecs: [], summary: NODE_ONLY_METHODS.find((m) => m.method === r.method)!.summary });
       }
     }
-    expect(rows.map((r) => r.kind)).toEqual([...rows.map((r) => r.kind)].sort((a, b) => ["served", "node-only", "not-implemented"].indexOf(a) - ["served", "node-only", "not-implemented"].indexOf(b)));
+    // The list's order: the groups in turn, by name in each.
+    const order: string[] = METHOD_GROUPS.map((g) => g.id);
+    expect(names).toEqual([...rows].sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group) || (a.method < b.method ? -1 : 1)).map((r) => r.method));
+    // Where the answer comes from in this browser: a database read first falls back to the indexer.
+    expect(["indexer", "indexer; pg:tx_index with full transactions", "pg:tx_index, then indexer", "pg:tx_index, then indexer; pg:logs"].map(groupOfSource)).toEqual(["indexer", "indexer", "indexer", "indexer"]);
+    expect(["pg:balances, pg:address_map", "pg:tx_index", "pg:address_map"].map(groupOfSource)).toEqual(["database", "database", "database"]);
+    expect(["config", "const", "const; indexer for a block tag"].map(groupOfSource)).toEqual(["config", "config", "config"]);
+    expect(rows.filter((r) => r.group === "database").map((r) => r.method)).toEqual(["eth_getBalance", "eth_getCode", "eth_getTransactionCount"]);
+    expect(rows.filter((r) => r.group === "node-only").map((r) => r.method)).toEqual(NODE_ONLY_METHODS.map((m) => m.method).sort());
     expect(rows.find((r) => r.method === "eth_call")!.note).toContain("Node only");
 
     expect(buildRequest(7, "eth_getBalance", '[\n "0x00", "latest"]')).toEqual({ ok: true, body: '{"jsonrpc":"2.0","id":7,"method":"eth_getBalance","params":["0x00","latest"]}', text: '{\n  "jsonrpc": "2.0",\n  "id": 7,\n  "method": "eth_getBalance",\n  "params": [\n    "0x00",\n    "latest"\n  ]\n}' });
@@ -392,6 +450,208 @@ describe("the browser engine's JSON RPC module", () => {
     expect(shown.text).toMatch(/… \(cut: [\d,]+ characters in all\)$/);
   });
 
+  it("[[browser.jsonrpc.explorer-model]] the form gives back every example; each kind of field is checked; search, curl, the answer tree and its next calls, the URL and the history", async () => {
+    const rows = methodRows();
+    // Every callable method's example through its form: the same parameters, the same request.
+    for (const r of rows.filter((x) => x.callable)) {
+      const back = paramsFromFields(r.paramSpecs, fieldsFromParams(r.paramSpecs, r.example));
+      expect(back, r.method).toEqual({ ok: true, params: r.example });
+      const request = { jsonrpc: "2.0", id: 5, method: r.method, params: r.example };
+      expect(requestFor(5, r.method, r.example), r.method).toEqual({ ok: true, body: JSON.stringify(request), text: JSON.stringify(request, null, 2) });
+    }
+    expect(requestFor(6, "eth_chainId", undefined)).toMatchObject({ ok: true, body: '{"jsonrpc":"2.0","id":6,"method":"eth_chainId"}' });
+
+    // Each kind of field.
+    const text = (t: string): FieldValue => ({ kind: "text", text: t });
+    const block = (choice: string, number = "", hash = ""): FieldValue => ({ kind: "block", choice: choice as "latest", number, hash });
+    const one = (kind: string, v: FieldValue, optional = false) => paramsFromFields([{ name: "x", kind: kind as "hash", ...(optional ? { optional: true } : {}) }], [v]);
+    const address = `0x${"ab".repeat(20)}`;
+    const hash = `0x${BLOCK_HASH.h41}`;
+    expect(one("address", text(` ${address} `))).toEqual({ ok: true, params: [address] });
+    expect(one("address", text("0x12"))).toEqual({ ok: false, errors: ["x: an address: 0x and 40 hex digits"] });
+    expect(one("hash", text(hash))).toEqual({ ok: true, params: [hash] });
+    expect(one("hash", text(address))).toEqual({ ok: false, errors: ["x: a hash: 0x and 64 hex digits"] });
+    expect(one("quantity", text("255"))).toEqual({ ok: true, params: ["0xff"] });
+    expect(one("quantity", text("0x00Ff"))).toEqual({ ok: true, params: ["0xff"] });
+    expect(one("quantity", text("0"))).toEqual({ ok: true, params: ["0x0"] });
+    for (const bad of ["-1", "1.5", "0x", "ff", "1".repeat(81), ""]) expect(one("quantity", text(bad)), bad).toEqual({ ok: false, errors: ["x: a number: decimal, or 0x and hex digits"] });
+    expect(one("data", text("0x1234"))).toEqual({ ok: true, params: ["0x1234"] });
+    expect(one("data", text("0x123"))).toEqual({ ok: false, errors: ["x: data: 0x and an even number of hex digits"] });
+    expect(one("boolean", { kind: "boolean", checked: true })).toEqual({ ok: true, params: [true] });
+    expect(one("boolean", { kind: "boolean", checked: false })).toEqual({ ok: true, params: [false] });
+    for (const tag of ["latest", "earliest", "pending", "safe", "finalized"]) expect(one("blockTag", block(tag))).toEqual({ ok: true, params: [tag] });
+    expect(one("blockTag", block("number", "41"))).toEqual({ ok: true, params: ["0x29"] });
+    expect(one("blockTag", block("number", "0x029"))).toEqual({ ok: true, params: ["0x29"] });
+    expect(one("blockTag", block("number", "forty"))).toEqual({ ok: false, errors: ["x: a block number is a decimal number, or 0x and hex digits"] });
+    expect(one("blockTag", block("hash", "", hash))).toEqual({ ok: false, errors: ["x: a hash: 0x and 64 hex digits"] });
+    expect(one("blockRef", block("hash", "", hash))).toEqual({ ok: true, params: [hash] });
+    expect(one("blockRef", block("hash", "", "0x1"))).toEqual({ ok: false, errors: ["x: a hash: 0x and 64 hex digits"] });
+    expect(one("blockTag", block("omit"), true)).toEqual({ ok: true, params: [] });
+    expect(one("blockTag", block("omit"))).toEqual({ ok: false, errors: ["x: a block tag, or a block number"] });
+    expect(one("percentiles", text("25, 75.5,100"))).toEqual({ ok: true, params: [[25, 75.5, 100]] });
+    expect(one("percentiles", text(""), true)).toEqual({ ok: true, params: [] });
+    for (const bad of ["101", "a", "25,,75", "-1"]) expect(one("percentiles", text(bad)), bad).toEqual({ ok: false, errors: ["x: numbers from 0 to 100, separated by commas"] });
+    expect(one("object", text('{"to":"0x00","data":"0x"}'))).toEqual({ ok: true, params: [{ to: "0x00", data: "0x" }] });
+    for (const bad of ["[1]", "{", "7", "null"]) expect(one("object", text(bad)), bad).toEqual({ ok: false, errors: ["x: a JSON object"] });
+    expect(one("object", text(`{"a":${"[".repeat(70)}${"]".repeat(70)}}`))).toEqual({ ok: false, errors: [`x: nested deeper than ${MAX_PARAMS_DEPTH - 1} levels`] });
+    // An optional field left out before one that is given; every field's message at once.
+    expect(paramsFromFields([{ name: "a", kind: "blockTag", optional: true }, { name: "b", kind: "percentiles", optional: true }], [block("omit"), text("5")])).toEqual({ ok: false, errors: ["a: needed when a later parameter is given", null] });
+    expect(paramsFromFields([{ name: "a", kind: "address" }, { name: "b", kind: "boolean" }, { name: "c", kind: "hash" }], [text("no"), { kind: "boolean", checked: true }, text("no")])).toEqual({ ok: false, errors: ["a: an address: 0x and 40 hex digits", null, "c: a hash: 0x and 64 hex digits"] });
+    // Values put back in the fields: a hash in a block reference, a number, an optional block not given.
+    expect(fieldsFromParams([{ name: "b", kind: "blockRef" }], [hash])).toEqual([block("hash", "", hash)]);
+    expect(fieldsFromParams([{ name: "b", kind: "blockTag" }], ["0x29"])).toEqual([block("number", "0x29")]);
+    expect(fieldsFromParams([{ name: "a", kind: "address" }, { name: "b", kind: "blockTag", optional: true }], [address])).toEqual([text(address), block("omit")]);
+    expect(fieldsFromParams([{ name: "p", kind: "percentiles", optional: true }, { name: "o", kind: "object" }], [[25, 75], { to: "0x" }])).toEqual([text("25, 75"), text('{"to":"0x"}')]);
+
+    // The search: every word, case aside, in the name, source, summary or state.
+    expect(filterRows(rows, "  ")).toEqual(rows);
+    const found = filterRows(rows, "BLOCKNUMBER indexer");
+    expect(found.length).toBeGreaterThan(1);
+    for (const r of rows) {
+      const t = `${r.method} ${r.source} ${r.summary} ${r.state}`.toLowerCase();
+      expect(found.includes(r), r.method).toBe(t.includes("blocknumber") && t.includes("indexer"));
+    }
+    expect(filterRows(rows, "pg:balances").map((r) => r.method)).toEqual(["eth_getBalance"]);
+    expect(filterRows(rows, "no such method")).toEqual([]);
+
+    // The curl command: a POSIX shell passes exactly the request to curl (here a function standing in for it).
+    const awkward = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ data: "it's $(id) `id` \\ \"q\"\nline'" }] });
+    for (const body of [awkward, '{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}']) {
+      const cmd = curlCommand(body);
+      expect(cmd.startsWith("curl -s -X POST -H 'Content-Type: application/json' --data '")).toBe(true);
+      expect(cmd.endsWith(` ${NODE_EVM_RPC_URL}`)).toBe(true);
+      const args = JSON.parse(execFileSync("sh", ["-c", `curl() { node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' -- "$@"; }; ${cmd}`], { encoding: "utf8" })) as string[];
+      expect(args).toEqual(["-s", "-X", "POST", "-H", "Content-Type: application/json", "--data", body, NODE_EVM_RPC_URL]);
+    }
+    expect(NODE_EVM_RPC_URL).toBe("http://127.0.0.1:8545");
+
+    // The answer tree, on Node's answers: quantities in decimal; block numbers, block hashes and transaction hashes open
+    // the calls that read them, and nothing else does.
+    const nodeAnswer = async (method: string, params: unknown[]): Promise<unknown> => JSON.parse((await viaHttp(port, JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }))).body);
+    const walk = (t: TreeNode, path: string, out: Map<string, TreeNode>): Map<string, TreeNode> => {
+      out.set(path, t);
+      for (const c of t.children) walk(c, `${path}/${c.key}`, out);
+      return out;
+    };
+    const links = (t: TreeNode): Record<string, string[]> =>
+      Object.fromEntries([...walk(t, "", new Map())].filter(([, n]) => n.next.length > 0).map(([p, n]) => [p, n.next.map((x) => `${x.label}: ${x.method} ${JSON.stringify(x.params)}`)]));
+    const head = answerTree(await nodeAnswer("eth_blockNumber", []), "eth_blockNumber");
+    expect(head.children.map((c) => [c.key, c.text, c.decimal])).toEqual([["jsonrpc", "2.0", null], ["id", "1", null], ["result", "0x2a", "42"]]);
+    expect(links(head)).toEqual({ "/result": ['open block: eth_getBlockByNumber ["0x2a",false]'] });
+    // A block with its whole transactions.
+    const full = answerTree(await nodeAnswer("eth_getBlockByNumber", ["0x2a", true]), "eth_getBlockByNumber");
+    const blockHash = `0x${BLOCK_HASH.head}`;
+    const tx0 = `0x${TX_HASH.success}`;
+    const fullLinks = links(full);
+    expect(fullLinks["/result/number"]).toEqual(['open block: eth_getBlockByNumber ["0x2a",false]']);
+    expect(fullLinks["/result/hash"]).toEqual([`open block: eth_getBlockByHash ["${blockHash}",false]`]);
+    expect(fullLinks["/result/parentHash"]).toEqual([`open block: eth_getBlockByHash ["0x${BLOCK_HASH.h41}",false]`]);
+    expect(fullLinks["/result/transactions/0/hash"]).toEqual([`open transaction: eth_getTransactionByHash ["${tx0}"]`, `open receipt: eth_getTransactionReceipt ["${tx0}"]`]);
+    expect(fullLinks["/result/transactions/0/blockHash"]).toEqual([`open block: eth_getBlockByHash ["${blockHash}",false]`]);
+    expect(fullLinks["/result/transactions/0/blockNumber"]).toEqual(['open block: eth_getBlockByNumber ["0x2a",false]']);
+    const allowed = /^\/result\/(?:number|hash|parentHash|transactions\/\d+\/(?:hash|blockHash|blockNumber))$/;
+    for (const p of Object.keys(fullLinks)) expect(p).toMatch(allowed);
+    const fullNodes = walk(full, "", new Map());
+    expect(fullNodes.get("/result/number")!.decimal).toBe("42");
+    expect(fullNodes.get("/result/hash")!.decimal).toBeNull();
+    expect(fullNodes.get("/result/miner")!.next).toEqual([]);
+    // A block with its transaction hashes.
+    const hashes = links(answerTree(await nodeAnswer("eth_getBlockByNumber", ["0x2a", false]), "eth_getBlockByNumber"));
+    expect(hashes["/result/transactions/0"]).toEqual([`open transaction: eth_getTransactionByHash ["${tx0}"]`, `open receipt: eth_getTransactionReceipt ["${tx0}"]`]);
+    // A receipt: its transaction, its block, its logs'.
+    const receipt = links(answerTree(await nodeAnswer("eth_getTransactionReceipt", [tx0]), "eth_getTransactionReceipt"));
+    expect(receipt["/result/transactionHash"]).toEqual([`open transaction: eth_getTransactionByHash ["${tx0}"]`, `open receipt: eth_getTransactionReceipt ["${tx0}"]`]);
+    expect(receipt["/result/blockHash"]).toEqual([`open block: eth_getBlockByHash ["${blockHash}",false]`]);
+    expect(receipt["/result/blockNumber"]).toEqual(['open block: eth_getBlockByNumber ["0x2a",false]']);
+    // A quantity that is not a block number opens nothing; a non-canonical one shows no decimal.
+    expect(links(answerTree({ jsonrpc: "2.0", id: 1, result: "0x2a" }, "eth_gasPrice"))).toEqual({});
+    expect(answerTree({ jsonrpc: "2.0", id: 1, result: "0x002a" }, "eth_blockNumber").children[2]).toMatchObject({ decimal: null, next: [] });
+    // Bounded: a long answer keeps the first nodes and counts the rest.
+    const big = answerTree({ jsonrpc: "2.0", id: 1, result: Array.from({ length: 5_000 }, (_, i) => `0x${i.toString(16)}`) }, "eth_accounts");
+    const count = (t: TreeNode): number => 1 + t.children.reduce((a, c) => a + count(c), 0);
+    expect(count(big)).toBe(MAX_TREE_NODES);
+    expect(big.children[2]!.more).toBe(5_000 - (MAX_TREE_NODES - 4));
+    // As deep as JSON nests: no overflow.
+    const deep = JSON.parse(`${"[".repeat(100_000)}${"]".repeat(100_000)}`) as unknown;
+    expect(count(answerTree(deep, "eth_chainId"))).toBeLessThanOrEqual(MAX_TREE_NODES);
+
+    // The URL: the view and the method beside the shell's tab; the explorer's fragment kept.
+    expect(rpcRouteOf("?tab=jsonrpc&rpc=status&rpc-method=eth_call")).toEqual({ view: "status", method: "eth_call" });
+    expect(rpcRouteOf("?tab=jsonrpc")).toEqual({ view: "methods", method: null });
+    expect(rpcRouteOf("?rpc=bogus&rpc-method=")).toEqual({ view: "methods", method: null });
+    expect(urlWithRpcRoute("https://site.test/index.html?tab=jsonrpc#/status", { view: "status", method: "eth_call" })).toBe("https://site.test/index.html?tab=jsonrpc&rpc=status&rpc-method=eth_call#/status");
+    expect(urlWithRpcRoute("https://site.test/index.html?tab=jsonrpc&rpc=status&rpc-method=eth_call#/", { view: "methods", method: null })).toBe("https://site.test/index.html?tab=jsonrpc&rpc=methods#/");
+
+    // The history: newest first, at most 50; parameters too long to send are not kept.
+    let h: HistoryEntry[] = [];
+    for (let i = 0; i < 60; i++) h = withHistory(h, { method: "eth_chainId", params: "[]", at: 1_000 + i, outcome: 'result "0x960"' });
+    expect(h.length).toBe(MAX_HISTORY);
+    expect(h.map((e) => e.at)).toEqual(Array.from({ length: MAX_HISTORY }, (_, i) => 1_059 - i));
+    expect(withHistory([], { method: "eth_call", params: `[${" ".repeat(MAX_PARAMS_CHARS)}]`, at: 1, outcome: "x" })).toEqual([]);
+    const known = new Set(rows.filter((r) => r.callable).map((r) => r.method));
+    expect(parseHistory(JSON.stringify(h), known)).toEqual(h);
+    const good: HistoryEntry = { method: "eth_getBalance", params: JSON.stringify([address, "latest"]), at: 5, outcome: "ok" };
+    expect(parseHistory(JSON.stringify([
+      good,
+      { ...good, method: "eth_getLogs" },
+      { ...good, method: "no_such_method" },
+      { ...good, params: "[1," },
+      { ...good, params: `[${"[".repeat(70)}${"]".repeat(70)}]` },
+      { ...good, at: "5" },
+      { ...good, outcome: "x".repeat(201) },
+      { ...good, params: 7 },
+      "text",
+      null,
+      { ...good, params: "" },
+    ]), known)).toEqual([good, { ...good, params: "" }]);
+    for (const t of [null, "", "{", "{}", "7", JSON.stringify(Array(60).fill(good))]) expect(parseHistory(t, known).length, String(t).slice(0, 20)).toBeLessThanOrEqual(t !== null && t.startsWith("[") ? MAX_HISTORY : 0);
+    expect(outcomeOf({ status: 200, body: '{"jsonrpc":"2.0","id":1,"result":"0x960"}' }, null)).toBe('result "0x960"');
+    expect(outcomeOf({ status: 200, body: '{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad"}}' }, null)).toBe("error -32602: bad");
+    expect(outcomeOf({ status: 204, body: "" }, null)).toBe("HTTP 204");
+    expect(outcomeOf({ status: 200, body: "[1,2]" }, null)).toBe("2 answers");
+    expect(outcomeOf(null, "no answer · busy")).toBe("no answer · busy");
+    expect(outcomeOf({ status: 200, body: JSON.stringify({ result: "x".repeat(500) }) }, null).length).toBe(80);
+  });
+
+  it("[[browser.jsonrpc.status-model]] the status view's figures and the strip, each from its field of the module's state", () => {
+    const s: JsonRpcStateResult = {
+      enabled: true,
+      database: "open",
+      chainId: "2400",
+      clientVersion: "umbradb-evm-rpc/9.9.9",
+      indexerUrl: "https://indexer.example/api/v4/graphql",
+      methods: { served: 26, notImplemented: 41, nodeOnly: 4 },
+      calls: { answered: 1234, inFlight: 2, refusedBusy: 3, refusedOff: 4, failed: 5 },
+      pacing: { origin: "https://indexer.example", minIntervalMs: 250, waiting: 6, heldForMs: 2_400 },
+      lastError: { at: 100_000, message: "https://indexer.example answered HTTP 503" },
+    };
+    expect(JsonRpcStateResultSchema.parse(s)).toEqual(s);
+    expect(statusFigures(s, 130_000).map((f) => [f.field, f.label, f.value, f.bad ?? false])).toEqual([
+      ["rpc-state.enabled", "module", "on", false],
+      ["rpc-state.database", "evm_rpc database", "open, in memory (empty: its tables are filled in Node)", false],
+      ["rpc-state.methods", "methods", "26 served here · 41 not implemented (-32004) · 4 served by Node only", false],
+      ["rpc-state.chainId", "chain ID", "2400 (0x960)", false],
+      ["rpc-state.clientVersion", "client version", "umbradb-evm-rpc/9.9.9", false],
+      ["rpc-state.indexerUrl", "indexer", "https://indexer.example/api/v4/graphql", false],
+      ["rpc-state.calls", "calls since the engine started", "1,234 answered · 2 in flight · 3 refused busy · 4 refused off · 5 failed", false],
+      ["rpc-state.pacing", "pacing of https://indexer.example", "one request every 250 ms · 6 waiting · held 3 s more (Retry-After)", false],
+      ["rpc-state.lastError", "last error", "https://indexer.example answered HTTP 503 (30 s ago)", true],
+    ]);
+    const quiet = statusFigures({ ...s, enabled: false, database: "none", pacing: { ...s.pacing, minIntervalMs: 0, waiting: 0, heldForMs: 0 }, lastError: null }, 0);
+    expect(Object.fromEntries(quiet.map((f) => [f.field, [f.value, f.bad ?? false]]))).toMatchObject({
+      "rpc-state.enabled": ["off", true],
+      "rpc-state.database": ["none yet (made in memory at the first call)", false],
+      "rpc-state.pacing": ["requests not spaced · 0 waiting", false],
+      "rpc-state.lastError": ["none", false],
+    });
+    expect(statusFigures({ ...s, database: "starting" }, 0)[1]!.value).toBe("being made");
+    expect(statusFigures({ ...s, database: "closing" }, 0)[1]!.value).toBe("being closed");
+    expect(stripParts(s)).toEqual([{ label: "module", value: "on" }, { label: "answered", value: "1,234" }, { label: "in flight", value: "2" }, { label: "waiting", value: "6" }]);
+    expect([agoText(0, 400), agoText(0, 59_400), agoText(0, 61_000), agoText(0, 3 * 3_600_000), agoText(5_000, 0)]).toEqual(["0 s ago", "59 s ago", "1 min ago", "3 h ago", "0 s ago"]);
+    // Every field of the state is shown.
+    expect(Object.keys(s).filter((k) => !statusFigures(s, 0).some((f) => f.field === `rpc-state.${k}`))).toEqual([]);
+  });
+
   // ── The worker host ───────────────────────────────────────────────────────────────────────────────────────────────
 
   let nextId = 1;
@@ -427,7 +687,7 @@ describe("the browser engine's JSON RPC module", () => {
         const m = await startJsonRpcModule(o);
         c.started++;
         c.maxOpen = Math.max(c.maxOpen, c.started - c.closed);
-        return { methods: m.methods, handle: (b) => m.handle(b), close: async () => { await m.close(); c.closed++; } };
+        return { methods: m.methods, handle: (b) => m.handle(b), close: async () => { await m.close(); c.closed++; }, lastIndexerProblem: () => m.lastIndexerProblem() };
       },
     };
     return c;
@@ -712,6 +972,118 @@ describe("the browser engine's JSON RPC module", () => {
       expect(JSON.parse(((await jsonrpc(plain.host, CHAIN_ID)) as ApiResult).body)).toMatchObject({ result: "0x960" });
     } finally {
       await plain.host.close();
+    }
+  }, 60_000);
+
+  it("[[browser.host.jsonrpc-state]] the module's state: the switch, the database, the methods' counts, the chain ID, client version and indexer given, the calls as they happen, the indexer origin's pacing queue, the last error", async () => {
+    const recorded = recordedIndexerFetch().fetch;
+    let answer: "recorded" | "500" | "429" = "recorded";
+    let gate: Promise<void> | undefined;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (gate !== undefined) await gate;
+      if (answer === "500") return new Response("down", { status: 500 });
+      if (answer === "429") {
+        answer = "recorded";
+        return new Response("slow down", { status: 429, headers: { "retry-after": "2" } });
+      }
+      return recorded(input, init);
+    }) as typeof fetch;
+    const modules = counted();
+    modules.fail = 1;
+    const { host } = jsonRpcHost(memorySettingsStore(), modules, { fetch: fetchImpl, jsonRpc: { clientVersion: CLIENT_VERSION, chainId: 2401n, start: modules.start } });
+    const state = async (): Promise<JsonRpcStateResult> => JsonRpcStateResultSchema.parse(await ok<JsonRpcStateResult>(host, "jsonrpc-state"));
+    const blockNumber = (id: number): string => JSON.stringify({ jsonrpc: "2.0", id, method: "eth_blockNumber" });
+    const untilState = async (what: string, cond: (s: JsonRpcStateResult) => boolean, timeoutMs = 10_000): Promise<JsonRpcStateResult> => {
+      for (const end = Date.now() + timeoutMs; ; ) {
+        const s = await state();
+        if (cond(s)) return s;
+        if (Date.now() > end) throw new Error(`timed out waiting for ${what}: ${JSON.stringify(s)}`);
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    const rows = methodRows();
+    try {
+      // Before the first call: no database, nothing counted; the methods are the tab's list's.
+      expect(await state()).toEqual({
+        enabled: true,
+        database: "none",
+        chainId: "2401",
+        clientVersion: CLIENT_VERSION,
+        indexerUrl: INDEXER,
+        methods: { served: rows.filter((r) => r.kind === "served").length, notImplemented: NOT_IMPLEMENTED_METHODS.length, nodeOnly: NODE_ONLY_METHODS.length },
+        calls: { answered: 0, inFlight: 0, refusedBusy: 0, refusedOff: 0, failed: 0 },
+        pacing: { origin: new URL(INDEXER).origin, minIntervalMs: defaultMinIntervalMs(INDEXER), waiting: 0, heldForMs: 0 },
+        lastError: null,
+      });
+      expect((await state()).methods.served).toBe(Object.keys(METHOD_NOTES).length);
+
+      // A start that fails: counted as failed, and the last error.
+      const t0 = Date.now();
+      expect(await jsonrpc(host, CHAIN_ID)).toMatchObject({ refused: "internal" });
+      let s = await state();
+      expect([s.database, s.calls]).toEqual(["none", { answered: 0, inFlight: 0, refusedBusy: 0, refusedOff: 0, failed: 1 }]);
+      expect(s.lastError).toEqual({ at: expect.any(Number), message: "the JSON RPC module could not start: no memory for another database" });
+      expect(s.lastError!.at).toBeGreaterThanOrEqual(t0);
+
+      // Answered: the database open.
+      await jsonrpc(host, CHAIN_ID);
+      await jsonrpc(host, BLOCK);
+      s = await state();
+      expect([s.database, s.calls]).toEqual(["open", { answered: 2, inFlight: 0, refusedBusy: 0, refusedOff: 0, failed: 1 }]);
+
+      // In flight: as many as the module takes, held at the indexer; one more refused busy.
+      let release!: () => void;
+      gate = new Promise<void>((r) => (release = r));
+      const held = Array.from({ length: JSONRPC_MAX_REQUESTS }, (_, i) => jsonrpc(host, blockNumber(100 + i)));
+      await untilState("the requests in flight", (x) => x.calls.inFlight === JSONRPC_MAX_REQUESTS);
+      expect(await jsonrpc(host, CHAIN_ID)).toMatchObject({ refused: "busy" });
+      expect((await state()).calls).toEqual({ answered: 2, inFlight: JSONRPC_MAX_REQUESTS, refusedBusy: 1, refusedOff: 0, failed: 1 });
+      gate = undefined;
+      release();
+      await Promise.all(held);
+      expect((await state()).calls).toEqual({ answered: 2 + JSONRPC_MAX_REQUESTS, inFlight: 0, refusedBusy: 1, refusedOff: 0, failed: 1 });
+
+      // The indexer answers an HTTP error: the last error says which origin and what.
+      answer = "500";
+      const t1 = Date.now();
+      expect(JSON.parse(((await jsonrpc(host, blockNumber(7))) as ApiResult).body)).toMatchObject({ error: { code: -32603 } });
+      answer = "recorded";
+      s = await state();
+      expect(s.lastError).toEqual({ at: expect.any(Number), message: `${new URL(INDEXER).origin} answered HTTP 500` });
+      expect(s.lastError!.at).toBeGreaterThanOrEqual(t1);
+
+      // A 429 with Retry-After: the origin's queue held, the next request waiting in it.
+      answer = "429";
+      await jsonrpc(host, blockNumber(8));
+      s = await state();
+      expect(s.pacing.heldForMs).toBeGreaterThan(1_000);
+      expect(s.pacing.heldForMs).toBeLessThanOrEqual(2_000);
+      expect(s.lastError?.message).toBe(`${new URL(INDEXER).origin} answered HTTP 429`);
+      const waiting = jsonrpc(host, blockNumber(9));
+      expect((await untilState("the request to wait in the queue", (x) => x.pacing.waiting > 0, 1_500)).pacing.waiting).toBe(1);
+      expect(JSON.parse(((await waiting) as ApiResult).body)).toMatchObject({ result: "0x2a" });
+      expect((await state()).pacing).toMatchObject({ waiting: 0, heldForMs: 0 });
+
+      // Off: refused off counted, the database gone; the last error outlives the module.
+      await ok(host, "module", { module: "jsonrpc", enabled: false });
+      expect(await jsonrpc(host, CHAIN_ID)).toMatchObject({ refused: "module-off" });
+      s = await untilState("the module's database to close", (x) => x.database === "none");
+      expect(modules.closed).toBe(1);
+      expect([s.enabled, s.database, s.calls.refusedOff, s.lastError?.message]).toEqual([false, "none", 1, `${new URL(INDEXER).origin} answered HTTP 429`]);
+      // On again: no database until the next call.
+      await ok(host, "module", { module: "jsonrpc", enabled: true });
+      expect((await state()).database).toBe("none");
+      await jsonrpc(host, CHAIN_ID);
+      expect((await state()).database).toBe("open");
+    } finally {
+      await host.close();
+    }
+    // The public indexer's queue is the one the state shows.
+    const pub = jsonRpcHost(memorySettingsStore(), counted(), { indexerUrl: BROWSER_INDEXER_URL });
+    try {
+      expect((await ok<JsonRpcStateResult>(pub.host, "jsonrpc-state")).pacing).toEqual({ origin: new URL(BROWSER_INDEXER_URL).origin, minIntervalMs: 250, waiting: 0, heldForMs: 0 });
+    } finally {
+      await pub.host.close();
     }
   }, 60_000);
 

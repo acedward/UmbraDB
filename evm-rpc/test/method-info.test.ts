@@ -9,6 +9,11 @@
  *   what the WebSocket server (`logs/subscribe.ts`) answers by name.
  * - `[[evm-rpc.method-info.examples]]` — each served method called with its example over the recorded indexer answers
  *   a result, never an error, through the handler and identically through Node's HTTP server.
+ * - `[[evm-rpc.method-info.param-specs]]` — each method (the Node-only ones too) has a one-line summary; each served
+ *   one has the kinds of its positional parameters: names unique, optional ones only at the end; its example fits them
+ *   (each value of its kind, every required one given); the method answers a result with its required parameters only,
+ *   with all of them, and with each block tag Node accepts in a block parameter, and refuses one parameter more than
+ *   the kinds list (`-32602`), so the list is exactly what the method takes.
  */
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -17,7 +22,7 @@ import { emptyEvmRpcReader } from "../db.js";
 import { handleHttpRequest, textBody } from "../handler.js";
 import { IndexerGqlClient } from "../indexer-gql.js";
 import { registerGetLogs } from "../logs/get-logs.js";
-import { METHOD_NOTES, NODE_ONLY_METHODS } from "../method-info.js";
+import { METHOD_NOTES, NODE_ONLY_METHODS, type ParamKind } from "../method-info.js";
 import { registerAccountMethods } from "../methods/accounts.js";
 import { registerBlockMethods } from "../methods/blocks.js";
 import { registerErc20Call } from "../methods/erc20-call.js";
@@ -115,6 +120,67 @@ describe("the method notes", () => {
       }
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  /** Whether `v` is a value of `kind`, as the method takes it. */
+  const fits = (kind: ParamKind, v: unknown): boolean => {
+    const tags = ["latest", "earliest", "pending", "safe", "finalized"];
+    switch (kind) {
+      case "address":
+        return typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v);
+      case "hash":
+        return typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v);
+      case "quantity":
+        return typeof v === "string" && /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/.test(v);
+      case "blockTag":
+        return typeof v === "string" && (tags.includes(v) || /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/.test(v));
+      case "blockRef":
+        return typeof v === "string" && (tags.includes(v) || /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/.test(v) || /^0x[0-9a-fA-F]{64}$/.test(v));
+      case "boolean":
+        return typeof v === "boolean";
+      case "data":
+        return typeof v === "string" && /^0x(?:[0-9a-fA-F]{2})*$/.test(v);
+      case "percentiles":
+        return Array.isArray(v) && v.every((x) => typeof x === "number" && x >= 0 && x <= 100);
+      case "object":
+        return typeof v === "object" && v !== null && !Array.isArray(v);
+    }
+  };
+
+  it("[[evm-rpc.method-info.param-specs]] each served method has a summary and its parameters' kinds: the example fits them, the required ones alone, all of them and every block tag are answered, one more is refused", async () => {
+    const answer = async (method: string, params: unknown[]): Promise<{ result?: unknown; error?: { code: number } }> =>
+      JSON.parse((await handleHttpRequest("POST", textBody(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })), registry, context())).body) as { result?: unknown; error?: { code: number } };
+    for (const m of NODE_ONLY_METHODS) expect(m.summary.trim(), m.method).not.toBe("");
+    for (const [method, note] of Object.entries(METHOD_NOTES)) {
+      expect(note.summary.trim(), method).not.toBe("");
+      expect(note.summary, method).not.toMatch(/\n/);
+      const specs = note.paramSpecs;
+      expect(new Set(specs.map((s) => s.name)).size, method).toBe(specs.length);
+      const required = specs.findIndex((s) => s.optional === true);
+      const requiredCount = required < 0 ? specs.length : required;
+      expect(specs.slice(requiredCount).every((s) => s.optional === true), `${method}: optional parameters only at the end`).toBe(true);
+      expect(note.params.length, method).toBeGreaterThanOrEqual(requiredCount);
+      expect(note.params.length, method).toBeLessThanOrEqual(specs.length);
+      note.params.forEach((v, i) => expect(fits(specs[i]!.kind, v), `${method} parameter ${i}`).toBe(true));
+      // The required parameters alone.
+      const minimal = note.params.slice(0, requiredCount);
+      expect((await answer(method, minimal)).error, `${method} with its required parameters`).toBeUndefined();
+      // Every block tag Node accepts, in each block parameter.
+      for (const [i, s] of specs.entries()) {
+        if (s.kind !== "blockTag" && s.kind !== "blockRef") continue;
+        for (const tag of ["latest", "earliest", "pending", "safe", "finalized"]) {
+          const params = [...note.params];
+          while (params.length <= i) params.push(undefined);
+          params[i] = tag;
+          expect((await answer(method, params)).error, `${method} ${tag}`).toBeUndefined();
+        }
+      }
+      // One parameter more than its kinds list.
+      const full = [...note.params];
+      while (full.length < specs.length) full.push(specs[full.length]!.kind === "percentiles" ? [] : "latest");
+      expect((await answer(method, full)).error, `${method} with every parameter`).toBeUndefined();
+      expect((await answer(method, [...full, "0x0"])).error?.code, `${method} with a parameter too many`).toBe(-32602);
     }
   });
 });

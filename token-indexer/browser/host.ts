@@ -109,7 +109,11 @@ import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOpt
 import { rangeTables } from "../engine/range-tables.ts";
 import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
 import { checkCapabilities } from "./capabilities.ts";
-import { jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
+import { JSONRPC_CHAIN_ID, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
+import { NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
+import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
+import { registerReadOnlyMethods } from "../../evm-rpc/read-only.js";
+import { MethodRegistry } from "../../evm-rpc/registry.js";
 import { PacingQueue } from "./pacing-queue.ts";
 import { type BuildInfo, createHostSystem, type SystemProviders } from "./host-system.ts";
 import {
@@ -121,6 +125,7 @@ import {
   type ErrorCode,
   type HostStatus,
   type ImportResult,
+  type JsonRpcStateResult,
   issuesOf,
   type ModuleId,
   type Notice,
@@ -1015,9 +1020,24 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
 
   /** The JSON RPC module's start (in progress or done) while the module runs. */
   let jsonRpc: Promise<JsonRpcModule> | undefined;
+  /** The module that answers now (its start has ended), for its last indexer problem. */
+  let jsonRpcOpen: JsonRpcModule | undefined;
   /** Modules being stopped (each ends its requests, then closes its database); `close` waits for them. */
   const jsonRpcStopping = new Set<Promise<void>>();
   const jsonRpcEnabled = (): boolean => modules.jsonrpc ?? true;
+  /** The module's calls since the worker started (`jsonrpc-state`). */
+  const jsonRpcCalls = { answered: 0, inFlight: 0, refusedBusy: 0, refusedOff: 0, failed: 0 };
+  /** The module's last start failure, and the last indexer problem of a module that has stopped since. */
+  let jsonRpcStartError: { at: number; message: string } | null = null;
+  let jsonRpcPastProblem: { at: number; message: string } | null = null;
+  /** The counts of the module's methods (its registry's, and those only Node serves). */
+  const jsonRpcMethods = ((): { served: number; notImplemented: number; nodeOnly: number } => {
+    const registry = new MethodRegistry();
+    registerReadOnlyMethods(registry);
+    const stubs = new Set(NOT_IMPLEMENTED_METHODS.map((m) => m.method));
+    const names = registry.listMethods();
+    return { served: names.filter((m) => !stubs.has(m)).length, notImplemented: names.filter((m) => stubs.has(m)).length, nodeOnly: NODE_ONLY_METHODS.length };
+  })();
 
   /** The module, started now unless it runs; a start that fails is logged and the next request starts it again. A
    *  module that is being stopped is closed first, so the worker never holds two (each its own database). */
@@ -1032,13 +1052,18 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       ...(opts.jsonRpc?.chainId === undefined ? {} : { chainId: opts.jsonRpc.chainId }),
       ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }),
       ...(pacer === undefined ? {} : { pacer }),
+      now: () => clock.now(),
     }));
     jsonRpc = started;
     started.then(
-      (m) => log("info", `the JSON RPC module started: ${m.methods.length} methods, its evm_rpc database in memory (${Math.round(monotonic() - t)} ms)`),
+      (m) => {
+        if (jsonRpc === started) jsonRpcOpen = m;
+        log("info", `the JSON RPC module started: ${m.methods.length} methods, its evm_rpc database in memory (${Math.round(monotonic() - t)} ms)`);
+      },
       (e: unknown) => {
         if (jsonRpc === started) jsonRpc = undefined;
-        log("error", `the JSON RPC module could not start: ${messageOf(e)}`);
+        jsonRpcStartError = { at: clock.now(), message: `the JSON RPC module could not start: ${messageOf(e)}` };
+        log("error", jsonRpcStartError.message);
       },
     );
     return started;
@@ -1050,6 +1075,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const started = jsonRpc;
     if (started === undefined) return;
     jsonRpc = undefined;
+    jsonRpcPastProblem = jsonRpcOpen?.lastIndexerProblem() ?? jsonRpcPastProblem;
+    jsonRpcOpen = undefined;
     const stopping = (async () => {
       let m: JsonRpcModule;
       try {
@@ -1073,21 +1100,64 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   async function jsonRpcRequest(body: string): Promise<ApiResult> {
     while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
     await ready();
-    if (!jsonRpcEnabled()) throw new HostError("module-off", "the JSON RPC module is off: switch it on in the Modules section to call its methods");
-    let m: JsonRpcModule;
-    try {
-      m = await jsonRpcRun();
-    } catch (e) {
-      throw new HostError("internal", `the JSON RPC module could not start: ${messageOf(e)}`);
+    if (!jsonRpcEnabled()) {
+      jsonRpcCalls.refusedOff++;
+      throw new HostError("module-off", "the JSON RPC module is off: switch it on in the Modules section to call its methods");
     }
+    jsonRpcCalls.inFlight++;
     try {
-      const answer = await m.handle(body);
-      return { status: answer.status, headers: { ...answer.headers }, body: answer.body };
-    } catch (e) {
-      if (e instanceof JsonRpcModuleError && e.code === "busy") throw new HostError("busy", e.message);
-      if (e instanceof JsonRpcModuleError) throw new HostError("module-off", "the JSON RPC module was switched off before this request was answered");
-      throw e;
+      let m: JsonRpcModule;
+      try {
+        m = await jsonRpcRun();
+      } catch (e) {
+        jsonRpcCalls.failed++;
+        throw new HostError("internal", `the JSON RPC module could not start: ${messageOf(e)}`);
+      }
+      try {
+        const answer = await m.handle(body);
+        jsonRpcCalls.answered++;
+        return { status: answer.status, headers: { ...answer.headers }, body: answer.body };
+      } catch (e) {
+        if (e instanceof JsonRpcModuleError && e.code === "busy") {
+          jsonRpcCalls.refusedBusy++;
+          throw new HostError("busy", e.message);
+        }
+        if (e instanceof JsonRpcModuleError) {
+          jsonRpcCalls.refusedOff++;
+          throw new HostError("module-off", "the JSON RPC module was switched off before this request was answered");
+        }
+        jsonRpcCalls.failed++;
+        throw e;
+      }
+    } finally {
+      jsonRpcCalls.inFlight--;
     }
+  }
+
+  /** A `jsonrpc-state` request: the module's state for the JSON RPC tab's status view. */
+  async function jsonRpcState(): Promise<JsonRpcStateResult> {
+    await ready();
+    const pacer = pacerFor(opts.indexerUrl);
+    const queue = pacer?.state() ?? { minIntervalMs: 0, waiting: 0, heldForMs: 0 };
+    let origin = opts.indexerUrl;
+    try {
+      origin = new URL(opts.indexerUrl).origin;
+    } catch {
+      // the URL as given
+    }
+    const problem = jsonRpcOpen?.lastIndexerProblem() ?? null;
+    const lastError = [jsonRpcStartError, jsonRpcPastProblem, problem].filter((x): x is { at: number; message: string } => x !== null).sort((a, b) => b.at - a.at)[0] ?? null;
+    return {
+      enabled: jsonRpcEnabled(),
+      database: jsonRpcStopping.size > 0 && jsonRpc === undefined ? "closing" : jsonRpc === undefined ? "none" : jsonRpcOpen === undefined ? "starting" : "open",
+      chainId: (opts.jsonRpc?.chainId ?? JSONRPC_CHAIN_ID).toString(),
+      clientVersion: opts.jsonRpc?.clientVersion ?? jsonRpcClientVersion("unknown"),
+      indexerUrl: opts.indexerUrl,
+      methods: { ...jsonRpcMethods },
+      calls: { ...jsonRpcCalls },
+      pacing: { origin, ...queue },
+      lastError: lastError === null ? null : { ...lastError },
+    };
   }
 
   /** A `module` request: saves the choice with the settings, then switches the module. The token indexer: a running
@@ -1290,6 +1360,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         return readingStore(async () => listTables((await ready()).mip0018, STORE_SCHEMAS));
       case "jsonrpc":
         return jsonRpcRequest(r.body);
+      case "jsonrpc-state":
+        return jsonRpcState();
       case "rows":
         return readingStore(async () => {
           const s = await ready();

@@ -76,6 +76,8 @@ export interface JsonRpcModuleOptions {
   indexerTimeoutMs?: number;
   /** Opens the module's `evm_rpc` database. Default {@link openEvmRpcDatabase}. */
   openDatabase?: () => Promise<UmbraDBSql>;
+  /** The wall clock (ms) of {@link JsonRpcModule.lastIndexerProblem}. Default `Date.now`. */
+  now?: () => number;
 }
 
 export interface JsonRpcModule {
@@ -87,6 +89,9 @@ export interface JsonRpcModule {
   /** Stops the module: requests are refused from now on, the ones waiting for the indexer end at once (refused
    *  `stopped`), and the `evm_rpc` database is closed once no request reads it. */
   close(): Promise<void>;
+  /** The last indexer request that failed (no answer, or an HTTP status other than 2xx), with its time
+   *  (the module's `now`), or `null`. Requests cut short by the module's stop are not counted. */
+  lastIndexerProblem(): { at: number; message: string } | null;
 }
 
 /** A new, empty PGlite database in memory with a client of the `evm_rpc` schema. */
@@ -113,9 +118,25 @@ export async function startJsonRpcModule(opts: JsonRpcModuleOptions): Promise<Js
     : undefined;
   const turns = opts.pacer ?? ownTurns!;
   const base = opts.fetch ?? globalThis.fetch.bind(globalThis);
+  const origin = ((): string => {
+    try {
+      return new URL(opts.indexerUrl).origin;
+    } catch {
+      return "the indexer";
+    }
+  })();
+  let problem: { at: number; message: string } | null = null;
+  const now = opts.now ?? Date.now;
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const response = await base(input, { ...init, signal: init?.signal == null ? stopping.signal : AbortSignal.any([init.signal, stopping.signal]) });
+    let response: Response;
+    try {
+      response = await base(input, { ...init, signal: init?.signal == null ? stopping.signal : AbortSignal.any([init.signal, stopping.signal]) });
+    } catch (e) {
+      if (!stopping.signal.aborted) problem = { at: now(), message: `a request to ${origin} failed: ${e instanceof Error ? e.message : String(e)}` };
+      throw e;
+    }
     if (response.status === 429) turns.holdFor(parseRetryAfterMs(response.headers.get("retry-after")) ?? THROTTLE_HOLD_MS);
+    if (!response.ok) problem = { at: now(), message: `${origin} answered HTTP ${response.status}` };
     return response;
   }) as typeof fetch;
   const ctx: RpcContext = {
@@ -134,6 +155,7 @@ export async function startJsonRpcModule(opts: JsonRpcModuleOptions): Promise<Js
   let drained: (() => void) | undefined;
   return {
     methods: registry.listMethods(),
+    lastIndexerProblem: () => (problem === null ? null : { ...problem }),
     async handle(body: string): Promise<HttpAnswer> {
       if (closing !== undefined) throw stopped();
       if (inFlight >= JSONRPC_MAX_REQUESTS)

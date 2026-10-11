@@ -21,6 +21,7 @@
  * | `module` | `module` (one of {@link MODULE_IDS}), `enabled` | {@link HostStatus}: the module switched on or off and saved with the settings (`token-indexer`: off stops the MIP-0018 scan at a block boundary while the sync goes on; on continues it from its cursor; `jsonrpc`: off refuses `jsonrpc` requests and closes the module's database) |
  * | `tables` | — | {@link TablesResult}: each schema's tables with their estimated rows and size (catalog statistics) |
  * | `rows` | `schema`, `table`, `limit?`, `offset?` | {@link RowsResult}: one page of a table of the store's catalog by its primary key, descending (newest first for a height-keyed table; read-only) |
+ * | `jsonrpc-state` | — | {@link JsonRpcStateResult}: the JSON RPC module's state: its switch, its database, its configuration, its methods, its calls, the pacing queue of its indexer and its last error |
  * | `jsonrpc` | `body` (the text of one JSON-RPC 2.0 request or batch, at most {@link JSONRPC_MAX_BODY_CHARS} characters) | {@link ApiResult}: what Node's `npm run evm-rpc` server answers a `POST` with that body (status, headers, body), from the JSON RPC module (`jsonrpc-module.ts`); refused `module-off` while the module is off, `busy` while it answers 8 requests |
  *
  * Responses (worker → page): `{ v, type: "response", id, request, ok: true, result }` or
@@ -48,7 +49,7 @@ import type { ExportedSnapshot } from "./snapshot-store.ts";
 export const PROTOCOL_VERSION = 1;
 
 /** The request types of this protocol version. */
-export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest", "system", "watchdog", "module", "tables", "rows", "jsonrpc"] as const;
+export const REQUEST_TYPES = ["status", "api", "start", "stop", "range", "reset", "export", "import", "digest", "system", "watchdog", "module", "tables", "rows", "jsonrpc", "jsonrpc-state"] as const;
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 /**
@@ -272,6 +273,7 @@ export const REQUEST_SCHEMAS = {
     offset: intIn(0, ROWS_LIMITS.maxOffset).optional(),
   }),
   jsonrpc: z.strictObject({ ...envelope, type: z.literal("jsonrpc"), body: z.string().max(JSONRPC_MAX_BODY_CHARS) }),
+  "jsonrpc-state": z.strictObject({ ...envelope, type: z.literal("jsonrpc-state") }),
 } as const satisfies Record<RequestType, z.ZodType>;
 
 export type RequestOf<T extends RequestType> = z.infer<(typeof REQUEST_SCHEMAS)[T]>;
@@ -491,6 +493,31 @@ export const RowsResultSchema = z.strictObject({
 });
 export type RowsResult = z.infer<typeof RowsResultSchema>;
 
+// ── The JSON RPC module (the JSON RPC tab's status view) ─────────────────────────────────────────────────────────────
+
+const count = z.int().min(0);
+/**
+ * The `jsonrpc-state` answer. `enabled`: the module's saved switch. `database`: the module's `evm_rpc` database —
+ * `none` (not made: no request since the worker started or since the module was switched off), `starting`, `open`,
+ * `closing`. `chainId` (decimal), `clientVersion`, `indexerUrl`: what its answers use. `methods`: the counts of its
+ * registry's served and `-32004` methods and of the methods only Node serves. `calls` (since the worker started):
+ * answered (by the module, an answer of any kind), in flight, refused `busy`, refused `module-off`, failed (`internal`).
+ * `pacing`: the worker's queue of the indexer's origin (`pacing-queue.ts`). `lastError`: the last start failure of the
+ * module or failed indexer request, with its clock time.
+ */
+export const JsonRpcStateResultSchema = z.strictObject({
+  enabled: z.boolean(),
+  database: z.enum(["none", "starting", "open", "closing"]),
+  chainId: z.string().regex(/^(?:0|[1-9][0-9]*)$/),
+  clientVersion: z.string(),
+  indexerUrl: z.string(),
+  methods: z.strictObject({ served: count, notImplemented: count, nodeOnly: count }),
+  calls: z.strictObject({ answered: count, inFlight: count, refusedBusy: count, refusedOff: count, failed: count }),
+  pacing: z.strictObject({ origin: z.string(), minIntervalMs: z.number().min(0), waiting: count, heldForMs: z.number().min(0) }),
+  lastError: z.strictObject({ at: z.number(), message: z.string() }).nullable(),
+});
+export type JsonRpcStateResult = z.infer<typeof JsonRpcStateResultSchema>;
+
 // ── Snapshots ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const duration = z.number().min(0);
@@ -530,6 +557,7 @@ export const RESULT_SCHEMAS = {
   tables: TablesResultSchema,
   rows: RowsResultSchema,
   jsonrpc: ApiResultSchema,
+  "jsonrpc-state": JsonRpcStateResultSchema,
 } as const satisfies Record<RequestType, z.ZodType>;
 export type ResultOf<T extends RequestType> = z.infer<(typeof RESULT_SCHEMAS)[T]>;
 

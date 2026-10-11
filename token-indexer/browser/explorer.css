@@ -1,14 +1,17 @@
 /* The main page of the static browser build (index.html): the header tabs, the overview (the indexer section with its
-   controls, engine-panel.ts, and the Modules section), the Token Indexer tab holding the explorer, the JSON RPC tab,
-   the Database tab, and the note the explorer puts next to every list (the first indexed height). The rest of the look is the
-   explorer's own (mip0018/ui/page.css). */
+   controls, engine-panel.ts, and the Modules section), the module tabs (the Token Indexer tab holding the explorer, the
+   JSON RPC tab with the same structure, module-page.ts), the Database tab, and the note the explorer puts next to every
+   list (the first indexed height). The rest of the look is the explorer's own (mip0018/ui/page.css). */
 .tab-panel > .page { padding: 18px 28px 40px; display: grid; gap: 18px; }
 .tab-panel > .page > * { min-width: 0; }
 header.product nav.tabs a.system-link { font-size: 12.5px; }
-/* The explorer inside its tab: its own header is the tab's sub-header; the page's header carries the wordmark. */
-.tab-panel.explorer > header { padding-top: 14px; background: var(--panel); }
-.tab-panel.explorer > header .brand svg, .tab-panel.explorer > header .brand .rule { display: none; }
-.tab-panel.explorer > header h1 { font-size: 17px; }
+/* A module's page inside its tab (the explorer's, and module-page.ts's with the same structure): its own header is the
+   tab's sub-header; the page's header carries the wordmark. Its refresh button looks like the explorer's (button#now). */
+.tab-panel.module-tab > header { padding-top: 14px; background: var(--panel); }
+.tab-panel.module-tab > header .brand svg, .tab-panel.module-tab > header .brand .rule { display: none; }
+.tab-panel.module-tab > header h1 { font-size: 17px; }
+.tab-panel.module-tab button.now { background: var(--accent); border-color: var(--accent); color: var(--md-white); }
+.tab-panel.module-tab button.now:hover:enabled { background: #0000c4; border-color: #0000c4; }
 .engine-panel h2, .modules h2, .database-view h2 { margin: 0; flex: 1 1 auto; }
 .engine-panel > .row:first-child { margin-bottom: 12px; }
 .engine-panel .controls { margin-top: 14px; }
@@ -49,21 +52,63 @@ header.product nav.tabs a.system-link { font-size: 12.5px; }
 .database-view td.hex { font-family: var(--mono); font-size: 12px; color: var(--dim); }
 .range-note { margin: -6px 0 10px; }
 .modules .now { margin-top: 2px; color: var(--ink); }
-.jsonrpc-view { overflow-x: auto; }
-.jsonrpc-view h2 { margin: 0; flex: 1 1 auto; }
-.jsonrpc-view .head { margin-bottom: 6px; }
-.jsonrpc-view > p.note { margin: 4px 0; overflow-wrap: anywhere; }
-.jsonrpc-view table.methods { margin-top: 12px; }
-.jsonrpc-view table.methods td { vertical-align: top; }
-.jsonrpc-view td .d { max-width: none; display: inline; }
-.jsonrpc-view td.name { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
-.jsonrpc-view tr[data-kind="node-only"] td.name, .jsonrpc-view tr[data-kind="not-implemented"] td.name { color: var(--dim); }
-.jsonrpc-view td.params { width: 40ch; }
-.jsonrpc-view td.params textarea { font-family: var(--mono); font-size: 12px; width: 100%; min-width: 30ch; box-sizing: border-box;
-  padding: 3px 6px; border: 1px solid var(--ctl); background: var(--md-white); color: var(--ink); resize: vertical; }
-.jsonrpc-view td.action { white-space: nowrap; }
-.jsonrpc-view tr.output > td { background: var(--md-white); padding: 10px 14px; }
-.jsonrpc-view tr.output h3 { font-size: 12.5px; margin: 8px 0 4px; }
-.jsonrpc-view tr.output pre { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: 32em; overflow-y: auto; }
-.jsonrpc-view .bad { color: var(--bad); }
+/* The JSON RPC tab (jsonrpc-view.ts): the method list beside the chosen method; on a narrow screen the list is above. */
+.rpc-explorer { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.rpc-explorer > * { min-width: 0; }
+.rpc-list { background: var(--panel); border: 1px solid var(--line); padding: 12px 10px; position: sticky; top: 8px;
+  max-height: calc(100vh - 16px); overflow-y: auto; box-sizing: border-box; }
+.rpc-list input[type="search"] { font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; padding: 5px 8px;
+  border: 1px solid var(--ctl); background: var(--md-white); color: var(--ink); }
+.rpc-list [data-field="rpc-list-count"] { margin: 6px 2px 0; }
+.rpc-list h2 { margin: 14px 2px 4px; }
+.rpc-list ul { list-style: none; margin: 0; padding: 0; }
+.rpc-list a.rpc-method { display: block; padding: 3px 8px; font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+  text-decoration: none; border-left: 2px solid transparent; overflow-wrap: anywhere; }
+.rpc-list a.rpc-method:hover { background: var(--hover); }
+.rpc-list a.rpc-method.on { border-left-color: var(--accent); background: var(--tint-blue); }
+.rpc-list a.rpc-method[data-kind="node-only"], .rpc-list a.rpc-method[data-kind="not-implemented"] { color: var(--dim); }
+.rpc-list > p.note { margin: 14px 2px 0; overflow-wrap: anywhere; }
+.rpc-detail .rpc-title h3 { margin: 0; font-family: var(--mono); font-size: 17px; overflow-wrap: anywhere; }
+.rpc-detail .rpc-summary { margin: 8px 0 4px; font-size: 13px; }
+.rpc-detail p.note { margin: 4px 0; overflow-wrap: anywhere; }
+.rpc-detail .rpc-node-only { margin: 12px 0 0; font-size: 13px; color: var(--dim); }
+.rpc-detail .rpc-modes { margin-top: 14px; gap: 4px; }
+.rpc-detail .rpc-modes button[aria-pressed="true"], .rpc-answer button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.rpc-detail .rpc-field { margin-top: 10px; }
+.rpc-detail .rpc-field label { font-weight: 600; font-size: 13px; }
+.rpc-detail .rpc-field .row { margin-top: 4px; }
+.rpc-detail input[type="text"], .rpc-detail textarea, .rpc-detail select { font-family: var(--mono); font-size: 12.5px; padding: 4px 7px;
+  border: 1px solid var(--ctl); background: var(--md-white); color: var(--ink); box-sizing: border-box; }
+.rpc-detail .rpc-field input[type="text"], .rpc-detail .rpc-field textarea { width: min(100%, 62ch); }
+.rpc-detail .rpc-field select + input[type="text"] { width: min(100%, 50ch); }
+.rpc-detail [aria-invalid="true"] { border-color: var(--bad); }
+.rpc-detail textarea.rpc-raw { width: 100%; margin-top: 10px; resize: vertical; }
+.rpc-detail .err:empty { display: none; }
+.rpc-detail h2.rpc-sub { margin: 18px 0 6px; }
+.rpc-detail pre { margin: 0; padding: 8px 10px; background: var(--md-white); border: 1px solid var(--line); font-family: var(--mono);
+  font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32em; overflow-y: auto; }
+.rpc-detail pre:empty { display: none; }
+.rpc-detail .rpc-actions { margin-top: 10px; }
+.rpc-detail details.rpc-curl { margin-top: 8px; }
+.rpc-detail details.rpc-curl summary { cursor: pointer; }
+.rpc-detail .d { max-width: none; }
+.rpc-answer .rpc-tree { margin-top: 8px; padding: 8px 10px; background: var(--md-white); border: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12px; max-height: 40em; overflow: auto; }
+.rpc-answer .rpc-tree summary { cursor: pointer; }
+.rpc-answer .rpc-tree .kids { padding-left: 18px; border-left: 1px dotted var(--line); margin-left: 4px; }
+.rpc-answer .rpc-tree .leaf { padding: 1px 0; overflow-wrap: anywhere; }
+.rpc-answer .rpc-tree .k { color: var(--dim); }
+.rpc-answer .rpc-tree .v-string { color: var(--tag-described-fg); }
+.rpc-answer .rpc-tree .v-number, .rpc-answer .rpc-tree .v-boolean, .rpc-answer .rpc-tree .v-null { color: var(--accent); }
+.rpc-answer .rpc-tree .dec { font-family: inherit; }
+.rpc-answer > pre { margin-top: 8px; }
+.rpc-history .head { margin-bottom: 8px; }
+.rpc-history h2 { margin: 0; }
+.rpc-history td.params { white-space: normal; max-width: 50ch; overflow-wrap: anywhere; }
+.rpc-history td.outcome { white-space: normal; max-width: 40ch; }
+.rpc-history td .d { max-width: none; display: inline; }
+.rpc-status .v[data-bad] { color: var(--bad); }
+@media (max-width: 760px) {
+  .rpc-explorer { grid-template-columns: minmax(0, 1fr); }
+  .rpc-list { position: static; max-height: 45vh; }
+}

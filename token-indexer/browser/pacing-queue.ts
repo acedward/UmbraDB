@@ -88,6 +88,11 @@ export class PacingQueue implements Pacer {
     return this.admit();
   }
 
+  /** The queue now: its interval, the callers waiting, and how long a hold still lets no caller start (0: none). */
+  state(): { minIntervalMs: number; waiting: number; heldForMs: number } {
+    return { minIntervalMs: this.#interval, waiting: this.#waiting.length, heldForMs: Math.max(0, Math.ceil(this.#notBefore - this.#clock.now())) };
+  }
+
   /** Lets no caller start until `ms` from now (a later hold wins; an earlier one changes nothing). */
   holdFor(ms: number): void {
     if (!(ms > 0) || this.#closed !== undefined) return;
