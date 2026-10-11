@@ -3,8 +3,9 @@
  * store's tables (`tables`), a table's line in the picker, and a page of rows (`rows`): its caption, its order, and each
  * value as text — `NULL`; a `bytea` value as the hex of its first {@link CELL_HEX_BYTES} bytes, `…` when it has more,
  * and its length; any other value as its first {@link CELL_CHARS} characters, `…` and its length in characters when it
- * is longer — with what the engine sent of the value (up to 16 bytes, up to 256 characters) in the tooltip when the cell
- * shows less. The page draws every value with the explorer's hidden-character rules (`visible-text.ts`).
+ * is longer — with what the engine sent of the value (up to 16 bytes, up to 256 characters) as the explanation its cell
+ * opens on demand when the cell shows less (`explain.ts`). The page draws every value with the explorer's
+ * hidden-character rules (`visible-text.ts`).
  */
 import type { Cell, RowsResult, TableEntry, TablesResult } from "./protocol.ts";
 import { formatBytes } from "./panel-model.ts";
@@ -17,8 +18,8 @@ export const CELL_CHARS = 48;
 
 const unit = (n: number, one: string, many: string): string => `${countText(n)} ${n === 1 ? one : many}`;
 
-/** A value of a page as the tab draws it: its text, its tooltip (`null` when the cell shows all the engine sent), and
- *  whether it is SQL `NULL`. */
+/** A value of a page as the tab draws it: its text, what its cell opens on demand (`title`: what the engine sent;
+ *  `null` when the cell shows all of it), and whether it is SQL `NULL`. */
 export function cellText(c: Cell): { text: string; title: string | null; isNull: boolean } {
   if (c.kind === "null") return { text: "NULL", title: null, isNull: true };
   if (c.kind === "bytes") {

@@ -169,9 +169,10 @@ export function persistenceSentence(persisted: boolean | null, request: Persiste
 /**
  * The storage line, one short line — the store's own size, the quota, the usage at which the sync pauses, and whether
  * the storage is persistent (`60.7 MB · quota 10.8 GB · pauses at 9.7 GB · not persistent`, then `· paused` while the
- * sync is paused) — and its explanation for a tooltip: what the browser counts against the quota (more than the store
- * while it is open: Chrome reserves space for the store's open files), what the pause does, what "not persistent" means
- * and why, and the pause's reason.
+ * sync is paused) — and its explanation, which the line opens on demand (`explain.ts`): what the browser counts
+ * against the quota (more than the store while it is open: Chrome reserves space for the store's open files), what the
+ * pause does, what "not persistent" means and why, and the pause's reason. Until the engine has a storage reading, the
+ * page's own `navigator.storage` figures.
  */
 export function storageLine(s: HostStatus | null, page: PageStorage | null, request: PersistenceResult | null | undefined): { text: string; title: string } {
   const st = s?.storage ?? null;

@@ -48,7 +48,7 @@ export function visibleParts(text: string): TextPart[] {
   return out;
 }
 
-/** `text` with every hidden character replaced by its visible mark (for a tooltip or a plain text node). */
+/** `text` with every hidden character replaced by its visible mark (for an attribute or a plain text node). */
 export function visibleText(text: string): string {
   return visibleParts(text).map((p) => p.text).join("");
 }

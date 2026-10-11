@@ -18,9 +18,11 @@
  *   request to the site.
  * - `[[browser.shell.explain]]` — the storage line is a control whose explanation opens on demand: a click shows it and a
  *   second click hides it; Escape and a click elsewhere hide it; Enter and Space on the focused control open it; the
- *   mouse resting on it shows it and leaving hides it; a tap shows it and a second tap hides it. Open while the engine
- *   syncs, it stays open across the overview's refreshes, the same box, its text updated in place and always the
- *   explanation of the figures drawn (`storageLine`'s); no native tooltip is left on the overview. No CSP violation.
+ *   mouse resting on it shows it and leaving hides it; a tap shows it and a second tap hides it. Opened while the line
+ *   shows the page's own figures (the engine's status answered without its storage reading, as before a slow worker's
+ *   first reading), it stays open, the same box, when the engine's figures come; open while the engine syncs, it stays
+ *   open across the overview's refreshes, its text updated in place; its text is always the explanation of the
+ *   figures drawn (`storageLine`'s); no native tooltip is left on the overview. No CSP violation.
  * - `[[browser.shell.module-toggle]]` — Token Indexer switched off from its checkbox while the finalized tip rises: the
  *   scan's cursor stays at a block boundary while the archive advances by more than a hundred blocks, `/v1/status`
  *   says `scanner: "off"` and answers, the system snapshot shows the scan off, the tab is gone (a URL naming it shows
@@ -351,8 +353,32 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       });
       let r = await read();
       expect([r.shown, r.expanded, r.controls, r.line]).toEqual([false, "false", "engine-storage-explanation", r.drawnLine]);
-      expect(r.expected).toMatch(/^The store's own (files take|size is not read yet).* against this site's quota of /);
       expect(await p.eval<number>("document.querySelectorAll('#engine-panel [title]').length")).toBe(0);
+
+      // Until the engine's first storage reading the line and its explanation are the page's own figures (a slow worker
+      // shows them for a while): forced here by the engine's status answered without its reading. The box opened then
+      // stays open, the same box, when the engine's figures come, its text theirs.
+      await p.eval(`(() => {
+        const c = window.umbradbEngine.client;
+        const real = c.status.bind(c);
+        window.__noReading = true;
+        c.status = () => real().then((s) => (window.__noReading ? { ...s, storage: null } : s));
+      })()`);
+      await p.waitFor("(() => { const i = window.umbradbOverview.inputs(); return i !== null && i.status !== null && i.status.storage == null && i.pageStorage !== null; })()", 15_000, "the page's own figures");
+      r = await read();
+      expect(r.line).toMatch(/^size not read yet . quota /);
+      expect(r.expected).toMatch(/^The engine has not read the store's size yet\. The browser counts .* against this site's quota of /);
+      await p.eval(`${CONTROL}.click(); ${BOX}.__mark = 1`);
+      r = await read();
+      expect([r.shown, r.expanded, r.text, r.line]).toEqual([true, "true", r.expected, r.drawnLine]);
+      await p.eval("window.__noReading = false");
+      await p.waitFor("window.umbradbOverview.inputs()?.status?.storage != null", 15_000, "the engine's storage reading");
+      r = await read();
+      expect([r.shown, r.expanded, r.text, r.line]).toEqual([true, "true", r.expected, r.drawnLine]);
+      expect(r.expected).toMatch(/^The store's own (files take|size is not read yet).* against this site's quota of /);
+      expect(await p.eval(`${BOX}.__mark`)).toBe(1);
+      await p.eval(`${CONTROL}.click()`);
+      expect((await read()).shown).toBe(false);
 
       // A click shows it, a second hides it; Escape and a click elsewhere hide it.
       await p.eval(`${CONTROL}.click()`);
@@ -383,7 +409,8 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       const at = await p.eval<{ x: number; y: number }>(`(() => { ${CONTROL}.scrollIntoView({ block: 'center' }); const r = ${CONTROL}.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
       await p.waitFor(`!${BOX}.hidden`, 2_000, "the box on hover");
-      expect((await read()).text).toBe((await read()).expected);
+      r = await read();
+      expect(r.text).toBe(r.expected);
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
       await p.waitFor(`${BOX}.hidden`, 2_000, "the box hidden when the mouse leaves");
       // Resting on it, then a click keeps it open; a second click hides it though the mouse is still on it.
