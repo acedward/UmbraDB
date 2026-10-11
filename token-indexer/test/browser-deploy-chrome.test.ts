@@ -107,8 +107,10 @@ describe("the static deploy recipe in Chrome", () => {
     expect(site.rules[0]!.pattern).toBe("/*");
 
     const page = await browser.newPage({ workers: true });
-    await page.goto(`${site.origin}/`);
-    await page.waitFor("window.umbradbEngine !== undefined && window.umbradbExplorerHost !== undefined", 30_000, "the main page");
+    await page.goto(`${site.origin}/`, 30_000, async () => {
+      await page.waitFor("window.umbradbEngine !== undefined && window.umbradbExplorerHost !== undefined", 30_000, "the main page");
+      await page.eval("window.umbradbEngine.client.booted()");
+    });
     // The root opens on the indexer's overview.
     expect(await page.eval("document.title")).toBe("UmbraDB indexer");
     expect(await page.eval("document.body.getAttribute('data-tab-shown')")).toBe("overview");
@@ -132,8 +134,8 @@ describe("the static deploy recipe in Chrome", () => {
 
     // The system status page beside it: a follower showing the leader's state, waiting for the chain.
     const system = await browser.newPage({ workers: true });
-    await system.goto(`${site.origin}/system.html`);
-    await system.waitFor("window.umbradbSystem !== undefined && window.umbradbSystem.latest() !== null && window.umbradbSystem.latest().overview.health.state === 'waiting-network'", 90_000, "the status page's waiting (network)");
+    await system.goto(`${site.origin}/system.html`, 30_000, () =>
+      system.waitFor("window.umbradbSystem !== undefined && window.umbradbSystem.latest() !== null && window.umbradbSystem.latest().overview.health.state === 'waiting-network'", 90_000, "the status page's waiting (network)"));
     expect(await system.eval("window.umbradbEngine.tabs.role()")).toBe("follower");
     expect(await system.eval<string[]>("[...document.querySelectorAll('section h2')].map((h) => h.textContent)")).toEqual(SECTIONS);
     expect(await system.eval("self.crossOriginIsolated")).toBe(true);

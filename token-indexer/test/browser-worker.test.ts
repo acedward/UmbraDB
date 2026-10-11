@@ -122,9 +122,11 @@ describe("browser engine worker in Chrome", () => {
   }
   /** Loads the engine page and waits until the worker's boot has ended; returns the boot and the page's time to it. */
   async function open(): Promise<{ status: HostStatus; pageToReadyMs: number }> {
-    await page.goto(`${site.origin}/engine.html`);
-    await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
-    const pageToReadyMs = (await page.eval("window.umbradbEngine.client.booted().then(() => performance.now())")) as number;
+    let pageToReadyMs = 0;
+    await page.goto(`${site.origin}/engine.html`, 30_000, async () => {
+      await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
+      pageToReadyMs = (await page.eval("window.umbradbEngine.client.booted().then(() => performance.now())")) as number;
+    });
     return { status: await status(), pageToReadyMs };
   }
 

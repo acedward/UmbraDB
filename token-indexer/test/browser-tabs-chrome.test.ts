@@ -203,11 +203,12 @@ describe("one engine across tabs in Chrome", () => {
   async function openTab(browser: Browser): Promise<Tab> {
     const page = await browser.newPage();
     await page.trackWorkers();
-    await page.goto(`${site.origin}/engine.html`);
-    await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
     const run = (expr: string): Promise<Json> =>
       page.eval(`(async () => { const e = window.umbradbEngine; const c = e.client; const t = e.tabs; return ${expr}; })()`);
-    await run("t.ready");
+    await page.goto(`${site.origin}/engine.html`, 30_000, async () => {
+      await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
+      await run("t.ready");
+    });
     return { page, id: (await run("t.tabId")) as string, run };
   }
   const status = (t: Tab): Promise<HostStatus> => t.run("c.status()");

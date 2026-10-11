@@ -24,10 +24,23 @@
  * else in the page changes), printed as they happen; and when a test of a file that uses this module fails, what every
  * page opened during that test (and every page still open) recorded is printed: {@link Page.diagnostics}, the last
  * lines of each list only.
+ *
+ * A page load the machine's network aborted is loaded again ({@link Page.goto}, at most {@link LOAD_ATTEMPTS} times,
+ * each time printed). Chrome on Linux watches the machine's network interfaces, and when an address appears or goes
+ * (a container started beside the browser: Testcontainers' PostgreSQL in a job whose Chrome runs on the runner itself)
+ * it fails every request still waiting for a connection, with `net::ERR_NETWORK_CHANGED` — and a dedicated worker's
+ * script with `net::ERR_ABORTED`; requests already sent go on. Chrome has no switch to ignore such changes. So an
+ * attempt (the navigation, and the `ready` step the caller gives) is taken for the environment's, and made again, when
+ * one of its loads failed with {@link ENVIRONMENTAL_LOAD_ERRORS}, or when the machine's interfaces ({@link
+ * networkState}) changed while it ran and it failed or one of its loads failed; the next attempt starts once the
+ * interfaces have stayed the same for three seconds (Chrome passes a change on more than once: a second notice about
+ * two seconds after the first fails the requests waiting then too). Anything else fails as it fails, and so
+ * does an attempt aborted {@link LOAD_ATTEMPTS} times; what an aborted attempt recorded (its requests, console, log
+ * entries, exceptions, worker errors and workers) is dropped, and its reason kept in {@link Page.loadRetries}.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { beforeEach, onTestFailed } from "vitest";
 
@@ -100,6 +113,26 @@ export interface PageOptions {
   /** Open the tab in a window of its own (still the same profile): it stays visible whatever other tabs are in front,
    *  and minimizing its window hides it alone. */
   newWindow?: boolean;
+  /** Load errors taken for the machine network's (default {@link ENVIRONMENTAL_LOAD_ERRORS}). */
+  environmentalErrors?: readonly string[];
+  /** The machine's network state, compared during each load attempt (default {@link networkState}). */
+  networkState?: () => string;
+}
+
+/** The load error Chrome gives the requests it fails when the machine's network changes. */
+export const ENVIRONMENTAL_LOAD_ERRORS: readonly string[] = ["net::ERR_NETWORK_CHANGED"];
+/** How many times {@link Page.goto} loads a page whose loads the machine's network aborted. */
+export const LOAD_ATTEMPTS = 3;
+/** Before loading an aborted page again, the machine's network state must have stayed the same this long (Chrome tells
+ *  its network stack of a change again about two seconds after the first notice, failing waiting requests again) … */
+const NETWORK_SETTLE_MS = 3_000;
+/** … waited for at most this long. */
+const NETWORK_SETTLE_MAX_MS = 10_000;
+
+/** The machine's network interfaces and their addresses, as one string: what Chrome watches on Linux. */
+export function networkState(): string {
+  const all = networkInterfaces();
+  return Object.keys(all).sort().map((name) => `${name}=${(all[name] ?? []).map((a) => a.address).sort().join(",")}`).join(";");
 }
 
 const VIOLATIONS = "__cspViolations = []; addEventListener('securitypolicyviolation', function (e) { __cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });";
@@ -171,6 +204,12 @@ export class Page {
   ended = false;
   /** The URL last loaded with {@link goto}. */
   url = "about:blank";
+  /** Each load attempt {@link goto} made again, with why. */
+  readonly loadRetries: Array<{ url: string; reason: string }> = [];
+  private environmentalErrors: readonly string[] = ENVIRONMENTAL_LOAD_ERRORS;
+  private networkStateOf: () => string = networkState;
+  /** The navigation's own error (`Page.navigate`'s `errorText`) in the current load attempt. */
+  private navigationError: string | undefined;
 
   private constructor(private readonly conn: Connection, readonly sessionId: string, readonly targetId: string) {
     this.sessions.add(sessionId);
@@ -180,6 +219,8 @@ export class Page {
     const { targetId } = await conn.send("Target.createTarget", { url: "about:blank", ...(opts.newWindow === true ? { newWindow: true } : {}) });
     const { sessionId } = await conn.send("Target.attachToTarget", { targetId, flatten: true });
     const page = new Page(conn, sessionId, targetId);
+    if (opts.environmentalErrors !== undefined) page.environmentalErrors = opts.environmentalErrors;
+    if (opts.networkState !== undefined) page.networkStateOf = opts.networkState;
     const mine = (l: (p: Json, worker: boolean) => void): Listener => (p, s) => { if (s !== undefined && page.sessions.has(s)) l(p, s !== sessionId); };
     const tag = (worker: boolean): { target?: "worker" } => (worker ? { target: "worker" } : {});
     conn.on("Network.requestWillBeSent", mine((p, w) => {
@@ -221,14 +262,119 @@ export class Page {
   }
 
   /** Loads a URL and waits for its load event. */
-  async goto(url: string, timeoutMs = 30_000): Promise<void> {
+  /**
+   * Loads a URL, waits for its load event, then runs `ready` (the page's own readiness: its engine booted, a view
+   * drawn); an attempt the machine's network aborted is made again (see the module documentation), at most
+   * {@link LOAD_ATTEMPTS} times.
+   */
+  async goto(url: string, timeoutMs = 30_000, ready?: () => Promise<unknown>): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      const marks = {
+        requests: this.requests.length, console: this.console.length, logs: this.logs.length, exceptions: this.exceptions.length,
+        workerErrors: this.workerErrors.length, workers: this.workers.length,
+      };
+      const network = this.watchNetwork();
+      let failure: { error: unknown } | undefined;
+      try {
+        await this.load(url, timeoutMs);
+        if (ready !== undefined) await this.unlessAborted(ready(), marks.requests, network);
+      } catch (error) {
+        failure = { error };
+      } finally {
+        network.stop();
+      }
+      const reason = this.abortedBy(marks.requests, network.changed(), failure !== undefined);
+      if (reason === undefined) {
+        if (failure !== undefined) throw failure.error;
+        return;
+      }
+      this.loadRetries.push({ url, reason });
+      const last = failure === undefined ? "" : `; the last attempt's error: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`;
+      if (attempt >= LOAD_ATTEMPTS) throw new Error(`${url}: ${reason}, in each of ${attempt} attempts${last}`);
+      // A change comes as several events (an interface, then its addresses): load again once it has settled.
+      const settledMs = await this.networkSettled();
+      console.error(`browser page ${this.targetId.slice(0, 8)} (${url}): ${reason}: loading it again (attempt ${attempt + 1} of ${LOAD_ATTEMPTS}, the network settled for ${settledMs} ms)`);
+      // What the aborted attempt recorded is the environment's, not the page's.
+      this.requests.length = marks.requests;
+      this.console.length = marks.console;
+      this.logs.length = marks.logs;
+      this.exceptions.length = marks.exceptions;
+      this.workerErrors.length = marks.workerErrors;
+      this.workers.length = marks.workers;
+    }
+  }
+
+  /** Navigates to `url` and waits for its load event. */
+  private async load(url: string, timeoutMs: number): Promise<void> {
     this.url = url;
+    this.navigationError = undefined;
     const before = this.loads;
-    await this.conn.send("Page.navigate", { url }, this.sessionId);
+    const r = (await this.conn.send("Page.navigate", { url }, this.sessionId)) as { errorText?: string };
+    if (r.errorText !== undefined && r.errorText !== "") this.navigationError = r.errorText;
     const end = Date.now() + timeoutMs;
     while (this.loads === before) {
       if (Date.now() > end) throw new Error(`load of ${url} timed out`);
       await sleep(50);
+    }
+  }
+
+  /** Waits until the machine's network state has not changed for {@link NETWORK_SETTLE_MS}, at most
+   *  {@link NETWORK_SETTLE_MAX_MS}; how long it waited. */
+  private async networkSettled(): Promise<number> {
+    const start = Date.now();
+    let state = this.networkStateOf();
+    let since = start;
+    while (Date.now() - since < NETWORK_SETTLE_MS && Date.now() - start < NETWORK_SETTLE_MAX_MS) {
+      await sleep(100);
+      const now = this.networkStateOf();
+      if (now !== state) {
+        state = now;
+        since = Date.now();
+      }
+    }
+    return Date.now() - start;
+  }
+
+  /** Watches the machine's network state from now on: whether it changed (read again when asked). */
+  private watchNetwork(): { changed(): boolean; stop(): void } {
+    const at = this.networkStateOf();
+    let changed = false;
+    const timer = setInterval(() => { if (this.networkStateOf() !== at) changed = true; }, 100);
+    return {
+      changed: () => changed || this.networkStateOf() !== at,
+      stop: () => clearInterval(timer),
+    };
+  }
+
+  /** Why the load attempt since request `from` was the environment's, or `undefined` (see the module documentation). */
+  private abortedBy(from: number, networkChanged: boolean, failed: boolean): string | undefined {
+    const loads = this.requests.slice(from).filter((r) => r.failed !== undefined).map((r) => ({ url: r.url, error: r.failed! }));
+    if (this.navigationError !== undefined) loads.unshift({ url: this.url, error: this.navigationError });
+    const described = (list: Array<{ url: string; error: string }>): string =>
+      `${[...new Set(list.map((l) => l.url))].slice(0, 3).join(", ")}${list.length > 3 ? ", …" : ""}`;
+    const environmental = loads.filter((l) => this.environmentalErrors.some((e) => l.error.includes(e)));
+    if (environmental.length > 0)
+      return `${environmental.length} load${environmental.length === 1 ? "" : "s"} failed with ${[...new Set(environmental.map((l) => l.error))].join(", ")} (${described(environmental)})`;
+    if (networkChanged && (failed || loads.length > 0))
+      return `the machine's network interfaces changed while it loaded${loads.length === 0 ? "" : ` and ${loads.length} load${loads.length === 1 ? "" : "s"} failed (${[...new Set(loads.map((l) => l.error))].join(", ")}: ${described(loads)})`}`;
+    return undefined;
+  }
+
+  /** `step`'s outcome, or nothing as soon as the attempt is seen aborted by the environment (`step` then runs on,
+   *  unawaited, against a page about to be loaded again). */
+  private async unlessAborted(step: Promise<unknown>, from: number, network: { changed(): boolean }): Promise<void> {
+    step.catch(() => { /* awaited below, or abandoned */ });
+    let done = false;
+    const aborted = (async () => {
+      while (!done) {
+        if (this.abortedBy(from, network.changed(), false) !== undefined) return;
+        await sleep(100);
+      }
+    })();
+    try {
+      await Promise.race([step, aborted]);
+    } finally {
+      done = true;
     }
   }
 
@@ -261,6 +407,11 @@ export class Page {
   /** Sends a DevTools command to this page's session. */
   send(method: string, params: Json = {}): Promise<Json> {
     return this.conn.send(method, params, this.sessionId);
+  }
+
+  /** Calls `listener` with each DevTools event `method` of this page's session (its own target, not its workers'). */
+  onEvent(method: string, listener: (params: Json) => void): void {
+    this.conn.on(method, (p, s) => { if (s === this.sessionId) listener(p); });
   }
 
   /** Records the dedicated workers the page starts from now on, in {@link workers} (attached without pausing them). */
@@ -371,6 +522,7 @@ export class Page {
     const where = (target?: "worker"): string => (target === "worker" ? "[worker] " : "");
     return [
       `page ${this.targetId.slice(0, 8)} at ${this.url}${this.crashed ? " (crashed)" : this.ended ? " (closed)" : ""}`,
+      ...(this.loadRetries.length === 0 ? [] : section("loaded again", this.loadRetries.map((r) => `${r.url}: ${r.reason}`))),
       ...section("worker errors", this.workerErrors.map(errorLine)),
       ...section("exceptions", this.exceptions),
       ...section("console", this.console.map((c) => `${where(c.target)}${c.type}: ${c.text}`)),

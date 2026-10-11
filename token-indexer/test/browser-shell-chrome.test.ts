@@ -168,10 +168,11 @@ describe("the static build's main page in Chrome (served with its headers)", () 
   /** Opens `path` in a new tab of `b`, in a window of its own (visible), and waits for the engine's boot. */
   async function open(b: Browser, path: string): Promise<Page> {
     const p = await b.newPage({ workers: true, newWindow: true });
-    await p.goto(`${site.origin}${path}`);
-    await p.waitFor("window.umbradbEngine !== undefined && window.umbradbOverview !== undefined", 30_000, "the main page");
-    await p.eval("window.umbradbEngine.tabs.ready");
-    expect(await p.eval("window.umbradbEngine.client.booted()")).toMatchObject({ phase: "ready", error: null });
+    await p.goto(`${site.origin}${path}`, 30_000, async () => {
+      await p.waitFor("window.umbradbEngine !== undefined && window.umbradbOverview !== undefined", 30_000, "the main page");
+      await p.eval("window.umbradbEngine.tabs.ready");
+      expect(await p.eval("window.umbradbEngine.client.booted()")).toMatchObject({ phase: "ready", error: null });
+    });
     return p;
   }
   /** Loads the page's own URL again (a new document, also when the URL has a fragment) and waits for the boot. */

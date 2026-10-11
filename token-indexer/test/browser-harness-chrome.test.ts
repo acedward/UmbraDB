@@ -7,11 +7,17 @@
  *   the page's own scripts see the same worker as before: its class and its error event); the page's diagnostics
  *   hold it, its uncaught exception, its console calls and its workers' (the last lines only, each cut), and the
  *   report a failed test prints is every such page's diagnostics.
+ * - `[[browser.harness.load-retry]]` — in Chromium, page loads the machine's network aborted are loaded again, at most
+ *   three times, and nothing else is: a stylesheet or a later fetch failed once with an error taken for the network's
+ *   (here `net::ERR_CONNECTION_ABORTED`, which DevTools can produce, standing for `net::ERR_NETWORK_CHANGED`) is loaded
+ *   again once, at once, printed and dropped from what the page recorded; failing every time fails after three
+ *   attempts; another error is not retried; a worker's script aborted while the machine's interfaces changed (the
+ *   state injected) is loaded again, and the same abort with no change is not.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Browser, failureReport, findBrowser } from "./helpers/cdp-browser.ts";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { Browser, failureReport, findBrowser, LOAD_ATTEMPTS, type Page, type PageOptions } from "./helpers/cdp-browser.ts";
 import { type LocalServer, serveHandler } from "./helpers/static-site.ts";
 
 const browserExe = findBrowser();
@@ -32,6 +38,14 @@ const x = 1;
 throw new Error("worker boom " + x);
 `;
 
+// A page with a stylesheet, a fetch after it loads and a worker; each sets what it got.
+const LOADS = `<!doctype html><meta charset="utf-8"><title>loads</title><link rel="stylesheet" href="/style.css"><script>
+window.late = null;
+fetch("/late.json").then((r) => r.json()).then((j) => { window.late = j.ok; }, () => { window.late = false; });
+window.workerSaid = null;
+new Worker("/hello.js").onmessage = (e) => { window.workerSaid = e.data; };
+</script>`;
+
 describe("the Chromium tests' driver", () => {
   let site: LocalServer;
   let browser: Browser;
@@ -43,6 +57,18 @@ describe("the Chromium tests' driver", () => {
       if (path === "/") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(PAGE);
+      } else if (path === "/loads") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(LOADS);
+      } else if (path === "/style.css") {
+        res.writeHead(200, { "content-type": "text/css" });
+        res.end("body { color: rgb(1, 2, 3); }");
+      } else if (path === "/late.json") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"ok":true}');
+      } else if (path === "/hello.js") {
+        res.writeHead(200, { "content-type": "text/javascript" });
+        res.end('postMessage("hi");');
       } else if (path === "/w.js") {
         res.writeHead(200, { "content-type": "text/javascript" });
         res.end(WORKER);
@@ -90,4 +116,74 @@ describe("the Chromium tests' driver", () => {
     await page.close();
     expect(page.diagnostics()).toContain("(closed)");
   }, 120_000);
+
+  /** A page whose requests matching `path` fail with `reason` the first `times` times (`Infinity`: always); `onFail` is
+   *  called at each failure. */
+  async function failingPage(path: string, times: number, reason: string, opts: PageOptions = {}, onFail: () => void = () => {}): Promise<{ page: Page; failed: () => number }> {
+    const page = await browser.newPage(opts);
+    let failed = 0;
+    page.onEvent("Fetch.requestPaused", (p: { requestId: string; request: { url: string } }) => {
+      if (new URL(p.request.url).pathname === path && failed < times) {
+        failed++;
+        onFail();
+        void page.send("Fetch.failRequest", { requestId: p.requestId, errorReason: reason });
+      } else void page.send("Fetch.continueRequest", { requestId: p.requestId });
+    });
+    await page.send("Fetch.enable", { patterns: [{ urlPattern: `*${path}*` }] });
+    return { page, failed: () => failed };
+  }
+
+  it("[[browser.harness.load-retry]] loads the machine's network aborted are loaded again (at most three times, printed, the aborted attempt dropped); a load that fails every time fails after three attempts; another error, or an aborted worker script with no network change, is not retried; a worker script aborted while the interfaces changed is", async () => {
+    const printed = vi.spyOn(console, "error");
+    const aborted = { environmentalErrors: ["net::ERR_CONNECTION_ABORTED"] };
+    try {
+      // A stylesheet aborted once: loaded again at once; the second attempt's page is what the test sees.
+      const css = await failingPage("/style.css", 1, "ConnectionAborted", aborted);
+      await css.page.goto(`${site.origin}/loads`);
+      expect(css.failed()).toBe(1);
+      expect(css.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("1 load failed with net::ERR_CONNECTION_ABORTED") }]);
+      expect(await css.page.eval("getComputedStyle(document.body).color")).toBe("rgb(1, 2, 3)");
+      expect(css.page.requests.filter((r) => r.failed !== undefined)).toEqual([]);
+      expect(printed.mock.calls.some((c) => /loading it again \(attempt 2 of 3, /u.test(String(c[0])))).toBe(true);
+      expect(css.page.diagnostics()).toContain("loaded again (1):");
+      await css.page.close();
+
+      // A fetch after the load aborted once: the ready step is left as soon as the abort is seen, not at its timeout.
+      const late = await failingPage("/late.json", 1, "ConnectionAborted", aborted);
+      const t0 = Date.now();
+      await late.page.goto(`${site.origin}/loads`, 30_000, () => late.page.waitFor("window.late === true", 30_000, "the late load"));
+      expect(Date.now() - t0).toBeLessThan(15_000);
+      expect(late.page.loadRetries).toHaveLength(1);
+      await late.page.close();
+
+      // Aborted every time: three attempts, then the load fails.
+      const always = await failingPage("/late.json", Number.POSITIVE_INFINITY, "ConnectionAborted", aborted);
+      await expect(always.page.goto(`${site.origin}/loads`, 30_000, () => always.page.waitFor("window.late === true", 30_000, "the late load")))
+        .rejects.toThrow(new RegExp(`load failed with net::ERR_CONNECTION_ABORTED .*in each of ${LOAD_ATTEMPTS} attempts`, "u"));
+      expect(always.failed()).toBe(LOAD_ATTEMPTS);
+      await always.page.close();
+
+      // Another error is the page's: not retried, the ready step's own failure is the result.
+      const refused = await failingPage("/late.json", 1, "ConnectionRefused", aborted);
+      await expect(refused.page.goto(`${site.origin}/loads`, 30_000, () => refused.page.waitFor("window.late === true", 2_000, "the late load")))
+        .rejects.toThrow("timed out waiting for the late load");
+      expect(refused.page.loadRetries).toEqual([]);
+      await refused.page.close();
+
+      // A worker's script aborted (Chrome reports net::ERR_ABORTED for it) while the machine's interfaces changed: the
+      // network's; the same abort with no change: the page's.
+      let state = "eth0=10.0.0.2";
+      const changing = await failingPage("/hello.js", 1, "Aborted", { networkState: () => state }, () => { state = "eth0=10.0.0.2;br-test=10.97.0.1"; });
+      await changing.page.goto(`${site.origin}/loads`, 30_000, () => changing.page.waitFor("window.workerSaid === 'hi'", 10_000, "the worker"));
+      expect(changing.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("the machine's network interfaces changed while it loaded") }]);
+      await changing.page.close();
+      const still = await failingPage("/hello.js", 1, "Aborted", { networkState: () => "eth0=10.0.0.2" });
+      await expect(still.page.goto(`${site.origin}/loads`, 30_000, () => still.page.waitFor("window.workerSaid === 'hi'", 2_000, "the worker")))
+        .rejects.toThrow("timed out waiting for the worker");
+      expect(still.page.loadRetries).toEqual([]);
+      await still.page.close();
+    } finally {
+      printed.mockRestore();
+    }
+  }, 180_000);
 });

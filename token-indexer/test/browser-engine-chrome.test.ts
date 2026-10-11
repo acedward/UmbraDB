@@ -80,9 +80,10 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
     }
   }
   async function open(query = ""): Promise<HostStatus> {
-    await page.goto(`${server.origin}/engine.html${query}`);
-    await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
-    await page.eval("window.umbradbEngine.client.booted()");
+    await page.goto(`${server.origin}/engine.html${query}`, 30_000, async () => {
+      await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
+      await page.eval("window.umbradbEngine.client.booted()");
+    });
     return status();
   }
 
@@ -208,10 +209,11 @@ describe("browser engine in Chrome: system snapshot, watchdog, scheduling", () =
 
   /** Loads the engine page in `p` and waits for its boot (and, for a leader, its worker's boot). */
   async function load(p: Page, query = ""): Promise<void> {
-    await p.goto(`${server.origin}/engine.html${query}`);
-    await p.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
-    await p.eval("window.umbradbEngine.tabs.ready");
-    await p.eval("window.umbradbEngine.client.booted()");
+    await p.goto(`${server.origin}/engine.html${query}`, 30_000, async () => {
+      await p.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
+      await p.eval("window.umbradbEngine.tabs.ready");
+      await p.eval("window.umbradbEngine.client.booted()");
+    });
   }
   /** Opens the engine page in a tab of `b` and waits for its boot (and, for a leader, its worker's boot). */
   async function engineTab(b: Browser, query = "", opts: { workers?: boolean } = {}): Promise<Page> {
