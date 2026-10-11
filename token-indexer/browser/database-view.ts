@@ -10,8 +10,8 @@
  *   primary key, descending (newest first for a table whose key leads with a block height), with the order in words
  *   beside them (`orderText`), "newer" and "older" to page, up to the engine's deepest offset. A `bytea` value is the hex
  *   of its first bytes with its length; a long value is cut, with its length, and its cell is a control: what the
- *   engine sent of it opens under the table on demand (the mouse resting on it, a click, a tap, Enter or Space;
- *   `explain.ts`, `database-model.ts`).
+ *   engine sent of it opens on demand in a box next to the cell (the mouse resting on it, a click, a tap, Enter or
+ *   Space; `explain.ts`, `database-model.ts`).
  * - The table is named to the engine by the schema and name the engine listed; the engine checks them against the
  *   store's catalog and refuses anything else, whose reason is shown.
  *
@@ -116,7 +116,7 @@ export function mountDatabaseView(opts: DatabaseViewOptions): DatabaseView {
   const rowsTable = node("table");
   rowsTable.setAttribute("data-field", "db-rows.table");
   rowsWrap.append(rowsTable);
-  // A cut value's whole text (what the engine sent): one box under the table, opened by the value's cell.
+  // A cut value's whole text (what the engine sent): one box, opened next to the value's cell.
   const fullValue = explanation("db-rows-value", "db-rows.value");
   page.append(pageHead, pageNote, rowsWrap, fullValue.box);
   root.append(page);

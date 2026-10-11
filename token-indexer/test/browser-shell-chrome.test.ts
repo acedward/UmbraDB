@@ -18,7 +18,8 @@
  *   request to the site.
  * - `[[browser.shell.explain]]` — the storage line is a control whose explanation opens on demand: a click shows it and a
  *   second click hides it; Escape and a click elsewhere hide it; Enter and Space on the focused control open it; the
- *   mouse resting on it shows it and leaving hides it; a tap shows it and a second tap hides it. Opened while the line
+ *   mouse resting on it shows it (next to the line, in the viewport, over the page: the controls under it do not move)
+ *   and leaving hides it; a tap shows it and a second tap hides it. Opened while the line
  *   shows the page's own figures (the engine's status answered without its storage reading, as before a slow worker's
  *   first reading), it stays open, the same box, when the engine's figures come; open while the engine syncs, it stays
  *   open across the overview's refreshes, its text updated in place; its text is always the explanation of the
@@ -32,7 +33,8 @@
  * - `[[browser.shell.database]]` — the Database tab lists every table of the store as the system snapshot's catalog
  *   statistics do, with estimates and sizes; a picked table shows a page of rows newest first, each value drawn from
  *   the engine's answer, each column with its type, and the pages follow one another; a cut value's cell opens what
- *   the engine sent of it under the table (Enter, a click; Escape and a second click close it); the rows equal the
+ *   the engine sent of it next to the cell, in the viewport (above it at the viewport's bottom), without moving the
+ *   page (Enter, a click; Escape and a second click close it); the rows equal the
  *   store read with SQL by the reader page; a table name that is not the catalog's is refused (by the request and by a
  *   forged picker value) and the refusal is shown; hostile text in rows is drawn as text; a second tab lists the same
  *   tables and rows.
@@ -345,7 +347,7 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       /** Whether the box is shown, its text, the control's state, and the explanation of the figures drawn. */
       const read = (): Promise<{ shown: boolean; text: string; expanded: string | null; controls: string | null; expected: string; line: string; drawnLine: string }> => p.eval(`(() => {
         const i = window.umbradbOverview.inputs();
-        return { shown: !${BOX}.hidden, text: ${BOX}.textContent, expanded: ${CONTROL}.getAttribute('aria-expanded'), controls: ${CONTROL}.getAttribute('aria-controls'),
+        return { shown: ${BOX}.matches(':popover-open'), text: ${BOX}.textContent, expanded: ${CONTROL}.getAttribute('aria-expanded'), controls: ${CONTROL}.getAttribute('aria-controls'),
           inputs: i, line: ${CONTROL}.textContent };
       })()`).then((r: Json) => {
         const model = storageLine(r.inputs.status, r.inputs.pageStorage, r.inputs.persistence);
@@ -408,14 +410,24 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       // The mouse resting on it shows it; leaving hides it.
       const at = await p.eval<{ x: number; y: number }>(`(() => { ${CONTROL}.scrollIntoView({ block: 'center' }); const r = ${CONTROL}.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
-      await p.waitFor(`!${BOX}.hidden`, 2_000, "the box on hover");
+      const controlsAt = (): Promise<number> => p.eval("document.querySelector('#engine-panel .controls').getBoundingClientRect().top");
+      const controlsBefore = await controlsAt();
+      await p.waitFor(`${BOX}.matches(':popover-open')`, 2_000, "the box on hover");
+      // Next to its control, in the viewport, over the page: the controls under it have not moved.
+      const place = await p.eval<{ box: Json; control: Json; vh: number; vw: number }>(`({ box: ${BOX}.getBoundingClientRect().toJSON(), control: ${CONTROL}.getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth })`);
+      expect(place.box.top).toBeGreaterThanOrEqual(place.control.bottom);
+      expect(place.box.top - place.control.bottom).toBeLessThan(16);
+      expect(Math.abs(place.box.left - place.control.left)).toBeLessThan(16);
+      expect(place.box.bottom).toBeLessThanOrEqual(place.vh);
+      expect(place.box.right).toBeLessThanOrEqual(place.vw);
+      expect(await controlsAt()).toBe(controlsBefore);
       r = await read();
       expect(r.text).toBe(r.expected);
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
-      await p.waitFor(`${BOX}.hidden`, 2_000, "the box hidden when the mouse leaves");
+      await p.waitFor(`!${BOX}.matches(':popover-open')`, 2_000, "the box hidden when the mouse leaves");
       // Resting on it, then a click keeps it open; a second click hides it though the mouse is still on it.
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: at.x, y: at.y });
-      await p.waitFor(`!${BOX}.hidden`, 2_000, "the box on hover again");
+      await p.waitFor(`${BOX}.matches(':popover-open')`, 2_000, "the box on hover again");
       for (const type of ["mousePressed", "mouseReleased"] as const) await p.send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: 1 });
       await p.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 });
       await new Promise((res) => setTimeout(res, 400));
@@ -573,13 +585,41 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(drawn.head).toEqual(page.columns.map((c) => c.name));
       expect(drawn.types).toEqual(page.columns.map((c) => c.type));
       expect(drawn.cells).toEqual(page.rows.map((r) => r.map((c) => visibleText(cellText(c).text))));
-      // A cut value (a block hash): its cell is a control; Enter on it shows what the engine sent of it under the table,
-      // Escape hides it; no native tooltip carries it.
+      // A cut value (a block hash): its cell is a control; Enter on it shows what the engine sent of it next to the cell,
+      // in the viewport, without moving the page; Escape hides it; no native tooltip carries it.
       const hashAt = page.columns.findIndex((c) => c.name === "block_hash");
       const hashCell = cellText(page.rows[0]![hashAt]!);
       expect(hashCell.title).not.toBeNull();
-      const valueBox = (): Promise<[boolean, string, string | null]> => p.eval("(() => { const b = document.querySelector('[data-field=\"db-rows.value\"]'); const c = document.querySelectorAll('[data-field=\"db-rows.table\"] tbody tr')[0].cells[" + hashAt + "].querySelector('button'); return [b.hidden, b.textContent, c.getAttribute('aria-expanded')]; })()");
+      const valueBox = (): Promise<[boolean, string, string | null]> => p.eval("(() => { const b = document.querySelector('[data-field=\"db-rows.value\"]'); const c = document.querySelectorAll('[data-field=\"db-rows.table\"] tbody tr')[0].cells[" + hashAt + "].querySelector('button'); return [!b.matches(':popover-open'), b.textContent, c.getAttribute('aria-expanded')]; })()");
       expect((await valueBox())[0]).toBe(true);
+      await p.eval(`(() => { const b = document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[0].cells[${hashAt}].querySelector('button'); b.scrollIntoView({ block: 'center' }); b.focus(); })()`);
+      await key(p, "Enter", 13, "\r");
+      expect(await valueBox()).toEqual([false, `block_hash: ${hashCell.title}`, "true"]);
+      /** Where the box is against the cell's control that opened it, and the viewport. */
+      const placed = (row: number): Promise<{ box: Json; cell: Json; vh: number; vw: number }> => p.eval(`(() => {
+        const b = document.querySelector('[data-field="db-rows.value"]');
+        const c = document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[${row}].cells[${hashAt}].querySelector('button');
+        return { box: b.getBoundingClientRect().toJSON(), cell: c.getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth };
+      })()`);
+      const nextTo = (q: { box: Json; cell: Json; vh: number; vw: number }): void => {
+        expect(q.box.top).toBeGreaterThanOrEqual(0);
+        expect(q.box.bottom).toBeLessThanOrEqual(q.vh);
+        expect(q.box.left).toBeGreaterThanOrEqual(0);
+        expect(q.box.right).toBeLessThanOrEqual(q.vw);
+        // Right under the cell, or right above it.
+        const gap = q.box.top >= q.cell.bottom ? q.box.top - q.cell.bottom : q.cell.top - q.box.bottom;
+        expect(gap, JSON.stringify(q)).toBeGreaterThanOrEqual(0);
+        expect(gap, JSON.stringify(q)).toBeLessThan(16);
+      };
+      nextTo(await placed(0));
+      // The page did not move to show it.
+      const cellTop = (await placed(0)).cell.top;
+      expect(Math.abs(cellTop - (await p.eval<number>("innerHeight")) / 2)).toBeLessThan(60);
+      // A cell at the bottom of the viewport: its box opens above it, in the viewport.
+      await p.eval(`(() => { const b = document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[24].cells[${hashAt}].querySelector('button'); b.scrollIntoView({ block: 'end' }); b.click(); })()`);
+      nextTo(await placed(24));
+      expect((await placed(24)).box.bottom).toBeLessThanOrEqual((await placed(24)).cell.top);
+      await p.eval(`document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[24].cells[${hashAt}].querySelector('button').click()`);
       await p.eval(`document.querySelectorAll('[data-field="db-rows.table"] tbody tr')[0].cells[${hashAt}].querySelector('button').focus()`);
       await key(p, "Enter", 13, "\r");
       expect(await valueBox()).toEqual([false, `block_hash: ${hashCell.title}`, "true"]);
@@ -634,9 +674,9 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(drawn.cells[0]![0]!.endsWith("<img src=x onerror=\"window.__pwned=1\">\u2026 (9,999 characters)")).toBe(true);
       // The cut cell's whole value opens under the table on a click, drawn with marks; a second click hides it.
       await p.eval("document.querySelector('[data-field=\"db-rows.table\"] tbody td button').click()");
-      expect(await p.eval("[document.querySelector('[data-field=\"db-rows.value\"]').hidden, document.querySelector('[data-field=\"db-rows.value\"]').textContent]")).toEqual([false, `${marked}: ${visibleText(longCell.title!)}`]);
+      expect(await p.eval("[!document.querySelector('[data-field=\"db-rows.value\"]').matches(':popover-open'), document.querySelector('[data-field=\"db-rows.value\"]').textContent]")).toEqual([false, `${marked}: ${visibleText(longCell.title!)}`]);
       await p.eval("document.querySelector('[data-field=\"db-rows.table\"] tbody td button').click()");
-      expect(await p.eval("document.querySelector('[data-field=\"db-rows.value\"]').hidden")).toBe(true);
+      expect(await p.eval("document.querySelector('[data-field=\"db-rows.value\"]').matches(':popover-open')")).toBe(false);
       expect(drawn.page).toContain(`by primary key (${marked}), descending`);
       expect(await p.eval<number>("document.querySelectorAll('[data-field=\"db-rows.table\"] .mark-vis').length")).toBeGreaterThan(5);
       expect(await p.eval("({ scripts: document.scripts.length, media: document.querySelectorAll('img, iframe, object, embed, video, audio').length, pwned: window.__pwned === undefined ? null : window.__pwned })")).toEqual({ scripts: 1, media: 0, pwned: null });

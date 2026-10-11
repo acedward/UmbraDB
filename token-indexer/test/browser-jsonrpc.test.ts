@@ -84,8 +84,9 @@
  *   not end holds one allocation however many calls and deadlines pass; the calls waiting for it are answered
  *   `internal` at its deadline (the last error says so), or `module-off` at once when the module is switched off;
  *   later calls are refused at once while it has not ended; once it ends its module is closed at once and the next
- *   call starts the module; the worker's close is answered at once while a start does not end, and the start's module
- *   is closed when it ends.
+ *   call starts the module; a slow start past its deadline while calls keep coming is the only start, its module
+ *   closed when it ends; the worker's close is answered at once while a start does not end, and the start's module
+ *   is closed when it ends; never more than one start running nor more than one module open.
  * - `[[browser.host.jsonrpc-restored]]` — the switch lives in the settings: a new host on them (a reload, the next
  *   worker or leader tab) refuses while it is off and answers once on; a store replaced by `range`, `reset` or
  *   `import` keeps it off.
@@ -1074,13 +1075,24 @@ describe("the browser engine's JSON RPC module", () => {
   it("[[browser.host.jsonrpc-start-hung]] one module start at a time: a start that allocates its database and then does not end holds one allocation however many calls and deadlines pass; the waiting calls are answered internal at its deadline or module-off when switched off, later calls refused at once; once it ends its module is closed and the next call starts the module; the worker's close does not wait for it", async () => {
     const modules = counted();
     const start = modules.start;
-    /** Whether a start blocks after it has made its database, and the starts blocked now. */
+    /** Whether a start blocks after it has made its database (or, `slowMs`, takes that long), the starts blocked now,
+     *  and the most starts running at once. */
     let block = true;
+    let slowMs = 0;
     const blocked: Array<() => void> = [];
+    let running = 0;
+    let mostRunning = 0;
     modules.start = async (o) => {
-      const m = await start(o);
-      if (block) await new Promise<void>((r) => blocked.push(r));
-      return m;
+      running++;
+      mostRunning = Math.max(mostRunning, running);
+      try {
+        const m = await start(o);
+        if (block) await new Promise<void>((r) => blocked.push(r));
+        else if (slowMs > 0) await new Promise((r) => setTimeout(r, slowMs));
+        return m;
+      } finally {
+        running--;
+      }
     };
     const release = (): void => {
       for (const r of blocked.splice(0)) r();
@@ -1128,11 +1140,32 @@ describe("the browser engine's JSON RPC module", () => {
       expect(asWire(await jsonrpc(host, CHAIN_ID))).toEqual(await viaHttp(port, CHAIN_ID));
       expect([modules.started, alive(), (await state()).database]).toEqual([2, 1, "open"]);
 
+      // A slow start (1.6 s against a 1 s deadline) while calls keep coming every 200 ms: the first calls are answered
+      // internal at the deadline, the others refused at once, never a second start; when it ends its module is closed,
+      // and then a call starts the module again.
+      await ok(host, "module", { module: "jsonrpc", enabled: false });
+      await until(() => modules.closed === 2, "the open module's close before the slow start");
+      await ok(host, "module", { module: "jsonrpc", enabled: true });
+      block = false;
+      slowMs = 1_600;
+      const slow: Array<Promise<ApiResult | { refused: string; message: string }>> = [];
+      for (let i = 0; i < 8; i++) {
+        slow.push(jsonrpc(host, CHAIN_ID));
+        expect(alive()).toBeLessThanOrEqual(1);
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      expect((await Promise.all(slow)).map((r) => ("refused" in r ? r.refused : "answered"))).toEqual(Array(8).fill("internal"));
+      await until(() => alive() === 0 && running === 0, "the slow start's module closed");
+      slowMs = 0;
+      expect(asWire(await jsonrpc(host, CHAIN_ID))).toEqual(await viaHttp(port, CHAIN_ID));
+      expect(alive()).toBe(1);
+      expect([mostRunning, modules.maxOpen]).toEqual([1, 1]);
+      await ok(host, "module", { module: "jsonrpc", enabled: false });
+      await until(() => alive() === 0, "the open module's close");
+      await ok(host, "module", { module: "jsonrpc", enabled: true });
+
       // Switched off while a start does not end: the waiting calls are answered module-off at once; once the start ends
       // its module is closed.
-      await ok(host, "module", { module: "jsonrpc", enabled: false });
-      await until(() => modules.closed === 2, "the open module's close");
-      await ok(host, "module", { module: "jsonrpc", enabled: true });
       block = true;
       waiting = calls(3);
       await until(() => blocked.length === 1, "the next start to block");
@@ -1141,7 +1174,7 @@ describe("the browser engine's JSON RPC module", () => {
       expect(off === "still waiting" ? off : off.map((r) => ("refused" in r ? r.refused : "answered"))).toEqual(Array(3).fill("module-off"));
       expect(alive()).toBe(1);
       release();
-      await until(() => modules.closed === 3 && alive() === 0, "the switched-off start's module closed");
+      await until(() => alive() === 0 && running === 0, "the switched-off start's module closed");
 
       // The worker's close while a start does not end: answered at once, the waiting call module-off; the start's
       // module is closed when it ends.
@@ -1154,6 +1187,8 @@ describe("the browser engine's JSON RPC module", () => {
       expect(await within(pending, 500)).toMatchObject({ refused: "module-off" });
       release();
       await until(() => alive() === 0, "the start's module closed after the worker's close");
+      // Never more than one start running, nor more than one module open.
+      expect([mostRunning, modules.maxOpen]).toEqual([1, 1]);
     } finally {
       block = false;
       release();

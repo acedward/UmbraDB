@@ -49,7 +49,7 @@ PostgreSQL.
 | `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
 | `index.html`, `explorer-page.ts`, `shell.ts`, `explorer.css` | The main page (see [Main page](#main-page)): the header's tabs (Overview, Token Indexer, JSON RPC, Database) and the system status link, the tab in the URL |
 | `engine-panel.ts`, `panel-model.ts` | The overview's indexer section: health, heights, the finalized tip and the lag, blocks per second, uptime, the storage line, and the engine's controls |
-| `explain.ts` | An explanation on demand: a control (underlined text) opening a box by hover, click, tap, Enter or Space, kept open and updated in place across refreshes (the storage line, the Database tab's cut values) |
+| `explain.ts` | An explanation on demand: a control (underlined text) opening a box next to it, over the page (a popover anchored to the control), by hover, click, tap, Enter or Space, kept open and updated in place across refreshes (the storage line, the Database tab's cut values) |
 | `modules.ts`, `modules-view.ts` | The overview's Modules section: the indexer's modules, and the Token Indexer and JSON RPC switches (`module`) |
 | `explorer-host.ts`, `explorer-transport.ts` | The token explorer of `GET /ui` in the Token Indexer tab, reading the API through the engine |
 | `database-view.ts`, `database-model.ts`, `store-tables.ts` | The Database tab: the page, its pure view of the engine's answers, and the worker's reads of the store's tables (`tables`, `rows`) |
@@ -86,8 +86,10 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
 - **The storage line** is one short line: the store's own size (an OPFS walk), the quota, the usage at which the sync
   pauses and whether the site's storage is persistent, e.g. "42.3 MB · quota 11.8 GB · pauses at 10.6 GB · not
   persistent" ("· paused" while the sync is paused; the page's own `navigator.storage` figures until the engine has a
-  reading). The line is a control (dotted underline) whose explanation opens in a box under the figures on demand —
-  the mouse resting on it, a click or a tap, Enter or Space; a second click, Escape or a click elsewhere closes it —
+  reading). The line is a control (dotted underline) whose explanation opens on demand in a box next to it, over the
+  page (a popover anchored to the line, in the viewport: nothing under it moves) — the mouse resting on it, a click or
+  a tap, Enter or Space; a click on a box the mouse opened keeps it open; a second click, Escape or a click elsewhere
+  closes it —
   and stays open, updated in place, across the overview's refreshes (`explain.ts`; no native tooltip, which opens only
   after a still hover and never on a click, a tap or the keyboard). It explains the usage the browser counts against
   the quota (larger than the store while it is open, because Chrome reserves space for the open store's files), what
@@ -142,7 +144,8 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
   physical order, the last written row first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
   `bytea` value as the hex of its first 16 bytes and its length (the cell shows 8 of them), any other value as its text
   form's first 256 characters and its length (the cell shows 48); a cut cell is a control that opens what was read
-  in a box under the table on demand, as the storage line's explanation does; each column shows its type under its
+  in a box next to the cell on demand (under it, or above it at the bottom of the viewport), as the storage line's
+  explanation does; each column shows its type under its
   name. The table is
   named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any
   statement names them: anything else is refused (`bad-request`, shown under the table). Each read is an autocommit
