@@ -227,6 +227,9 @@ describe("a store the browser engine cannot use", () => {
     expect(persistenceSentence(null, undefined)).toBe("Persistence: unknown");
     const page = panelView({ role: "leader", connectedTabs: 1, status: null, statusError: null, api: null, pageStorage: { usageBytes: 1_000_000, quotaBytes: 2_000_000, persisted: false }, persistence: { requested: true, persisted: false, error: null } });
     expect(page.storage).toBe("size not read yet \u00b7 quota 2.0 MB \u00b7 not persistent");
-    expect(page.storageTitle.split("\n")).toEqual(["Store: size not read yet", "Browser usage: 1.0 MB of a 2.0 MB quota", "Not persistent: the browser may delete this data when the disk runs low"]);
+    expect(page.storageLines).toEqual(["Store: size not read yet", "Browser usage: 1.0 MB of a 2.0 MB quota", "Not persistent: the browser may delete this data when the disk runs low"]);
+    // A line break in the browser's error stays inside its line (drawn as a visible mark), never a line of its own.
+    const broken = panelView({ role: "leader", connectedTabs: 1, status: null, statusError: null, api: null, pageStorage: { usageBytes: 1_000_000, quotaBytes: 2_000_000, persisted: false }, persistence: { requested: true, persisted: false, error: "disk\nPersistent: yes" } });
+    expect(broken.storageLines).toEqual(["Store: size not read yet", "Browser usage: 1.0 MB of a 2.0 MB quota", "Not persistent (the request failed: disk\nPersistent: yes): the browser may delete this data when the disk runs low"]);
   });
 });
