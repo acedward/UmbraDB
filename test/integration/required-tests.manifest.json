@@ -1910,7 +1910,7 @@
     {
       "id": "browser.snapshot.start-height",
       "file": "token-indexer/test/browser-snapshot-attacks.test.ts",
-      "description": "a snapshot whose archive records no first height, or one below or above its lowest block, or whose scan starts below that block or reaches past the archive, or that is not one chain of canonical blocks from its first height to its height, is refused with nothing changed; an honest one is imported and its start saved"
+      "description": "a snapshot whose archive records no first height, or one below or above its lowest block, or whose scan starts below that block or reaches past the archive, or that is not one chain of canonical blocks from its first height to its height, or whose scan cursor names another last block than the archive's, is refused with nothing changed; an honest one is imported and its start saved"
     },
     {
       "id": "browser.snapshot.expansion",

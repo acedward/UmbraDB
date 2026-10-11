@@ -22,7 +22,8 @@
  * numbered from 0), each is loaded with `COPY … FROM` with every constraint and trigger of the store in force, the row
  * counts and the sequences are checked and set, all in one transaction; then the store's cursors, block hash,
  * migrations and PGlite version must be the manifest's, the archive must record its first height, be one chain of
- * canonical blocks from there to its height, and the scan's range must lie within the archive's. Rows can only be
+ * canonical blocks from there to its height, and the scan's range must lie within the archive's, its cursor naming the
+ * archive's block at its last height. Rows can only be
  * rows: nothing in them is run.
  *
  * **Import** has two parts:
@@ -423,10 +424,11 @@ export async function loadSnapshot(store: Store, manifest: SnapshotManifest, dat
  * Refuses (`corrupt`) an archive that does not record its first height or records another than its lowest canonical
  * block (this build's sync records it with its first block), one that is not one chain of canonical blocks from there
  * to its height (a height missing or twice, a block above it, a block whose parent is not the block before it), and a
- * scan whose range leaves the archive's (from below its first block, or a next height past the one after its last): an
- * import saves the first height as the start of the configuration that continues it (and every `reset` afterwards
- * starts there), and the API reports the scan's range, so both must be the blocks the archive holds, not heights it
- * only claims.
+ * scan whose range leaves the archive's (from below its first block, or a next height past the one after its last) or
+ * whose cursor names another last block than the archive's canonical one at its height: an import saves the first height as the start of the configuration that continues it (and every `reset`
+ * afterwards starts there), the API reports the scan's range, and the scan continues from its cursor's block, so all of
+ * them must be the blocks the archive holds, not heights or hashes it only claims. (The archive's own cursor carries
+ * no hash: the manifest's block hash is read from the archive's block at its height.)
  */
 async function checkArchiveStart(sql: UmbraDBSql, manifest: SnapshotManifest, network: string): Promise<void> {
   const [low] = await sql<{ height: string | null }[]>`
@@ -453,6 +455,16 @@ async function checkArchiveStart(sql: UmbraDBSql, manifest: SnapshotManifest, ne
   const scan = manifest.scan;
   if (scan !== null && (scan.fromHeight < start || scan.nextHeight < scan.fromHeight || scan.nextHeight > manifest.archive.height + 1))
     throw new SnapshotRefusal("corrupt", `the snapshot's scan covers ${scan.fromHeight} to ${scan.nextHeight - 1}, outside its archive's ${start} to ${manifest.archive.height}`);
+  // The scan's cursor names its last block (the scan continues with the block whose parent it is): the archive's
+  // canonical block at that height. (A cursor that has scanned nothing names none: the table's own constraint.)
+  if (scan !== null && scan.nextHeight > scan.fromHeight) {
+    const named = scan.lastBlockHash === null ? null : scan.lastBlockHash.replace(/^0x/, "").toLowerCase();
+    const last = scan.nextHeight - 1;
+    const [b] = await sql<{ hash: string }[]>`
+      SELECT encode(block_hash, 'hex') AS hash FROM ${sql(ARCHIVE_SCHEMA)}.blocks WHERE net = ${network} AND is_canonical AND height = ${last}`;
+    if (named !== b?.hash)
+      throw new SnapshotRefusal("corrupt", `the snapshot's scan says its last block ${last} is ${named ?? "none"}, but the archive's block there is ${b?.hash ?? "missing"}`);
+  }
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────────────────────────────────────────────

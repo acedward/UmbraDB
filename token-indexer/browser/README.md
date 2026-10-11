@@ -396,7 +396,7 @@ store in memory, made by the migrations, into which the rows are loaded in one t
 sequences, the cursors, the block hash and the migrations must then be the manifest's, the archive must record its
 first height (which the import saves as the start of the configuration that continues it) and be one chain of
 canonical blocks from there to its height (each height once, each block's parent the one before it), and the scan's
-range must lie within the archive's. The rows are read as a stream:
+range must lie within the archive's, its cursor naming the archive's block at its last height. The rows are read as a stream:
 an import holds one entry (at most 64 MiB) besides the file, and refuses rows as soon as they unpack to more than the
 manifest says (itself at most 4 GiB), or, past the first 64 MiB, to more than 16 times the compressed bytes read so far
 (a snapshot's rows unpack to about twice their size; this keeps what the trial loads in proportion to the file), an

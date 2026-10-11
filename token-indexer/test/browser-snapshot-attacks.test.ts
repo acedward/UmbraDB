@@ -16,7 +16,8 @@
  * - `[[browser.snapshot.start-height]]` — the first height an archive records is the start an import saves: a snapshot
  *   whose archive records no first height, or says it starts below its lowest block (at genesis) or above it, or is
  *   not one chain of canonical blocks from there to its height (a forged block at height 0; a block whose parent is
- *   not the block before it), or whose scan starts below its first block or reaches past its last one, is refused and
+ *   not the block before it), or whose scan starts below its first block or reaches past its last one, or whose scan
+ *   cursor names another last block than the archive's at its height, is refused and
  *   nothing changes; an honest one is imported with its first block as the saved start.
  * - `[[browser.snapshot.expansion]]` — rows that unpack to many times the size of the file (blobs of a random kilobyte
  *   followed by a megabyte of zeros, which pass every other check: a few of them are imported) are refused as soon as
@@ -280,7 +281,7 @@ describe("snapshots made to carry more than rows", () => {
     }
     expect((await result<HostStatus>(victim.host, "status")).boot.phase).toBe("ready");
   }, 300_000);
-  it("[[browser.snapshot.start-height]] a snapshot whose archive records no first height, or one below or above its lowest block, or whose scan starts below that block or reaches past the archive, or that is not one chain of canonical blocks from its first height to its height, is refused with nothing changed; an honest one is imported and its start saved", async () => {
+  it("[[browser.snapshot.start-height]] a snapshot whose archive records no first height, or one below or above its lowest block, or whose scan starts below that block or reaches past the archive, or that is not one chain of canonical blocks from its first height to its height, or whose scan cursor names another last block than the archive's, is refused with nothing changed; an honest one is imported and its start saved", async () => {
     const a = host();
     await result(a.host, "start", { config: { ...U1_TAPE, endHeight: U1.from + 3 } });
     await untilU1(a, U1.from + 3);
@@ -324,6 +325,17 @@ describe("snapshots made to carry more than rows", () => {
     const unlinked = await call(victim.host, "import", { snapshot: await exportWith(U1.from, U1.from) });
     expect(unlinked, "a block that does not follow the one before it").toMatchObject({ ok: false, error: { code: "snapshot-refused", message: `corrupt: the snapshot's archive is not one chain of canonical blocks from its first height ${U1.from} to ${U1.from + 3}: 1 block does not follow the block before it (the first at ${U1.from + 2})` } });
     await sql`UPDATE chain_archive.blocks SET parent_hash = ${kept!.parent_hash} WHERE height = ${U1.from + 2} AND is_canonical`;
+    expect((await result<HostStatus>(victim.host, "status")).settings, "nothing changed").toEqual(before.settings);
+    // A scan cursor whose last block is not the archive's block at its height (the next block's parent would not
+    // follow it, and the scan would stall).
+    const [scanned] = await sql<{ h: Uint8Array }[]>`SELECT block_hash AS h FROM chain_archive.blocks WHERE height = ${U1.from + 3} AND is_canonical`;
+    const zeros = "0".repeat(64);
+    const scannedHex = Buffer.from(scanned!.h).toString("hex");
+    await exportWith(U1.from, U1.from);
+    await sql`UPDATE mip0018.mip0018_scan SET last_block_hash = decode(${zeros}, 'hex') WHERE network = 'stagenet'`;
+    const wrongHash = await call(victim.host, "import", { snapshot: (await result<ExportResult>(a.host, "export")).file });
+    expect(wrongHash, "a scan cursor off the archive's chain").toMatchObject({ ok: false, error: { code: "snapshot-refused", message: `corrupt: the snapshot's scan says its last block ${U1.from + 3} is ${zeros}, but the archive's block there is ${scannedHex}` } });
+    await sql`UPDATE mip0018.mip0018_scan SET last_block_hash = ${scanned!.h} WHERE network = 'stagenet'`;
     expect((await result<HostStatus>(victim.host, "status")).settings, "nothing changed").toEqual(before.settings);
 
     const honest = await exportWith(U1.from, U1.from);
