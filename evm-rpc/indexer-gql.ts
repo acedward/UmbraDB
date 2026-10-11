@@ -53,7 +53,13 @@ export interface IndexerReader {
 export interface IndexerGqlClientOptions {
   readonly url: string;
   readonly fetchImpl?: typeof fetch;
+  /** Per-request timeout in milliseconds, counted from the request's start. Default 20,000. */
   readonly timeoutMs?: number;
+  /**
+   * Awaited before each request starts (and before its timeout starts), e.g. a turn in a pacing queue. A rejection is
+   * the request's failure; nothing is fetched. Default: none.
+   */
+  readonly beforeRequest?: () => Promise<void>;
 }
 
 interface GraphQlEnvelope<T> {
@@ -71,14 +77,23 @@ export class IndexerGqlClient implements IndexerReader {
   readonly #url: string;
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
+  readonly #beforeRequest: (() => Promise<void>) | undefined;
 
   constructor(options: IndexerGqlClientOptions) {
     this.#url = options.url;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? 20_000;
+    this.#beforeRequest = options.beforeRequest;
   }
 
   async #query<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
+    if (this.#beforeRequest !== undefined) {
+      try {
+        await this.#beforeRequest();
+      } catch (error) {
+        throw new IndexerGqlError(`GraphQL request to ${this.#url} was not started`, error);
+      }
+    }
     let response: Response;
     try {
       response = await this.#fetch(this.#url, {

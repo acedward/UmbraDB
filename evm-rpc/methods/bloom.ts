@@ -18,6 +18,7 @@
  * `test/keccak256.test.ts`); Node's `sha3-256` is FIPS-202 and would silently produce a different,
  * wrong filter.
  */
+import { bytesToHex, hexToBytes as decodeHex } from "../../src/postgres/bytes.js";
 import { keccak256 } from "../logs/keccak256.js";
 
 const BLOOM_BYTES = 256;
@@ -38,7 +39,7 @@ function hexToBytes(value: string): Uint8Array {
   if (raw.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(raw)) {
     throw new Error("data source returned malformed hex while computing logsBloom");
   }
-  return Uint8Array.from(Buffer.from(raw, "hex"));
+  return decodeHex(raw);
 }
 
 /** The receipt's `logsBloom` over `logs`; `0x00…00` for an empty array, as Ethereum defines. */
@@ -51,5 +52,5 @@ export function logsBloom(logs: readonly { address: string; topics: readonly str
       }
     }
   }
-  return `0x${Buffer.from(bloom).toString("hex")}`;
+  return `0x${bytesToHex(bloom)}`;
 }

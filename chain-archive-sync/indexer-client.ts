@@ -1,5 +1,5 @@
 import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
-import { defaultMinIntervalMs, parseRetryAfterMs, RequestPacer } from "./polite-http.js";
+import { defaultMinIntervalMs, type Pacer, parseRetryAfterMs, RequestPacer } from "./polite-http.js";
 
 /**
  * Minimal Midnight indexer GraphQL client -- plain `fetch`, no SDK dependency. Grounded against
@@ -75,6 +75,9 @@ export interface IndexerClientOptions {
   /** Minimum spacing between two request starts. Default: 250 ms for a public
    *  Midnight host (`polite-http.ts`), 0 otherwise. */
   minIntervalMs?: number;
+  /** A pacer shared with the other clients of the same endpoint, used instead of a pacer of the client's own (and of
+   *  `minIntervalMs`). Default: none. */
+  pacer?: Pacer;
 }
 
 /** The per-height block query, with each transaction's `__typename` and result. */
@@ -96,14 +99,14 @@ export class IndexerClient {
   private readonly publicUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
-  private readonly pacer: RequestPacer;
+  private readonly pacer: Pacer;
 
   constructor(opts: IndexerClientOptions) {
     this.url = opts.url;
     this.publicUrl = publicEndpoint(opts.url);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.pacer = new RequestPacer(opts.minIntervalMs ?? defaultMinIntervalMs(opts.url));
+    this.pacer = opts.pacer ?? new RequestPacer(opts.minIntervalMs ?? defaultMinIntervalMs(opts.url));
   }
 
   /** The effective request spacing (logged by the CLI). */

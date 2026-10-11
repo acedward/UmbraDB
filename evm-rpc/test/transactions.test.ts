@@ -126,8 +126,8 @@ describe("transaction methods", () => {
     }
 
     it("derives the Midnight hash from a relayer raw_ref and leaves every other provenance alone", () => {
-      expect(canonicalHashFromRawRef(`relayer:midnight:${MIDNIGHT_HASH}`)?.toString("hex")).toBe(MIDNIGHT_HASH);
-      expect(canonicalHashFromRawRef(`relayer:midnight:${MIDNIGHT_HASH.toUpperCase()}`)?.toString("hex")).toBe(MIDNIGHT_HASH);
+      expect(Buffer.from(canonicalHashFromRawRef(`relayer:midnight:${MIDNIGHT_HASH}`)!).toString("hex")).toBe(MIDNIGHT_HASH);
+      expect(Buffer.from(canonicalHashFromRawRef(`relayer:midnight:${MIDNIGHT_HASH.toUpperCase()}`)!).toString("hex")).toBe(MIDNIGHT_HASH);
       expect(canonicalHashFromRawRef("indexer:transaction:90")).toBeNull();
       expect(canonicalHashFromRawRef("relayer:midnight:short")).toBeNull();
       expect(canonicalHashFromRawRef(null)).toBeNull();

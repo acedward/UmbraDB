@@ -25,7 +25,8 @@ const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 /**
  * Entry modules of the runtime: the engine and its system snapshot collector, the archive sync, the scan, the API, the
- * event listing, the migrations and the browser build's worker and pages.
+ * event listing, the migrations, the browser build's worker and pages, and the JSON-RPC module's handler, read-only
+ * methods, `evm_rpc` reader and indexer client (shared by Node's `evm-rpc` server and the browser engine).
  */
 const RUNTIME_ROOTS = [
   "token-indexer/engine/engine.ts",
@@ -44,6 +45,10 @@ const RUNTIME_ROOTS = [
   "src/postgres/migrate.ts",
   "src/postgres/migrations/chain_archive/index.ts",
   "src/postgres/migrations/mip0018/index.ts",
+  "evm-rpc/handler.ts",
+  "evm-rpc/read-only.ts",
+  "evm-rpc/reader.ts",
+  "evm-rpc/indexer-gql.ts",
 ];
 
 /** Directories whose every module (tests and fixtures aside) is runtime code unless listed in {@link NODE_ONLY}. */
@@ -109,6 +114,18 @@ const MUST_REACH = [
   "token-indexer/browser/snapshot-page.ts",
   "token-indexer/browser/system-model.ts",
   "token-indexer/browser/visible-text.ts",
+  "evm-rpc/registry.ts",
+  "evm-rpc/methods/common.ts",
+  "evm-rpc/methods/static.ts",
+  "evm-rpc/methods/blocks.ts",
+  "evm-rpc/methods/accounts.ts",
+  "evm-rpc/methods/transactions.ts",
+  "evm-rpc/methods/bloom.ts",
+  "evm-rpc/methods/not-implemented.ts",
+  "evm-rpc/logs/keccak256.ts",
+  "token-indexer/browser/jsonrpc-module.ts",
+  "token-indexer/browser/jsonrpc-view.ts",
+  "src/postgres/migrations/evm_rpc/index.ts",
 ];
 
 const rel = (abs: string): string => path.relative(ROOT, abs).split(path.sep).join("/");
@@ -258,13 +275,17 @@ describe("runtime modules use no Node API", () => {
     }
   }, 120_000);
 
-  it("[[runtime.node-free.no-postgres-js]] the browser build's worker and pages never load the PostgreSQL client (postgres.js), not even through a dynamic import; the explorer page loads the explorer script, not the Node page module", () => {
+  it("[[runtime.node-free.no-postgres-js]] the browser build's worker and pages never load the PostgreSQL client (postgres.js), not even through a dynamic import (the JSON RPC module reads its database through the PGlite client, never the Node reader's pool); the explorer page loads the explorer script, not the Node page module", () => {
     const browser = runtimeClosure(["token-indexer/browser/worker.ts", "token-indexer/browser/engine-page.ts", "token-indexer/browser/explorer-page.ts", "token-indexer/browser/system-page.ts"]);
     expect(browser.unresolved).toEqual([]);
     const reached = [...browser.files].map(rel);
     expect(reached).toContain("src/postgres/migrate.ts");
     expect(reached).toContain("token-indexer/mip0018/scan.ts");
     expect(reached).not.toContain("src/postgres/client.ts");
+    expect(reached).toContain("evm-rpc/handler.ts");
+    expect(reached).toContain("evm-rpc/reader.ts");
+    expect(reached).not.toContain("evm-rpc/db.ts");
+    expect(reached).not.toContain("evm-rpc/server.ts");
     expect(reached).toContain("token-indexer/mip0018/ui/page.js");
     expect(reached).not.toContain("token-indexer/mip0018/ui/page.ts");
   });

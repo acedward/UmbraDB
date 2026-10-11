@@ -1,3 +1,4 @@
+import { bytesToHex, hexToBytes } from "../../src/postgres/bytes.js";
 import { MethodRegistry, type RpcContext } from "../registry.js";
 import {
   ESTIMATE_GAS, GAS_PRICE, invalidParams, parseQuantity, positionalParams, quantity, resolveBlockTag,
@@ -55,23 +56,25 @@ function keccakF(state: KeccakLane[]): void {
 }
 
 /** Ethereum Keccak-256 (legacy 0x01 domain, not FIPS SHA3-256). */
-export function keccak256(input: Uint8Array): Buffer {
+export function keccak256(input: Uint8Array): Uint8Array {
   const rate = 136;
   const paddedLength = Math.ceil((input.length + 1) / rate) * rate;
-  const padded = Buffer.alloc(paddedLength);
+  const padded = new Uint8Array(paddedLength);
   padded.set(input);
   padded[input.length] = 0x01;
   padded[padded.length - 1] = (padded[padded.length - 1] ?? 0) | 0x80;
+  const lanes = new DataView(padded.buffer);
 
   const state = new Array<bigint>(25).fill(0n);
   for (let offset = 0; offset < padded.length; offset += rate) {
     for (let lane = 0; lane < rate / 8; lane += 1) {
-      state[lane] = state[lane]! ^ padded.readBigUInt64LE(offset + lane * 8);
+      state[lane] = state[lane]! ^ lanes.getBigUint64(offset + lane * 8, true);
     }
     keccakF(state);
   }
-  const output = Buffer.alloc(32);
-  for (let lane = 0; lane < 4; lane += 1) output.writeBigUInt64LE(state[lane]!, lane * 8);
+  const output = new Uint8Array(32);
+  const outputLanes = new DataView(output.buffer);
+  for (let lane = 0; lane < 4; lane += 1) outputLanes.setBigUint64(lane * 8, state[lane]!, true);
   return output;
 }
 
@@ -141,6 +144,6 @@ export function registerStaticMethods(registry: MethodRegistry): void {
     if (typeof value !== "string" || !/^0x(?:[0-9a-fA-F]{2})*$/.test(value)) {
       invalidParams("input must be 0x-prefixed byte data");
     }
-    return `0x${keccak256(Buffer.from(value.slice(2), "hex")).toString("hex")}`;
+    return `0x${bytesToHex(keccak256(hexToBytes(value.slice(2))))}`;
   });
 }

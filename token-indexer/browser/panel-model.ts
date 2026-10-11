@@ -86,6 +86,8 @@ export interface PanelView {
   uptime: string;
   /** The token indexer module is on (the saved settings; on unless switched off). */
   tokenIndexer: boolean;
+  /** The JSON RPC module is on (the saved settings; on unless switched off). */
+  jsonRpc: boolean;
   /** The engine runs (a `start` would be refused). */
   running: boolean;
   /** The boot has ended with an open store: the controls can be used. */
@@ -257,6 +259,7 @@ export function panelView(i: PanelInputs): PanelView {
     health: snap === null ? (detail === "" ? state : `${state} \u00b7 ${detail}`) : healthText(snap),
     ...snapshotFigures(snap, tokenIndexer),
     tokenIndexer,
+    jsonRpc: s?.settings?.modules?.jsonrpc ?? true,
     running: s?.engine?.running === true,
     ready: s?.boot.phase === "ready",
     recoverable: s?.boot.phase === "failed" && s.boot.storeProblem !== null,

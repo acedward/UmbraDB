@@ -83,7 +83,7 @@ describe("the static build's main page (no browser)", () => {
     expect(panelView(inputs({ status: null })).tokenIndexer).toBe(true);
   });
 
-  it("[[browser.overview.modules]] the Modules section lists the indexer roadmap's ten modules by product name, Token Indexer first and the only one the engine switches, each with a one-line description", () => {
+  it("[[browser.overview.modules]] the Modules section lists the indexer roadmap's ten modules by product name, Token Indexer first; Token Indexer and JSON RPC are the ones the engine switches; each has a one-line description, JSON RPC also a line on what this build has of it", () => {
     expect(INDEXER_MODULES.map((m) => m.name)).toEqual([
       "Token Indexer MIP-0018",
       "Public API Part 1 (wallets)",
@@ -98,7 +98,9 @@ describe("the static build's main page (no browser)", () => {
     ]);
     expect(INDEXER_MODULES.map((m) => m.id)).toEqual(["token-indexer", "api-wallets", "api-dapps", "api-spo", "fast-dust", "fast-shielded", "shielded-state", "unshielded-state", "jsonrpc", "explorer"]);
     expect(INDEXER_MODULES.filter((m) => m.engineModule !== null).map((m) => m.engineModule)).toEqual([...MODULE_IDS]);
+    expect(INDEXER_MODULES.filter((m) => m.now !== undefined).map((m) => m.id)).toEqual(["jsonrpc"]);
     for (const m of INDEXER_MODULES) {
+      if (m.now !== undefined) expect(m.now, m.id).toMatch(/^Now: \S.{20,140}\.$/);
       expect(m.name, m.id).not.toMatch(/^Mod:/);
       expect(m.description, m.id).toMatch(/^\S.{20,140}\.$/);
       expect(m.description, m.id).not.toMatch(/[\n\r]|PR #|#\d/);
@@ -110,6 +112,7 @@ describe("the static build's main page (no browser)", () => {
     expect(at("", "")).toBe("overview");
     expect(at("?tab=database", "")).toBe("database");
     expect(at("?tab=tokens", "")).toBe("tokens");
+    expect(at("?tab=jsonrpc", "#/")).toBe("jsonrpc");
     expect(at("?tab=overview", "#/token/ab/cd/1")).toBe("overview");
     expect(at("", "#/")).toBe("tokens");
     expect(at("?refresh=600", "#/contract/ab")).toBe("tokens");
@@ -119,7 +122,7 @@ describe("the static build's main page (no browser)", () => {
     expect(urlWithTab("https://site.test/index.html?refresh=600&watchdogLimitMs=5000#/token/ab/cd/1", "database")).toBe(
       "https://site.test/index.html?refresh=600&watchdogLimitMs=5000&tab=database#/token/ab/cd/1");
     expect(urlWithTab("https://site.test/sub/?tab=tokens", "overview")).toBe("https://site.test/sub/?tab=overview");
-    expect(TAB_TITLES).toEqual({ overview: "UmbraDB indexer", tokens: "MIP-0018 token explorer", database: "UmbraDB database" });
+    expect(TAB_TITLES).toEqual({ overview: "UmbraDB indexer", tokens: "MIP-0018 token explorer", jsonrpc: "UmbraDB JSON RPC", database: "UmbraDB database" });
   });
 
   it("[[browser.database.model]] the Database tab's view: NULL; bytes as the hex of their first 8 bytes and their length; text cut at 48 characters with its length; what was sent in the tooltip; sizes, estimates, kinds, order and page", () => {

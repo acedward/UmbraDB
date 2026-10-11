@@ -8,8 +8,8 @@
  * served without the headers) reads the store as an independent PGlite once the engine's worker is gone. Never Stagenet.
  *
  * - `[[browser.shell.overview]]` — the page opens on the Overview: the header's tabs (Overview, Token Indexer,
- *   Database) and the system status link; the Modules section lists the indexer's ten modules with Token Indexer
- *   checked and switchable and the nine others unchecked, disabled and "planned"; after a replay the overview draws its
+ *   JSON RPC, Database) and the system status link; the Modules section lists the indexer's ten modules with Token
+ *   Indexer and JSON RPC checked and switchable and the eight others unchecked, disabled and "planned"; after a replay the overview draws its
  *   view of its sources and the sources agree: heights, network and durability with `/v1/status`, the health line,
  *   finalized tip, lag, blocks/s and uptime with the system snapshot, whose heights equal `/v1/status`; the storage line
  *   is one short line (store size, quota, pause threshold, persistence) equal to the engine's reading and the page's
@@ -93,7 +93,7 @@ interface Overview {
 /** The Modules section as drawn. */
 const MODULES = `[...document.querySelectorAll('#modules tr')].map((tr) => {
   const box = tr.querySelector('input[type=checkbox]');
-  return { id: tr.getAttribute('data-module'), name: tr.querySelector('label').textContent, description: tr.cells[2].textContent,
+  return { id: tr.getAttribute('data-module'), name: tr.querySelector('label').textContent, description: tr.querySelector('[data-field=module-description]').textContent,
     checked: box.checked, disabled: box.disabled, state: tr.getAttribute('data-state'), chip: tr.querySelector('[data-field="module-state"]').textContent };
 })`;
 interface ModuleRow { id: string; name: string; description: string; checked: boolean; disabled: boolean; state: string; chip: string }
@@ -228,15 +228,16 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(tabsDrawn).toEqual([
         ["tab-overview", "Overview", "?tab=overview", false, "on"],
         ["tab-tokens", "Token Indexer", "?tab=tokens", false, ""],
+        ["tab-jsonrpc", "JSON RPC", "?tab=jsonrpc", false, ""],
         ["tab-database", "Database", "?tab=database", false, ""],
         ["system-link", "system status", "./system.html", false, "system-link"],
       ]);
       let o = await overview(p);
       expect([o.tab, o.title, o.search]).toEqual(["overview", "UmbraDB indexer", ""]);
       expect(await p.eval("[...document.querySelectorAll('[id^=tab-panel-]')].map((e) => e.id + ':' + e.hidden)")).toEqual(
-        ["tab-panel-overview:false", "tab-panel-tokens:true", "tab-panel-database:true"]);
+        ["tab-panel-overview:false", "tab-panel-tokens:true", "tab-panel-jsonrpc:true", "tab-panel-database:true"]);
 
-      // The Modules section: the ten modules; Token Indexer checked and switchable, the others planned.
+      // The Modules section: the ten modules; Token Indexer and JSON RPC checked and switchable, the others planned.
       await p.waitFor("document.getElementById('module-token-indexer').disabled === false", 30_000, "the token indexer's switch");
       expect(await modules(p)).toEqual(INDEXER_MODULES.map((m) => m.engineModule === null
         ? { id: m.id, name: m.name, description: m.description, checked: false, disabled: true, state: "planned", chip: "planned" }

@@ -1,4 +1,4 @@
-import type { EvmRpcReader } from "./db.js";
+import type { EvmRpcReader } from "./reader.js";
 import type { IndexerReader } from "./indexer-gql.js";
 
 export const JSON_RPC_ERRORS = {

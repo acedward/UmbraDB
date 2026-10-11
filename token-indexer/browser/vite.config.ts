@@ -25,7 +25,8 @@
  * - `build-notices.ts` writes `THIRD-PARTY-NOTICES.txt`: the licence of every package the bundles contain, PostgreSQL's
  *   (PGlite's database), the Outfit font's and UmbraDB's own, so the folder is published with its notices.
  * - `__UMBRADB_BUILD__` (`define`): the app commit (`UMBRADB_APP_COMMIT`, else `git rev-parse HEAD`, else `null`) and
- *   the installed PGlite and ledger-v9 versions, which the worker's system snapshot shows.
+ *   the installed PGlite and ledger-v9 versions, which the worker's system snapshot shows; `__UMBRADB_PACKAGE_VERSION__`:
+ *   the package's version, which the JSON RPC module reports.
  */
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -80,12 +81,14 @@ function appCommit(): string | null {
 const notices = thirdPartyNotices(repoRoot);
 
 const BUILD = { appCommit: appCommit(), pgliteVersion: packageVersion("@electric-sql/pglite"), ledgerVersion: packageVersion("@midnightntwrk/ledger-v9") };
+/** The package's own version, which the JSON RPC module reports (`config.ts`). */
+const PACKAGE_VERSION = (JSON.parse(readFileSync(`${repoRoot}package.json`, "utf8")) as { version: string }).version;
 
 export default defineConfig({
   root,
   base: "./",
   publicDir: false,
-  define: { __UMBRADB_BROWSER_CHAIN__: JSON.stringify(chain), __UMBRADB_BUILD__: JSON.stringify(BUILD) },
+  define: { __UMBRADB_BROWSER_CHAIN__: JSON.stringify(chain), __UMBRADB_BUILD__: JSON.stringify(BUILD), __UMBRADB_PACKAGE_VERSION__: JSON.stringify(PACKAGE_VERSION) },
   plugins: [nodeFreeBundle(repoRoot), wasm(), explorerPage(), staticSecurity({ connectSrc: chainOrigins(chain), prelude: `${root}zod-jitless.ts`, root }), notices.plugin(true)],
   worker: {
     format: "es",

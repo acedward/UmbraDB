@@ -5,9 +5,10 @@
  * - `[[browser.frame.rules]]` — a window whose top is another window, or whose top cannot be read, is framed; a top-level
  *   window, or none (a worker, Node), is not; a framed page stops with `FramedPageError`.
  * - `[[browser.frame.refused]]` — in Chromium, the static build served with no headers: the main page (opened on each of
- *   its tabs: the overview, the Token Indexer tab by its query and by an explorer route, the Database tab), the status
- *   page and the engine page inside a frame each show the notice with a link to open the page in its own tab, start no
- *   engine (no `window.umbradbEngine`, no worker, no Web Lock), while the same page at the top level starts as before.
+ *   its tabs: the overview, the Token Indexer tab by its query and by an explorer route, the JSON RPC tab, the Database
+ *   tab), the status page and the engine page inside a frame each show the notice with a link to open the page in its
+ *   own tab, start no engine (no `window.umbradbEngine`, no worker, no Web Lock), while the same page at the top level
+ *   starts as before.
  */
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -50,7 +51,7 @@ describe("pages inside a frame", () => {
     });
 
     it("[[browser.frame.refused]] served with no headers, each page inside a frame shows the notice and starts no engine; at the top level it starts as before", async () => {
-      for (const page of ["index.html", "index.html?tab=tokens", "index.html#/builtin/DUST", "index.html?tab=database", "system.html", "engine.html"]) {
+      for (const page of ["index.html", "index.html?tab=tokens", "index.html#/builtin/DUST", "index.html?tab=jsonrpc", "index.html?tab=database", "system.html", "engine.html"]) {
         const p = await browser.newPage({ workers: true });
         try {
           await p.goto(`${site.origin}/framing.html`);

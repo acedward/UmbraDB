@@ -1,28 +1,30 @@
 /**
  * The header tabs of the static build's main page (`index.html`): **Overview** (the indexer: its figures, controls and
- * modules), **Token Indexer** (the MIP-0018 token explorer, present only while its module is on), **Database** (the
- * store's tables) and a link to the system status page.
+ * modules), **Token Indexer** (the MIP-0018 token explorer, present only while its module is on), **JSON RPC** (the EVM
+ * JSON-RPC module's methods, present only while its module is on), **Database** (the store's tables) and a link to the
+ * system status page.
  *
- * - **The URL holds the tab:** `?tab=overview|tokens|database`, written with `history.pushState` when a tab is picked
+ * - **The URL holds the tab:** `?tab=overview|tokens|jsonrpc|database`, written with `history.pushState` when a tab is picked
  *   (no reload), so a reload or a shared link opens the same tab, and back and forward move between tabs. The fragment
  *   stays the token explorer's own (`#/…`, `ui/page.js`): a URL with no `tab` and an explorer route opens the Token
  *   Indexer tab, and following an explorer route from another tab opens it too. With no `tab` and no route, the
  *   overview opens.
- * - **The Token Indexer tab** is hidden while the module is off; when it goes away while shown, or a URL names it, the
- *   overview is shown and written into the URL. While its tab is not shown the explorer skips its periodic refresh
+ * - **The Token Indexer and JSON RPC tabs** are hidden while their module is off; when one goes away while shown, or a URL
+ *   names it, the overview is shown and written into the URL. While its tab is not shown the explorer skips its periodic refresh
  *   (`explorer-transport.ts` `shown`), and it refreshes when shown.
  * - **The overview** follows the engine's system snapshot only while it is shown (`engine-panel.ts` `watch`); the
  *   Database tab reads the store's tables when first shown.
  * - The document's title names the tab shown.
  */
 
-export const SHELL_TABS = ["overview", "tokens", "database"] as const;
+export const SHELL_TABS = ["overview", "tokens", "jsonrpc", "database"] as const;
 export type ShellTab = (typeof SHELL_TABS)[number];
 
 /** The document title while each tab is shown. */
 export const TAB_TITLES: Record<ShellTab, string> = {
   overview: "UmbraDB indexer",
   tokens: "MIP-0018 token explorer",
+  jsonrpc: "UmbraDB JSON RPC",
   database: "UmbraDB database",
 };
 
@@ -45,6 +47,9 @@ export function urlWithTab(href: string, tab: ShellTab): string {
   return u.toString();
 }
 
+/** The tabs of the modules, present only while their module is on. */
+export type ModuleTab = "tokens" | "jsonrpc";
+
 export interface ShellOptions {
   /** Called when a tab is shown (also the first time). */
   onShow?: (tab: ShellTab, previous: ShellTab | null) => void;
@@ -55,8 +60,9 @@ export interface Shell {
   current(): ShellTab;
   /** Shows `tab` and writes it into the URL (a new history entry). */
   open(tab: ShellTab): void;
-  /** Whether the Token Indexer tab exists (its module is on); hiding it while shown shows the overview. */
-  setTokensAvailable(available: boolean): void;
+  /** Whether a module's tab (Token Indexer, JSON RPC) exists (its module is on); hiding it while shown shows the
+   *  overview. */
+  setAvailable(tab: ModuleTab, available: boolean): void;
 }
 
 function byId(id: string): HTMLElement {
@@ -68,11 +74,13 @@ function byId(id: string): HTMLElement {
 export function mountShell(opts: ShellOptions = {}): Shell {
   const links = new Map<ShellTab, HTMLAnchorElement>(SHELL_TABS.map((t) => [t, byId(`tab-${t}`) as HTMLAnchorElement]));
   const panels = new Map<ShellTab, HTMLElement>(SHELL_TABS.map((t) => [t, byId(`tab-panel-${t}`)]));
-  let tokensAvailable = true;
+  /** The module tabs that exist (a tab not named exists). */
+  const available = new Map<ShellTab, boolean>();
+  const exists = (tab: ShellTab): boolean => available.get(tab) ?? true;
   let shown: ShellTab | null = null;
 
-  /** The tab that is shown for `wanted`: the overview while the Token Indexer tab does not exist. */
-  const effective = (wanted: ShellTab): ShellTab => (wanted === "tokens" && !tokensAvailable ? "overview" : wanted);
+  /** The tab that is shown for `wanted`: the overview while its module's tab does not exist. */
+  const effective = (wanted: ShellTab): ShellTab => (exists(wanted) ? wanted : "overview");
 
   function show(wanted: ShellTab): void {
     const tab = effective(wanted);
@@ -108,7 +116,7 @@ export function mountShell(opts: ShellOptions = {}): Shell {
   addEventListener("popstate", () => show(tabOf(location)));
   addEventListener("hashchange", () => {
     // An explorer route followed from another tab (a link, the address bar) opens the Token Indexer tab.
-    if (shown !== "tokens" && tokensAvailable && isExplorerRoute(location.hash)) {
+    if (shown !== "tokens" && exists("tokens") && isExplorerRoute(location.hash)) {
       history.replaceState(null, "", urlWithTab(location.href, "tokens"));
       show("tokens");
     }
@@ -118,12 +126,12 @@ export function mountShell(opts: ShellOptions = {}): Shell {
   return {
     current: () => shown ?? "overview",
     open,
-    setTokensAvailable(available: boolean): void {
-      if (available === tokensAvailable) return;
-      tokensAvailable = available;
-      links.get("tokens")!.hidden = !available;
-      // The Token Indexer tab went away while shown (or named by the URL): the overview, written into the URL.
-      if (!available && (shown === "tokens" || tabOf(location) === "tokens")) {
+    setAvailable(tab: ModuleTab, on: boolean): void {
+      if (on === exists(tab)) return;
+      available.set(tab, on);
+      links.get(tab)!.hidden = !on;
+      // The tab went away while shown (or named by the URL): the overview, written into the URL.
+      if (!on && (shown === tab || tabOf(location) === tab)) {
         history.replaceState(null, "", urlWithTab(location.href, "overview"));
         show("overview");
       }

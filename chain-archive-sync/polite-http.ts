@@ -40,6 +40,14 @@ export function defaultMinIntervalMs(url: string): number {
   return isPublicEndpoint(url) ? PUBLIC_MIN_INTERVAL_MS : 0;
 }
 
+/** What a client spaces its request starts with: its own {@link RequestPacer}, or a pacer it shares with the other
+ *  clients of the same endpoint (the browser engine's, one per endpoint origin). */
+export interface Pacer {
+  readonly minIntervalMs: number;
+  /** Resolves when the caller may start its request. */
+  wait(): Promise<void>;
+}
+
 /**
  * Spaces request starts at least `minIntervalMs` apart, across every concurrent caller of one
  * client (each call reserves the next free slot synchronously, then waits for it). `0` disables it.

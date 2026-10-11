@@ -320,7 +320,7 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     await until(b.host, "the scan to catch up", (s) => s.cursors?.scan?.nextHeight === U1.to + 1);
     expect((await settings.load())?.modules).toEqual({ "token-indexer": true });
 
-    // Only the token indexer can be switched; a planned module is not a module of the engine.
+    // Only the available modules can be switched; a planned module is not a module of the engine.
     for (const params of [{ module: "explorer", enabled: true }, { module: "token-indexer" }, { module: "token-indexer", enabled: "no" }])
       expect((await errorOf(b.host, "module", params)).code, JSON.stringify(params)).toBe("bad-request");
     // The tabs' hand-over rule: module changes state; tables and rows only read.

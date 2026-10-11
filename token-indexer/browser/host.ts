@@ -44,6 +44,16 @@
  * engine's transactions; while the store is replaced they wait for the new one (or answer `boot-failed` when the
  * replacement fails).
  *
+ * **JSON RPC** (`jsonrpc-module.ts`): `jsonrpc` answers one JSON-RPC 2.0 request body with the EVM JSON-RPC module's
+ * read-only methods, as Node's `npm run evm-rpc` answers it, while the `jsonrpc` module is on (the saved settings; on
+ * unless they say otherwise), and is refused `module-off` while it is off. The module starts with the first request it
+ * answers: its `evm_rpc` database, a PGlite database in memory made by the module's migrations, is then created
+ * (about a second), and its blocks and transactions come from the build's indexer (`indexerUrl`). It answers at most 8
+ * requests at once; another one is refused `busy`. `module` saves the switch first, like the token indexer's; switched
+ * off, new requests are refused at once, the requests it is answering end at once (`module-off`: their indexer requests
+ * are cut short) and its database is closed. Every worker reads the switch from the settings (a reload, a worker the
+ * watchdog restarted, the next leader tab, a replaced store); the module does not touch the store.
+ *
  * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file (the rows of the store's tables) while the engine
  * runs (a consistent read between two transactions). `import` checks a snapshot file and loads its rows into a trial
  * store in memory without touching anything (a refusal changes nothing, and a running engine keeps running); then it
@@ -99,9 +109,13 @@ import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { KNOWN_GENESIS } from "../mip0018/api-views.ts";
 import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOptions, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
 import { rangeTables } from "../engine/range-tables.ts";
+import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
 import { checkCapabilities } from "./capabilities.ts";
+import { jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
+import { PacingQueue } from "./pacing-queue.ts";
 import { type BuildInfo, createHostSystem, type SystemProviders } from "./host-system.ts";
 import {
+  type ApiResult,
   type BootState,
   type CapabilityReport,
   type DigestResult,
@@ -178,8 +192,12 @@ export interface WorkerHostOptions {
   loadLedger?: () => Promise<Record<string, unknown>>;
   /** Loads a recorded range. Default: {@link loadTape}. */
   loadTape?: (range: TapeRange) => Promise<ArchiveTape>;
-  /** `fetch` of a `network` source. Default: the global `fetch`. */
+  /** `fetch` of a `network` source and of the JSON RPC module. Default: the global `fetch`. */
   fetch?: typeof fetch;
+  /** The JSON RPC module: the client version it reports (the worker gives the build's; default
+   *  `jsonRpcClientVersion("unknown")`), its chain ID (the worker gives the build's; default the module's, 2400) and how
+   *  it starts (default {@link startJsonRpcModule}). */
+  jsonRpc?: { clientVersion?: string; chainId?: bigint; start?: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule> };
   clock?: EngineClock;
   /** Default: {@link yieldingScheduler}. */
   schedule?: EngineScheduler;
@@ -869,6 +887,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
           maxBlocks: config.sync?.maxBlocks ?? DEFAULT_SYNC_MAX_BLOCKS,
           ...(config.sync?.concurrency === undefined ? {} : { concurrency: config.sync.concurrency }),
           ...(config.sync?.minIntervalMs === undefined ? {} : { minIntervalMs: config.sync.minIntervalMs }),
+          // The network's endpoints are paced by the worker's queue of their origin, shared with the JSON RPC module.
+          ...(config.source?.kind === "tape" ? {} : { pacerFor }),
           ...(config.sync?.idleMs === undefined ? {} : { idleMs: config.sync.idleMs }),
           ...(config.sync?.backoff === undefined ? {} : { backoff: config.sync.backoff }),
         },
@@ -991,18 +1011,127 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return start(undefined);
   }
 
-  /** A `module` request: saves the choice with the settings, then switches the module; a running engine follows at once
-   *  (switched off, the answer comes once its scan has stopped at a block boundary). A choice the browser refuses to
-   *  save changes nothing. */
+  // ── Pacing ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  /** One pacing queue per endpoint origin for the worker's whole life, shared by every client of that origin (the
+   *  sync's node and indexer clients, the JSON RPC module): on a public endpoint the worker starts at most one request
+   *  every 250 ms there, whichever client sends it. */
+  const pacers = new Map<string, PacingQueue>();
+  function pacerFor(url: string): PacingQueue | undefined {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return undefined;
+    }
+    let pacer = pacers.get(origin);
+    if (pacer === undefined) {
+      pacer = new PacingQueue({ minIntervalMs: defaultMinIntervalMs(url) });
+      pacers.set(origin, pacer);
+    }
+    return pacer;
+  }
+
+  // ── The JSON RPC module ───────────────────────────────────────────────────────────────────────────────────────────
+
+  /** The JSON RPC module's start (in progress or done) while the module runs. */
+  let jsonRpc: Promise<JsonRpcModule> | undefined;
+  /** Modules being stopped (each ends its requests, then closes its database); `close` waits for them. */
+  const jsonRpcStopping = new Set<Promise<void>>();
+  const jsonRpcEnabled = (): boolean => modules.jsonrpc ?? true;
+
+  /** The module, started now unless it runs; a start that fails is logged and the next request starts it again. A
+   *  module that is being stopped is closed first, so the worker never holds two (each its own database). */
+  function jsonRpcRun(): Promise<JsonRpcModule> {
+    if (jsonRpc !== undefined) return jsonRpc;
+    const t = monotonic();
+    const closing = [...jsonRpcStopping];
+    const pacer = pacerFor(opts.indexerUrl);
+    const started = Promise.all(closing).then(() => (opts.jsonRpc?.start ?? startJsonRpcModule)({
+      indexerUrl: opts.indexerUrl,
+      clientVersion: opts.jsonRpc?.clientVersion ?? jsonRpcClientVersion("unknown"),
+      ...(opts.jsonRpc?.chainId === undefined ? {} : { chainId: opts.jsonRpc.chainId }),
+      ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }),
+      ...(pacer === undefined ? {} : { pacer }),
+    }));
+    jsonRpc = started;
+    started.then(
+      (m) => log("info", `the JSON RPC module started: ${m.methods.length} methods, its evm_rpc database in memory (${Math.round(monotonic() - t)} ms)`),
+      (e: unknown) => {
+        if (jsonRpc === started) jsonRpc = undefined;
+        log("error", `the JSON RPC module could not start: ${messageOf(e)}`);
+      },
+    );
+    return started;
+  }
+
+  /** Stops the module: new requests are refused at once (`jsonRpc` is gone); the module ends the requests it is
+   *  answering (they are answered `module-off`) and closes its database. */
+  function stopJsonRpc(): void {
+    const started = jsonRpc;
+    if (started === undefined) return;
+    jsonRpc = undefined;
+    const stopping = (async () => {
+      let m: JsonRpcModule;
+      try {
+        m = await started;
+      } catch {
+        return;
+      }
+      try {
+        await m.close();
+        log("info", "the JSON RPC module stopped: its evm_rpc database is closed");
+      } catch (e) {
+        log("warn", `closing the JSON RPC module's database failed: ${messageOf(e)}`);
+      }
+    })();
+    jsonRpcStopping.add(stopping);
+    void stopping.finally(() => jsonRpcStopping.delete(stopping));
+  }
+
+  /** A `jsonrpc` request: the module's answer to `body`, once the boot is ready; refused while the module is off, when
+   *  it is switched off before the answer (`module-off`), and while it answers as many requests as it may (`busy`). */
+  async function jsonRpcRequest(body: string): Promise<ApiResult> {
+    while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
+    await ready();
+    if (!jsonRpcEnabled()) throw new HostError("module-off", "the JSON RPC module is off: switch it on in the Modules section to call its methods");
+    let m: JsonRpcModule;
+    try {
+      m = await jsonRpcRun();
+    } catch (e) {
+      throw new HostError("internal", `the JSON RPC module could not start: ${messageOf(e)}`);
+    }
+    try {
+      const answer = await m.handle(body);
+      return { status: answer.status, headers: { ...answer.headers }, body: answer.body };
+    } catch (e) {
+      if (e instanceof JsonRpcModuleError && e.code === "busy") throw new HostError("busy", e.message);
+      if (e instanceof JsonRpcModuleError) throw new HostError("module-off", "the JSON RPC module was switched off before this request was answered");
+      throw e;
+    }
+  }
+
+  /** A `module` request: saves the choice with the settings, then switches the module. The token indexer: a running
+   *  engine follows at once (switched off, the answer comes once its scan has stopped at a block boundary). The JSON RPC
+   *  module: switched off, its requests are refused from the answer on. A choice the browser refuses to save changes
+   *  nothing. */
   async function setModule(module: ModuleId, enabled: boolean): Promise<HostStatus> {
     await ready();
     const next = { ...modules, [module]: enabled };
+    const name = module === "jsonrpc" ? "the JSON RPC module" : "the token indexer";
     try {
       await writeSettings(saved ?? { config: opts.defaultStart ?? {}, autoStart: true }, { modules: next });
     } catch (e) {
-      throw new HostError("settings-failed", `the token indexer's switch could not be saved (${messageOf(e)}): nothing was changed`);
+      throw new HostError("settings-failed", `${name}'s switch could not be saved (${messageOf(e)}): nothing was changed`);
     }
     modules = next;
+    if (module === "jsonrpc") {
+      if (!enabled) stopJsonRpc();
+      log("info", enabled
+        ? "the JSON RPC module is on: its requests are answered (its evm_rpc database is made at the first one)"
+        : "the JSON RPC module is off: its requests are refused");
+      return status();
+    }
     await active?.setScanEnabled(enabled);
     log("info", enabled
       ? "the token indexer is on: the MIP-0018 scan continues from its cursor"
@@ -1192,6 +1321,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         return serial(() => setModule(r.module, r.enabled));
       case "tables":
         return readingStore(async () => listTables((await ready()).mip0018, STORE_SCHEMAS));
+      case "jsonrpc":
+        return jsonRpcRequest(r.body);
       case "rows":
         return readingStore(async () => {
           const s = await ready();
@@ -1233,6 +1364,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         await halt();
         closed = true;
       });
+      stopJsonRpc();
+      await Promise.all([...jsonRpcStopping]);
       await boot();
       if (store !== undefined) await store.close();
     },
