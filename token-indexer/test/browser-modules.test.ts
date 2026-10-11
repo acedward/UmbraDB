@@ -388,6 +388,10 @@ describe("the indexer's modules and the store's tables in the browser engine", (
       } while (!settled);
       return answers;
     }
+    /** Whether a `rows` read sent before `replacing` settled was answered from the new store (its block count is not
+     *  the old store's `oldBlocks`): it waited while the store was replaced. */
+    const overlapped = (answers: Response[], oldBlocks: number): boolean =>
+      answers.some((r) => r.ok && r.request === "rows" && (r.result as RowsResult).rows.length !== oldBlocks);
     const blocksIn = async (s: Store): Promise<number> => Number((await s.pglite.query<{ n: string }>("SELECT count(*)::text AS n FROM chain_archive.blocks")).rows[0]!.n);
 
     // range: a new store; tables and rows during the replacement are answered.
@@ -396,6 +400,7 @@ describe("the indexer's modules and the store's tables in the browser engine", (
     expect((await ranging).ok).toBe(true);
     expect(during.length).toBeGreaterThan(0);
     for (const r of during) expect(r.ok, r.ok ? "" : `${r.request}: ${r.error.code} ${r.error.message}`).toBe(true);
+    expect(overlapped(during, U1.to - U1.from + 1), "a read answered from the new store while the range ran").toBe(true);
     const ranged = await until(host, "the new range's archive", (s) => s.cursors?.sync?.height === U1.to);
     expect(ranged.settings?.modules).toEqual({ "token-indexer": false });
     expect(ranged.engine!.status.scan).toMatchObject({ phase: "off", scanner: "off" });
@@ -412,7 +417,9 @@ describe("the indexer's modules and the store's tables in the browser engine", (
 
     // reset: a new, empty store again, the saved range started with the scan off.
     const resetting = raw("reset");
-    for (const r of await readWhile(resetting)) expect(r.ok).toBe(true);
+    const duringReset = await readWhile(resetting);
+    for (const r of duringReset) expect(r.ok).toBe(true);
+    expect(overlapped(duringReset, U1.to - (U1.from + 10) + 1), "a read answered from the new store while the reset ran").toBe(true);
     expect((await resetting).ok).toBe(true);
     const reset = await until(host, "the reset store's archive", (s) => s.cursors?.sync?.height === U1.to);
     expect(reset.settings?.modules).toEqual({ "token-indexer": false });
@@ -421,7 +428,9 @@ describe("the indexer's modules and the store's tables in the browser engine", (
 
     // import: the snapshot's store; the switch stays saved and the next start runs with the scan off.
     const importing = raw("import", { snapshot: exported.file });
-    for (const r of await readWhile(importing)) expect(r.ok).toBe(true);
+    const duringImport = await readWhile(importing);
+    for (const r of duringImport) expect(r.ok).toBe(true);
+    expect(overlapped(duringImport, U1.to - (U1.from + 10) + 1), "a read answered from the snapshot's store while the import ran").toBe(true);
     const imported = await importing;
     expect(imported.ok).toBe(true);
     const afterImport = await result<HostStatus>(host, "status");

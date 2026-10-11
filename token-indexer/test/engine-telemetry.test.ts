@@ -13,6 +13,7 @@ import {
   publicUrl,
   redactSnapshot,
   redactText,
+  redactWhole,
   relayedSnapshot,
   type SystemSnapshot,
   SystemSnapshotSchema,
@@ -579,6 +580,187 @@ describe("system snapshot schema and redaction", () => {
     s.sync.lastError = { message: forms[0]!, at: 1 };
     const file = diagnosticsJson(s);
     expect(leaked(file)).toEqual([]);
+  });
+
+  it("[[engine.telemetry.redaction-nested-json]] a secret member of JSON text written as a JSON string once or more (one to four encodings, also inside a log line and an error message) loses its whole value — every word, string, array or object — in the diagnostics file too; the rest of the JSON at every depth stays as it was, and a long run of backslashes is read in linear time", () => {
+    const words = "abandon ability able about above absent absorb abstract absurd abuse access accident".split(" ");
+    const phrase = words.join(" ");
+    /** `value` as JSON, then written as a JSON string `times` more times. */
+    const encoded = (value: unknown, times: number): string => {
+      let t = JSON.stringify(value);
+      for (let i = 0; i < times; i++) t = JSON.stringify(t);
+      return t;
+    };
+    /** The value back from `times` more encodings than the JSON. */
+    const decoded = (text: string, times: number): unknown => {
+      let v: unknown = text;
+      for (let i = 0; i <= times; i++) v = JSON.parse(v as string);
+      return v;
+    };
+    const leaked = (text: string): string[] => words.filter((w) => new RegExp(`\\b${w}\\b`, "iu").test(text));
+    // The finding's own shape (three encodings) first, then one to four for every kind of value.
+    expect(leaked(redactText(encoded({ seed: phrase }, 2)))).toEqual([]);
+    for (let times = 1; times <= 4; times++) {
+      for (const [value, want] of [
+        [{ seed: phrase, note: "seed phrase restored from backup", n: 1 }, { seed: "[redacted]", note: "seed phrase restored from backup", n: 1 }],
+        [{ message: "wallet", mnemonic: words, height: 715183 }, { message: "wallet", mnemonic: "[redacted]", height: 715183 }],
+        [{ wallet: { "recovery phrase": { words, language: "english" }, label: "main" }, ok: true }, { wallet: { "recovery phrase": "[redacted]", label: "main" }, ok: true }],
+        [{ passphrase: 12345, list: ["a\"b", "c\\d", "line\nbreak"] }, { passphrase: "[redacted]", list: ["a\"b", "c\\d", "line\nbreak"] }],
+      ] as const) {
+        const input = encoded(value, times);
+        const out = redactText(input);
+        expect(leaked(out), `${times}: ${out}`).toEqual([]);
+        expect(out, input).not.toContain("12345");
+        expect(decoded(out, times), `${times}: ${out}`).toEqual(want);
+        expect(redactText(out), `idempotent: ${out}`).toBe(out);
+        // Inside a log line and an error message.
+        expect(leaked(redactText(`sync error ${input} retrying`))).toEqual([]);
+      }
+    }
+    // Ordinary escaped text stays as it was, at every depth.
+    for (let times = 1; times <= 4; times++) {
+      const plain = encoded({ message: "token count 5", path: "C:\\data\\seed", note: "the \"seed\" was restored", n: [1, 2] }, times);
+      expect(redactText(plain), plain).toBe(plain);
+    }
+
+    // The diagnostics file: the shapes above in log lines and the sync error.
+    const s = minimal();
+    s.logs = [1, 2, 3, 4].map((times, seq) => ({ seq, at: 1, level: "error" as const, source: "sync" as const, text: `error ${encoded({ seed: phrase, mnemonic: words }, times)}` }));
+    s.sync.lastError = { message: encoded({ error: encoded({ seed: phrase }, 1) }, 1), at: 1 };
+    expect(leaked(diagnosticsJson(s))).toEqual([]);
+
+    // A long run of backslashes before a quote is read once.
+    const run = `${"\\".repeat(200_000)}"seed" x`;
+    const t0 = performance.now();
+    expect(redactWhole(run)).toBe(run);
+    expect(performance.now() - t0).toBeLessThan(2_000);
+  });
+
+  it("[[engine.telemetry.redaction-linear]] redaction costs time in proportion to the text: on 1 MB hostile texts (backslash runs, open escaped quotes, scheme, JWT and key look-alikes, quotes, brackets, many keys, a long phrase, nested JSON) the whole redaction stays far from quadratic, and a text the snapshot keeps is cut first (well under 100 ms); a 1 MB error from the node reaches the log and the snapshot cut, and the snapshot validates", () => {
+    const MB = 1_000_000;
+    const encoded = (value: unknown, times: number): string => {
+      let t = JSON.stringify(value);
+      for (let i = 0; i < times; i++) t = JSON.stringify(t);
+      return t;
+    };
+    const hostile: Record<string, string> = {
+      backslashes: `token=${"\\".repeat(MB)}`,
+      "open escaped quote": `token=\\"${"\\".repeat(MB)}`,
+      "scheme characters": "a.".repeat(MB / 2),
+      "JWT look-alike": "eyJ-".repeat(MB / 4),
+      "key look-alike": ` mn_${"sk".repeat(20)}`.repeat(MB / 44),
+      quotes: '"'.repeat(MB),
+      "escaped quotes": `x ${'\\\\\\"'.repeat(MB / 4)}`,
+      brackets: `{"seed":${"[".repeat(MB)}`,
+      "many keys": "a: ".repeat(MB / 3),
+      "many secret keys": "token: x ".repeat(MB / 9),
+      "many members": '{"a":1,'.repeat(MB / 7),
+      "a long phrase": `seed: ${"abandon ".repeat(MB / 8)}`,
+      "a phrase over lines": `mnemonic:\n${"abandon\n".repeat(MB / 8)}`,
+      "nested JSON": encoded({ seed: "abandon ".repeat(MB / 64), n: 1 }, 4),
+    };
+    for (const [name, text] of Object.entries(hostile)) {
+      let t0 = performance.now();
+      redactWhole(text);
+      const whole = performance.now() - t0;
+      t0 = performance.now();
+      const capped = redactText(text);
+      const cut = performance.now() - t0;
+      // Linear costs a few hundred milliseconds at most for 1 MB; a quadratic expression would take minutes.
+      expect(whole, `${name}: the whole redaction`).toBeLessThan(3_000);
+      expect(cut, `${name}: the redaction of the text the snapshot keeps`).toBeLessThan(100);
+      expect(capped.length, name).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
+      expect(redactText(capped), `${name}: idempotent`).toBe(capped);
+    }
+
+    // A node's error of 1 MB: the log line and the snapshot's last error are cut, and the snapshot validates.
+    const huge = `RPC error: token=${"\\".repeat(MB)}`;
+    const t = createEngineTelemetry({ clock: new Clock() });
+    const t0 = performance.now();
+    t.observe(ev(1, "sync", "error", { message: huge, retryMs: 1_000 }));
+    expect(performance.now() - t0).toBeLessThan(100);
+    const line = t.logs().find((l) => l.source === "sync")!;
+    expect(line.text.length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
+    const s = minimal();
+    s.sync.lastError = { message: huge, at: 1 };
+    s.logs = [{ seq: 0, at: 1, level: "error", source: "sync", text: huge }];
+    const r = redactSnapshot(s);
+    expect(r.sync.lastError!.message).toMatch(/^RPC error: token=\[redacted\] \[\d+ more characters\]$/u);
+    expect(r.logs[0]!.text.length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
+    expect(() => JSON.parse(diagnosticsJson(s))).not.toThrow();
+    // Any long text: cut, saying how much, before it is read, and what is cut never reaches the snapshot.
+    const long = `ok ${"x".repeat(10_000)} token=tail-of-a-long-text`;
+    expect(redactText(long)).toBe(`ok ${"x".repeat(TEXT_MAX_CHARS - 3)}… [${long.length - TEXT_MAX_CHARS} more characters]`);
+  });
+
+  it("[[engine.telemetry.redaction-key-forms]] a seed or mnemonic phrase loses every word under any key spelling — prefixed, suffixed, camelCase, kebab or snake case, plural, a JSON member at any depth, a full-width colon — and with any separator or list numbering (;, |, -, <br>, words quoted one by one, 1.word, 1-word, #1, (1), [1]); a password under a prefixed name too; a key named only words is not a secret, and text after other keys stays", () => {
+    const words = "abandon ability able about above absent absorb abstract absurd abuse access accident".split(" ");
+    const phrase = words.join(" ");
+    const leaked = (text: string): string[] => words.filter((w) => new RegExp(`\\b${w}\\b`, "iu").test(text));
+    const forms = [
+      `WALLET_MNEMONIC=${phrase}`,
+      `MY_SEED_PHRASE=${phrase}`,
+      `walletSeed=${phrase}`,
+      `userMnemonic: ${phrase}`,
+      `x-seed: ${phrase}`,
+      `mnemonics: ${phrase}`,
+      `phrase: ${phrase}`,
+      `seed words: ${phrase}`,
+      `recovery_words=${phrase}`,
+      `secret recovery phrase: ${phrase}`,
+      `seed：${phrase}`,
+      JSON.stringify({ walletSeed: phrase }),
+      JSON.stringify({ WALLET_MNEMONIC: phrase, n: 1 }),
+      JSON.stringify({ mnemonics: phrase }),
+      JSON.stringify({ seedWords: words }),
+      JSON.stringify(JSON.stringify({ "backup-words": words })),
+      `seed: ${words.join("; ")}`,
+      `seed: ${words.join(" | ")}`,
+      `seed: ${words.join(" - ")}`,
+      `seed: ${words.join("<br>")}`,
+      `seed: ${words.map((w) => `"${w}"`).join(" ")}`,
+      `seed: ${words.map((w) => `'${w}'`).join(", ")}`,
+      `seed: ${words.map((w, i) => `${i + 1}.${w}`).join(" ")}`,
+      `seed: ${words.map((w, i) => `${i + 1}-${w}`).join(" ")}`,
+      `seed: ${words.map((w, i) => `#${i + 1} ${w}`).join(" ")}`,
+      `seed: ${words.map((w, i) => `(${i + 1}) ${w}`).join(" ")}`,
+      `seed: ${words.map((w, i) => `[${i + 1}] ${w}`).join(" ")}`,
+      `error ${JSON.stringify({ message: `walletSeed: ${words.map((w) => `"${w}"`).join(", ")}` })}`,
+    ];
+    for (const input of forms) {
+      const out = redactText(input);
+      expect(leaked(out), `${input} → ${out}`).toEqual([]);
+      expect(out, input).toContain("[redacted]");
+      expect(redactText(out), `idempotent: ${out}`).toBe(out);
+    }
+    // A secret under a prefixed name.
+    expect(redactText("DB_PASSWORD=pw x")).toBe("DB_PASSWORD=[redacted] x");
+    expect(redactText("clientSecret: s3 then")).toBe("clientSecret: [redacted] then");
+    // A key named only words is not taken for a secret (too common a name); text after other keys stays.
+    for (const kept of [
+      "words: alpha beta gamma",
+      JSON.stringify({ words: ["alpha", "beta"], n: 1 }),
+      "tokens: 5, mints: 1",
+      "mnemonic restored at height: 715183",
+      "token count: 12",
+      "seedless grapes, then height: 5",
+    ]) expect(redactText(kept), kept).toBe(kept);
+  });
+
+  it("[[engine.telemetry.redaction-bounds]] a phrase ends where the text stops looking like one — a next line that is not phrase words, a blank line, a word of fewer than three Latin letters, the end of the string around it, 36 words — and a quoted value that is never closed ends at its line or at the end of the string around it, so the error lines a diagnostics file exists for stay", () => {
+    for (const [input, out] of [
+      ["seed=x1\nthe engine stopped at block 5 after 3 retries", "seed=[redacted]\nthe engine stopped at block 5 after 3 retries"],
+      ["seed: 42\nSync Resumed At Block 715402", "seed: [redacted]\nSync Resumed At Block 715402"],
+      ["mnemonic: x\n\nERROR the node refused the request", "mnemonic: [redacted]\n\nERROR the node refused the request"],
+      ["seed: abandon ability at block 5", "seed: [redacted] at block 5"],
+      [JSON.stringify({ message: "seed=abandon ability", note: "other words" }), JSON.stringify({ message: "seed=[redacted]", note: "other words" })],
+      [`seed: ${"alpha ".repeat(40).trim()}`, `seed: [redacted] ${"alpha ".repeat(4).trim()}`],
+      ['token="abc\nthe next line stays', "token=[redacted]\nthe next line stays"],
+    ]) expect(redactText(input!), input).toBe(out);
+    // An escaped quote that is never closed: to the end of the string around it; the JSON after it stays.
+    const open = JSON.stringify({ message: 'login failed password="abc', code: 7 });
+    expect(JSON.parse(redactText(open))).toEqual({ message: "login failed password=[redacted]", code: 7 });
+    expect(JSON.parse(redactText(JSON.stringify({ message: 'refused: token=\\"x', next: "kept" })))).toEqual({ message: "refused: token=[redacted]", next: "kept" });
   });
 
   it("[[engine.telemetry.redaction-url-paths]] a URL keeps its origin and its path but path segments that look like keys: an endpoint key in the path does not reach the snapshot or the diagnostics file", () => {

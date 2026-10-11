@@ -33,9 +33,10 @@
  *   element, its index validates and lists the three, and an import of it answers the explorer's API with no chain
  *   request; the generator refuses a range whose digests or NULL elements are not the recorded ones.
  * - `[[browser.snapshot.reproducible]]` — a snapshot remade at a time (`snapshotAt`, as the build remakes the published
- *   one at the commit's time) has the same bytes whenever its rows were written: two replays' exports remade at one
- *   time are one file, with that time as its `createdAt`, its tar times and its rows' write times, and the digests of
- *   the export.
+ *   one at the commit's time) has the same bytes whenever its rows were written and on whatever platform: two
+ *   replays' exports remade at one time are one file, with that time as its `createdAt`, its tar times and its rows'
+ *   write times, its rows' gzip header fixed (no flags, time or extra flags, OS "unknown"), and the digests of the
+ *   export.
  * - `[[browser.snapshot.null-elements]]` — the snapshot integrity check the build runs (`snapshotDifferences`) compares
  *   the NULL `bytea[]` elements beside the two digests, which count a NULL element as empty bytes: a snapshot whose
  *   NULL element became empty bytes, or the reverse, has the same digests and is rejected.
@@ -73,7 +74,7 @@ import {
 import { exportSnapshot, loadSnapshot, openFinishingImport, prepareImport, readStoreFacts } from "../browser/snapshot-store.ts";
 import { migrateStore, openStore } from "../browser/store.ts";
 import { loadTape } from "../browser/tapes.ts";
-import { makePublishedSnapshot, publishedTime, recordedRange, snapshotAt, snapshotDifferences, snapshotDigests, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
+import { appCommitOf, makePublishedSnapshot, publishedTime, publishedTimeOf, recordedRange, snapshotAt, snapshotDifferences, snapshotDigests, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
 import { compareNullElements, noNullElements } from "../engine/range-tables.ts";
 import { nodeStoreFiles } from "./helpers/worker-host.ts";
 
@@ -610,7 +611,7 @@ describe("browser engine snapshots", () => {
     await expect(makePublishedSnapshot({ ...range, nullElements: oneNull }, null)).rejects.toThrow(/does not hold the recorded range: .*mip0018\.mip0018_contract_actions/);
   }, 300_000);
 
-  it("[[browser.snapshot.reproducible]] a snapshot remade at a time has the same bytes whenever its rows were written: two replays' exports remade at one time are one file, with that time as its createdAt, tar times and rows' write times, and the export's digests", async () => {
+  it("[[browser.snapshot.reproducible]] a snapshot remade at a time has the same bytes whenever its rows were written and on whatever platform: two replays' exports remade at one time are one file, with that time as its createdAt, tar times and rows' write times, a fixed gzip header, and the export's digests", async () => {
     const at = Date.UTC(2026, 0, 2, 3, 4, 5);
     const exportOf = async (): Promise<Uint8Array> => {
       const host = await hostWithU1(MID);
@@ -625,9 +626,18 @@ describe("browser engine snapshots", () => {
     expect(Buffer.from(a).equals(Buffer.from(b)), "remade at one time, they are one file").toBe(true);
     expect(await snapshotAt(a, at)).toEqual(a);
     await expect(snapshotAt(first, at + 1)).rejects.toThrow(RangeError);
+    // Where the build's time and commit come from (the build prints both).
+    expect(publishedTimeOf({ SOURCE_DATE_EPOCH: "1767323045" })).toEqual({ at: 1_767_323_045_000, from: "SOURCE_DATE_EPOCH" });
+    expect(() => publishedTimeOf({ SOURCE_DATE_EPOCH: "soon" })).toThrow(/whole seconds/u);
+    expect(["the commit's time", "the recorded range's time"]).toContain(publishedTimeOf({}).from);
+    expect(appCommitOf({ UMBRADB_APP_COMMIT: "c0ffee" })).toEqual({ commit: "c0ffee", from: "UMBRADB_APP_COMMIT" });
+    expect(["git", "none"]).toContain(appCommitOf({}).from);
 
     const { manifest, data } = decodeSnapshotFile(a);
     expect(manifest.createdAt).toBe("2026-01-02T03:04:05.000Z");
+    // The rows' gzip header is the same on every platform (the compressor writes its own OS there): no flags, no time,
+    // no extra flags, OS "unknown".
+    expect([...data.subarray(0, 10)]).toEqual([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255]);
     expect(new Set([...tarTimes(a), ...tarTimes(new Uint8Array(gunzipSync(data)))])).toEqual(new Set([at / 1000]));
     const { manifest: _m, ...digests } = await snapshotDigests(a);
     const { manifest: _n, ...exported } = await snapshotDigests(first);

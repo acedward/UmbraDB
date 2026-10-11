@@ -18,11 +18,18 @@
  *
  * Every page opens as a new tab of the same browser profile (the default browser context), so pages share storage
  * (OPFS), Web Locks and BroadcastChannel as tabs of one Chrome profile do.
+ *
+ * Failures explain themselves: every page also records the `error` events of the dedicated workers it creates (their
+ * message, file, line and column, through a wrapper of the page's `Worker` constructor and a DevTools binding; nothing
+ * else in the page changes), printed as they happen; and when a test of a file that uses this module fails, what every
+ * page opened during that test (and every page still open) recorded is printed: {@link Page.diagnostics}, the last
+ * lines of each list only.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { beforeEach, onTestFailed } from "vitest";
 
 export function findBrowser(env: NodeJS.ProcessEnv = process.env): string | undefined {
   for (const explicit of [env.MIP0018_UI_BROWSER, env.CHROME_BIN]) if (explicit !== undefined && explicit !== "" && existsSync(explicit)) return explicit;
@@ -97,6 +104,51 @@ export interface PageOptions {
 
 const VIOLATIONS = "__cspViolations = []; addEventListener('securitypolicyviolation', function (e) { __cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });";
 
+/** The DevTools binding a page reports its workers' `error` events through. */
+const WORKER_ERROR_BINDING = "__umbradbWorkerError";
+/** Evaluated in every document before its scripts: each `Worker` the page creates reports its `error` events. */
+const WORKER_ERRORS = `(function () {
+  var W = window.Worker;
+  if (typeof W !== "function") return;
+  window.Worker = new Proxy(W, { construct: function (target, args, newTarget) {
+    var worker = Reflect.construct(target, args, newTarget);
+    worker.addEventListener("error", function (e) {
+      try {
+        window.${WORKER_ERROR_BINDING}(JSON.stringify({ message: String(e.message || ""), file: String(e.filename || ""), line: e.lineno || 0, column: e.colno || 0, worker: String(args[0]) }));
+      } catch (x) { /* no binding */ }
+    });
+    return worker;
+  } });
+})();`;
+
+/** A dedicated worker's `error` event, as the page saw it. */
+export interface WorkerErrorRecord { message: string; file: string; line: number; column: number; worker: string }
+
+/** How many of the latest entries of each list {@link Page.diagnostics} prints, and how long each line may be. */
+const DIAGNOSTIC_LINES = 30;
+const DIAGNOSTIC_CHARS = 400;
+
+/** Pages opened by this test file, the newest last (for the failure report). */
+const pagesOfFile: Page[] = [];
+
+/** What `pages` recorded, for a failed test. */
+export function failureReport(pages: readonly Page[]): string {
+  return pages.map((p) => p.diagnostics()).join("\n");
+}
+
+// A failing test prints what the pages opened during it, and the pages still open, recorded.
+try {
+  beforeEach(() => {
+    const from = pagesOfFile.length;
+    onTestFailed(() => {
+      const pages = pagesOfFile.filter((p, i) => i >= from || !p.ended).slice(-6);
+      if (pages.length > 0) console.error(`browser pages of the failed test:\n${failureReport(pages)}`);
+    });
+  });
+} catch {
+  // not imported while a test file is collected
+}
+
 export class Page {
   readonly requests: RequestRecord[] = [];
   readonly console: Array<{ type: string; text: string; target?: "worker" }> = [];
@@ -111,8 +163,14 @@ export class Page {
   private readonly sessions = new Set<string>();
   private loads = 0;
   private trackingWorkers = false;
+  /** The `error` events of the dedicated workers the page created. */
+  readonly workerErrors: WorkerErrorRecord[] = [];
   /** DevTools reported that the tab's renderer process crashed. */
   crashed = false;
+  /** The tab was closed or crashed, or its browser closed. */
+  ended = false;
+  /** The URL last loaded with {@link goto}. */
+  url = "about:blank";
 
   private constructor(private readonly conn: Connection, readonly sessionId: string, readonly targetId: string) {
     this.sessions.add(sessionId);
@@ -138,9 +196,23 @@ export class Page {
     conn.on("Runtime.exceptionThrown", mine((p) => page.exceptions.push(p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "exception")));
     conn.on("Log.entryAdded", mine((p, w) => page.logs.push({ source: p.entry.source, level: p.entry.level, text: p.entry.text, url: p.entry.url, ...tag(w) })));
     conn.on("Page.loadEventFired", mine(() => { page.loads++; }));
-    conn.on("Inspector.targetCrashed", (_p, s) => { if (s === sessionId) page.crashed = true; });
+    conn.on("Inspector.targetCrashed", (_p, s) => { if (s === sessionId) page.crashed = page.ended = true; });
+    conn.on("Runtime.bindingCalled", (p, s) => {
+      if (s !== sessionId || p.name !== WORKER_ERROR_BINDING) return;
+      let e: WorkerErrorRecord;
+      try {
+        e = JSON.parse(p.payload as string) as WorkerErrorRecord;
+      } catch {
+        return;
+      }
+      page.workerErrors.push(e);
+      if (page.workerErrors.length <= 5) console.error(`browser page ${page.targetId.slice(0, 8)} (${page.url}): worker error: ${errorLine(e)}`);
+    });
+    pagesOfFile.push(page);
     if (opts.workers === true) await page.attachWorkers(true, opts.workerScript);
     for (const d of ["Page", "Runtime", "Network", "Log", "Inspector"]) await conn.send(`${d}.enable`, {}, sessionId);
+    await conn.send("Runtime.addBinding", { name: WORKER_ERROR_BINDING }, sessionId);
+    await conn.send("Page.addScriptToEvaluateOnNewDocument", { source: WORKER_ERRORS }, sessionId);
     await conn.send("Page.addScriptToEvaluateOnNewDocument", {
       source: "window.__cspViolations = []; document.addEventListener('securitypolicyviolation', function (e) { window.__cspViolations.push(e.violatedDirective + ' ' + e.blockedURI); });",
     }, sessionId);
@@ -150,6 +222,7 @@ export class Page {
 
   /** Loads a URL and waits for its load event. */
   async goto(url: string, timeoutMs = 30_000): Promise<void> {
+    this.url = url;
     const before = this.loads;
     await this.conn.send("Page.navigate", { url }, this.sessionId);
     const end = Date.now() + timeoutMs;
@@ -279,7 +352,31 @@ export class Page {
 
   /** Closes the tab, as the user closing it does. */
   async close(): Promise<void> {
+    this.ended = true;
     await this.conn.send("Target.closeTarget", { targetId: this.targetId });
+  }
+
+  /**
+   * What the page recorded, to explain a failure: its workers' `error` events (message, file, line, column), its
+   * uncaught exceptions, its console calls and log entries (its workers' too, when recorded), and its workers — the
+   * last {@link DIAGNOSTIC_LINES} of each list, each line cut at {@link DIAGNOSTIC_CHARS} characters.
+   */
+  diagnostics(): string {
+    const cut = (t: string): string => (t.length > DIAGNOSTIC_CHARS ? `${t.slice(0, DIAGNOSTIC_CHARS)}… (${t.length} characters)` : t);
+    const section = (title: string, lines: readonly string[]): string[] => {
+      if (lines.length === 0) return [`  ${title}: none`];
+      const shown = lines.slice(-DIAGNOSTIC_LINES);
+      return [`  ${title} (${lines.length}${shown.length < lines.length ? `, the last ${shown.length}` : ""}):`, ...shown.map((l) => `    ${cut(l)}`)];
+    };
+    const where = (target?: "worker"): string => (target === "worker" ? "[worker] " : "");
+    return [
+      `page ${this.targetId.slice(0, 8)} at ${this.url}${this.crashed ? " (crashed)" : this.ended ? " (closed)" : ""}`,
+      ...section("worker errors", this.workerErrors.map(errorLine)),
+      ...section("exceptions", this.exceptions),
+      ...section("console", this.console.map((c) => `${where(c.target)}${c.type}: ${c.text}`)),
+      ...section("log entries", this.logs.map((l) => `${where(l.target)}${l.level} ${l.source}: ${l.text}${l.url === undefined || l.url === "" ? "" : ` (${l.url})`}`)),
+      ...section("workers", this.workers.map((w) => `${w.url} ${w.running ? "running" : "ended"}`)),
+    ].join("\n");
   }
 
   /** A PNG of the whole page. */
@@ -289,7 +386,13 @@ export class Page {
   }
 }
 
+/** One worker error as a line: its message and where it was raised. */
+function errorLine(e: WorkerErrorRecord): string {
+  return `${e.message === "" ? "(no message: the script did not load or did not start)" : e.message} at ${e.file === "" ? e.worker : e.file}:${e.line}:${e.column}`;
+}
+
 export class Browser {
+  private readonly pages: Page[] = [];
   private constructor(readonly executable: string, private readonly child: ChildProcess, private readonly conn: Connection, private readonly dir: string) {}
 
   static async launch(executable: string, timeoutMs = 60_000): Promise<Browser> {
@@ -328,11 +431,14 @@ export class Browser {
     return (await this.conn.send("Browser.getVersion")).product as string;
   }
 
-  newPage(opts?: PageOptions): Promise<Page> {
-    return Page.open(this.conn, opts);
+  async newPage(opts?: PageOptions): Promise<Page> {
+    const page = await Page.open(this.conn, opts);
+    this.pages.push(page);
+    return page;
   }
 
   async close(): Promise<void> {
+    for (const p of this.pages) p.ended = true;
     try {
       await Promise.race([this.conn.send("Browser.close"), sleep(5_000)]);
     } catch {

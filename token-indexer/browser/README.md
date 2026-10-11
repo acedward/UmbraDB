@@ -258,10 +258,10 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 |---|---|---|
 | `status` | — | boot state, store facts (data directory, created, PostgreSQL version, `fsync`, durability, applied migrations), the last engine's configuration and loop status, the stored cursors, the saved configuration (`settings`) and the storage reading (`storage`) |
 | `api` | `method`, `target` | the API's answer `{ status, headers, body }` (`../API.md`) |
-| `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status: the configuration is saved (with the automatic start on), then it runs; a configuration the browser refuses to save starts nothing (`settings-failed`), and an engine that fails to start puts the settings before it back |
+| `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status: the configuration is saved (with the automatic start on), then it runs; a source that cannot be reached (a recorded range that does not load) is refused before anything is saved, settings that already say this are not written again (the automatic start runs also while the browser refuses writes), a configuration the browser refuses to save starts nothing (`settings-failed`), and an engine that fails to start puts the settings before it back |
 | `stop` | — | status; the engine no longer starts by itself until the next `start`. The engine always stops; when the browser refuses to save that it should stay stopped, the answer is `settings-failed` (the next page to open the engine starts it again) |
-| `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the new range is saved, the store is replaced by a new one, and the range starts (source and tuning from the saved configuration) |
-| `reset` | — | status: the store is replaced by a new one and the saved configuration starts again |
+| `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the new range is saved, the store is replaced by a new one, and the range starts (source and tuning from the saved configuration); a range the browser refuses to save changes nothing (`settings-failed`) |
+| `reset` | — | status: the store is replaced by a new one and the saved configuration starts again (`settings-failed`, nothing changed, when it cannot be saved) |
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
 | `system` | `watch` (with `viewer?`) or `refresh: { database?, exactCounts? }` | `{ watching, viewers, snapshot }`: the snapshot of a refresh (`null` for a watch) |
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
@@ -274,8 +274,8 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `jsonrpc` | `body`: the text of one JSON-RPC 2.0 request (or batch), at most 2,097,152 characters | `{ status, headers, body }`: what Node's `npm run evm-rpc` server answers a `POST` with the UTF-8 bytes of that body (`../../evm-rpc/handler.ts`: 200 with the answer, 204 for notifications only, 413 over its 1 MiB cap, `-32700` for a body that is not JSON; a lone surrogate reads as U+FFFD, as Node decodes it), from the JSON RPC module; refused `module-off` while the module is off or when it is switched off before the answer, `busy` while it answers 8 requests |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
-`boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`
-and `module` changed nothing, `stop` stopped the engine), `module-off` (`jsonrpc` while the JSON RPC module is off, or
+`boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`,
+`module`, `range` and `reset` changed nothing, `stop` stopped the engine), `module-off` (`jsonrpc` while the JSON RPC module is off, or
 switched off before the answer), `busy` (`jsonrpc` while the module answers 8 requests; nothing was done), `internal`,
 `snapshot-refused` (the message starts with the reason; nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
 adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
@@ -327,7 +327,8 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   and an import turn that off, the next `start` on). Every worker that boots on the store starts from this file alone:
   the leader tab (`tabs.ts` `resumeOrAutoStart`, the default `resume`), the next leader after a handover and the worker
   the watchdog puts in place of a stuck one start the saved configuration when it says to start by itself
-  (`client.ts` `startSaved`; for a new store, the build's default: the tip, following it). With the build's automatic
+  (`client.ts` `startSaved`: a `start` with no configuration, so the worker runs what is saved when it runs; an engine
+  another page started first counts as started; for a new store, the build's default: the tip, following it). With the build's automatic
   start off, a leader starts it only after a previous leader whose engine ran. Followers never start anything. A reopened store continues at its cursor and fetches every
   height since, so a closed or frozen tab leaves no hole; a chosen range keeps its end.
 - **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` replace the store
@@ -392,9 +393,10 @@ reason: `format` (not a snapshot file of this version), `truncated`, `network` (
 or SHA-256 is not the manifest's), `corrupt` (the rows do not unpack, are not this build's tables and columns in order,
 do not load into a store of this build, or hold another state than the manifest says). The check is a trial: a new
 store in memory, made by the migrations, into which the rows are loaded in one transaction; the row counts, the
-sequences, the cursors, the block hash and the migrations must then be the manifest's, and the archive's first height
-(which the import saves as the start of the configuration that continues it) its lowest block, with the scan starting
-no lower. The rows are read as a stream:
+sequences, the cursors, the block hash and the migrations must then be the manifest's, the archive must record its
+first height (which the import saves as the start of the configuration that continues it) and be one chain of
+canonical blocks from there to its height (each height once, each block's parent the one before it), and the scan's
+range must lie within the archive's. The rows are read as a stream:
 an import holds one entry (at most 64 MiB) besides the file, and refuses rows as soon as they unpack to more than the
 manifest says (itself at most 4 GiB), or, past the first 64 MiB, to more than 16 times the compressed bytes read so far
 (a snapshot's rows unpack to about twice their size; this keeps what the trial loads in proportion to the file), an
@@ -409,7 +411,10 @@ identity and the configuration that continues the import are saved. A worker tha
 the journal, and the next open finishes the import before the store is used, so a half-built store is never used; a
 journal that cannot be read back whole means the swap never began, and is dropped. `status` and `api` wait during the
 swap. A failure after the journal is saved leaves the store closed, its lock released and `storeProblem` set, so
-`reset`, `range` and `import` are offered (and the next boot finishes the import from the journal).
+`reset`, `range` and `import` are offered (and the next boot finishes the import from the journal). A `range` or
+`reset` asked afterwards is newer than that journal: its new store is made and the journal dropped, also when the worker
+ends before it is in place (the settings carry its mark). An import that starts while a `range` or `reset` has left its
+new store to do clears that mark right after writing its journal, and from then on the import wins.
 
 After an import the engine is stopped and the saved configuration continues the imported archive: its first height as
 the start, no end height, and no automatic start (as after `stop`). A `start` then continues at the height after the
@@ -425,9 +430,15 @@ snapshots you exported or the build published.
 the recorded IDX range's tape and exports; the build then loads the file's rows into a new store, as an import does, and
 fails unless that store's archive digest, range-tables digest and NULL `bytea[]` elements (which the range-tables digest
 counts as empty bytes; the range has none) equal the recorded live sync of that range. Two builds of one commit write
-the same bytes (the whole `dist-browser/` is reproducible): the file is remade with one time as its `createdAt`, its tar
-entries' times and every write time in its rows (the `timestamp` columns, which the digests do not read) —
-`SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded. A page loads it with
+the same bytes, on any platform (the whole `dist-browser/` is reproducible): the file is remade with one time as its
+`createdAt`, its tar entries' times and every write time in its rows (the `timestamp` columns, which the digests do not
+read) — `SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded — and its rows' gzip
+header without the fields the platform writes (time, extra flags, operating system). The commit shown on the status page
+and written into the manifest is `UMBRADB_APP_COMMIT` when set, else the checkout's `HEAD`, else none, and the build
+prints both and where each came from (`snapshot time … (from …); build commit … (from …)`). A build outside a git
+checkout (a source archive, some CI checkouts) has no commit and takes the recorded range's time, so its bytes differ
+from a checkout's: for a reproducible build anywhere, set both, for example
+`SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) UMBRADB_APP_COMMIT=$(git rev-parse HEAD) npm run build:browser`. A page loads it with
 `window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
 answers for 714485–715183 with no network. `npm run dev:browser` publishes none.
 
@@ -641,9 +652,11 @@ statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest
   included): a download through a `blob:` URL and `<a download>`, which the policy allows. URLs lose their
   credentials, query, fragment and the path segments that look like keys (16 or more characters mixing letters and
   digits), and secret-looking values (tokens, passwords, keys, `Authorization` and `Cookie` headers, Bearer and Basic
-  credentials, JWTs, viewing keys, seed and mnemonic phrases, word by word) are replaced, whole (a JSON member's array
-  or object too, also inside JSON-escaped text), in every string of the snapshot; a log line is redacted as it is
-  written, before an event's fields become JSON.
+  credentials, JWTs, viewing keys, seed and mnemonic phrases, word by word, under any key spelling) are replaced, whole
+  (a JSON member's array or object too, also inside JSON text written as a JSON string, at any depth up to six), in
+  every string of the snapshot; a log line is redacted as it is written, before an event's fields become JSON. A text
+  longer than 4,096 characters (a node's error body, for example) is cut first, saying how much was cut, so the
+  snapshot always validates and redaction costs time in proportion to what is kept.
 - Text from the engine (error messages, log lines, URLs) is drawn as text nodes with the explorer's hidden-character
   rules (`visible-text.ts`, the rule of `../mip0018/ui/page.js`): every control, format, private-use, unassigned or
   surrogate code point, line or paragraph separator and default-ignorable character is drawn as a visible mark

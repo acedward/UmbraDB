@@ -21,8 +21,9 @@
  * and columns must be the store's, the rows entries arrive in the manifest's table order (each table's chunks
  * numbered from 0), each is loaded with `COPY … FROM` with every constraint and trigger of the store in force, the row
  * counts and the sequences are checked and set, all in one transaction; then the store's cursors, block hash,
- * migrations and PGlite version must be the manifest's, the archive's first height its lowest block, and the scan must
- * not start below it. Rows can only be rows: nothing in them is run.
+ * migrations and PGlite version must be the manifest's, the archive must record its first height, be one chain of
+ * canonical blocks from there to its height, and the scan's range must lie within the archive's. Rows can only be
+ * rows: nothing in them is run.
  *
  * **Import** has two parts:
  * 1. {@link prepareImport}, which changes nothing: the file is decoded and its manifest checked against this engine
@@ -419,19 +420,39 @@ export async function loadSnapshot(store: Store, manifest: SnapshotManifest, dat
 }
 
 /**
- * Refuses (`corrupt`) an archive whose recorded first height is not its lowest canonical block, and a scan that starts
- * below that height: an import saves the first height as the start of the configuration that continues it (and every
- * `reset` afterwards starts there), so it must be a block the archive holds, not a height it only claims.
+ * Refuses (`corrupt`) an archive that does not record its first height or records another than its lowest canonical
+ * block (this build's sync records it with its first block), one that is not one chain of canonical blocks from there
+ * to its height (a height missing or twice, a block above it, a block whose parent is not the block before it), and a
+ * scan whose range leaves the archive's (from below its first block, or a next height past the one after its last): an
+ * import saves the first height as the start of the configuration that continues it (and every `reset` afterwards
+ * starts there), and the API reports the scan's range, so both must be the blocks the archive holds, not heights it
+ * only claims.
  */
 async function checkArchiveStart(sql: UmbraDBSql, manifest: SnapshotManifest, network: string): Promise<void> {
-  const start = manifest.archive.startHeight;
-  if (start === null) return;
   const [low] = await sql<{ height: string | null }[]>`
     SELECT min(height)::text AS height FROM ${sql(ARCHIVE_SCHEMA)}.blocks WHERE net = ${network} AND is_canonical`;
   const lowest = low?.height === null || low?.height === undefined ? null : Number(low.height);
+  const start = manifest.archive.startHeight;
+  if (start === null) throw new SnapshotRefusal("corrupt", `the snapshot's archive does not record its first height (its lowest block is ${lowest})`);
   if (lowest !== start) throw new SnapshotRefusal("corrupt", `the snapshot's archive starts at its lowest block, ${lowest}, but its manifest says ${start}`);
-  if (manifest.scan !== null && manifest.scan.fromHeight < start)
-    throw new SnapshotRefusal("corrupt", `the snapshot's scan starts at ${manifest.scan.fromHeight}, below its archive's first height ${start}`);
+  // One chain from there to the archive's height: every height once among the canonical blocks, none above, and each
+  // block's parent the canonical block before it.
+  const notChain = (d: string) => new SnapshotRefusal("corrupt", `the snapshot's archive is not one chain of canonical blocks from its first height ${start} to ${manifest.archive.height}: ${d}`);
+  const [c] = await sql<{ n: string; heights: string; high: string | null }[]>`
+    SELECT count(*)::text AS n, count(DISTINCT height)::text AS heights, max(height)::text AS high
+    FROM ${sql(ARCHIVE_SCHEMA)}.blocks WHERE net = ${network} AND is_canonical`;
+  const due = manifest.archive.height - start + 1;
+  if (Number(c!.n) !== due || Number(c!.heights) !== due || Number(c!.high) !== manifest.archive.height)
+    throw notChain(`${c!.n} blocks at ${c!.heights} heights up to ${c!.high}, where ${due} are due`);
+  const [u] = await sql<{ n: string; first: string | null }[]>`
+    SELECT count(*)::text AS n, min(b.height)::text AS first FROM ${sql(ARCHIVE_SCHEMA)}.blocks b
+    WHERE b.net = ${network} AND b.is_canonical AND b.height > ${start} AND NOT EXISTS (
+      SELECT 1 FROM ${sql(ARCHIVE_SCHEMA)}.blocks p
+      WHERE p.net = b.net AND p.is_canonical AND p.height = b.height - 1 AND p.block_hash = b.parent_hash)`;
+  if (Number(u!.n) > 0) throw notChain(`${u!.n} block${u!.n === "1" ? " does" : "s do"} not follow the block before ${u!.n === "1" ? "it" : "them"} (the first at ${u!.first})`);
+  const scan = manifest.scan;
+  if (scan !== null && (scan.fromHeight < start || scan.nextHeight < scan.fromHeight || scan.nextHeight > manifest.archive.height + 1))
+    throw new SnapshotRefusal("corrupt", `the snapshot's scan covers ${scan.fromHeight} to ${scan.nextHeight - 1}, outside its archive's ${start} to ${manifest.archive.height}`);
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -603,8 +624,9 @@ export interface OpenedStore {
 }
 
 export interface FinishingOptions extends Omit<OpenStoreOptions, "prepare"> {
-  /** Drops a pending import instead of finishing it (the store's files are replaced otherwise: `reset`). */
-  discardJournal?: boolean;
+  /** Drops a pending import instead of finishing it (the store's files are replaced otherwise: `reset`); a function is
+   *  asked under the store's lock, before the journal is read. */
+  discardJournal?: boolean | (() => Promise<boolean>);
   /** Runs under the store's lock before PGlite opens the store, with the manifest of the import that replaces the
    *  store (`null`: none); it may refuse the open by throwing. */
   beforeOpen?: (dataDir: string, importing: SnapshotManifest | null) => Promise<void>;
@@ -628,7 +650,7 @@ export async function openFinishingImport(
   /** The store's files were changed (the pending import began replacing them). */
   let replacing = false;
   const prepare = async (dir: string): Promise<void> => {
-    if (discardJournal) await files.removeJournal();
+    if (typeof discardJournal === "function" ? await discardJournal() : discardJournal) await files.removeJournal();
     else {
       const journal = await files.readJournal();
       if (journal !== undefined) {

@@ -11,7 +11,8 @@
  *   with "stack depth limit exceeded" (SQLSTATE 54001) once a database has failed about 1,700–1,870 statements
  *   (`exec` and `query` respectively, measured), until it is reopened;
  * - **tracks the statement in flight** (`statementSince`) and counts statements, failures and turns (`counts`); an
- *   exclusive run (`runExclusive`, how the client runs a simple-protocol text) is one statement;
+ *   exclusive run (`_runExclusiveTransaction`, how the client runs a simple-protocol text and reads an open
+ *   transaction before rolling it back) is one statement;
  * - **closes PGlite only when no statement is in flight**: once `close()` is called a new statement fails at once as on
  *   a closed database (`closed` reads true), and PGlite is closed after the statements already in flight have ended. A
  *   statement still queued inside PGlite when it closes would otherwise run on the shut-down backend and never return.
@@ -106,8 +107,10 @@ export function monitorSession(db: PgliteDatabase, opts: SessionMonitorOptions =
     },
     query: (query: string, params?: unknown[], options?: PgliteQueryOptions): Promise<PgliteResults> => run(() => db.query(query, params, options)),
     exec: (query: string, options?: PgliteQueryOptions): Promise<PgliteResults[]> => run(() => db.exec(query, options)),
-    // The client runs a simple-protocol text as one exclusive run of protocol messages: that run is the statement.
-    runExclusive: <T>(fn: () => Promise<T>): Promise<T> => run(() => db.runExclusive(fn)),
+    // The client runs a simple-protocol text as one run of protocol messages under PGlite's two locks: that run is the
+    // statement.
+    _runExclusiveTransaction: <T>(fn: () => Promise<T>): Promise<T> => run(() => db._runExclusiveTransaction(fn)),
+    runExclusive: <T>(fn: () => Promise<T>): Promise<T> => db.runExclusive(fn),
     execProtocolStream: (message: Uint8Array, options?: { syncToFs?: boolean }): Promise<readonly PgliteBackendMessage[]> =>
       db.execProtocolStream(message, options),
     syncToFs: (): Promise<void> => db.syncToFs(),

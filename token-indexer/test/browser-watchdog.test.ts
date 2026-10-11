@@ -167,7 +167,7 @@ describe("page watchdog", () => {
     }
   });
 
-  it("[[browser.watchdog.slow-query]] a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables", async () => {
+  it("[[browser.watchdog.slow-query]] with no restart before it, a statement that does not return silences the worker; the page terminates it and starts a new one: the API request in flight gets the 503, a status request restarted; the new worker carries the counts, continues the engine at the cursors, and the range ends with the same tables", async () => {
     const expected = await u1Reference();
     const dir = tempDir();
     const threads: Array<ReturnType<typeof threadWorker>> = [];
@@ -315,7 +315,10 @@ describe("page watchdog", () => {
       const first = workers[1]!.received;
       expect(first[0]).toMatchObject({ type: "watchdog", carried: { watchdogRestarts: 1, pgliteReopens: 0, lastWatchdogRestart: { reason: engine.restarts()[0]!.reason } } });
       expect(first.filter((m) => m.type === "system")).toEqual([expect.objectContaining({ watch: true, viewer: "status-page" })]);
-      expect(first.find((m) => m.type === "start")).toMatchObject({ config });
+      // A start with no configuration: the new worker runs its saved one.
+      expect(first.find((m) => m.type === "start")).not.toHaveProperty("config");
+      await until(async () => (await c.status()).engine?.config !== undefined, "the restored engine");
+      expect((await c.status()).engine).toMatchObject({ running: true, config });
       await until(async () => (await c.status()).engine?.status.sync.phase === "done", "the restored engine's range");
 
       // The page stops the engine; a restart does not start it again.

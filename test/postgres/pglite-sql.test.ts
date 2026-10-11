@@ -342,6 +342,106 @@ describe("PGlite client", () => {
       expect(db.isInTransaction()).toBe(false);
     });
 
+    it("[[pglite.client.unsafe-isolation]] a text run with unsafe never runs inside another transaction — one PGlite's transaction() holds, the client's own begin or another client's reservation: it waits for it, the transaction keeps every write, and the text then fails or succeeds on its own; a transaction of PGlite's transaction() that begins as a statement ends is never taken for one the statement left open", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        const d = createPgliteClient({ pglite: own, schema: "public" });
+        await c.unsafe("CREATE TABLE iso (id int)"); // both clients' caches are warm before the transactions below
+        await d.unsafe("SELECT 1");
+        /** While `hold` keeps a transaction open (it calls `opened` once its first write is in, then awaits `wait`), two
+         *  texts from client `d`: one that fails, one that counts the rows. Their answers, once the holder has ended. */
+        const textsDuring = async (hold: (opened: () => void, wait: Promise<void>) => Promise<unknown>): Promise<unknown[]> => {
+          let letGo!: () => void;
+          const wait = new Promise<void>((r) => { letGo = r; });
+          let opened!: () => void;
+          const isOpen = new Promise<void>((r) => { opened = r; });
+          const held = hold(opened, wait);
+          await isOpen;
+          const texts = [
+            d.unsafe("SELECT 1 / 0").then(() => "ran", (e: { code?: string }) => e.code),
+            d.unsafe("SELECT count(*)::int AS n FROM iso").then((r) => [...r], (e: { code?: string }) => e.code),
+          ];
+          await sleep(30);
+          letGo();
+          await held;
+          return Promise.all(texts);
+        };
+
+        // PGlite's own transaction(): the texts run after its commit, which keeps both writes.
+        expect(await textsDuring((opened, wait) => own.transaction(async (t) => {
+          await t.query("INSERT INTO iso VALUES (1)");
+          opened();
+          await wait;
+          await t.query("INSERT INTO iso VALUES (2)");
+        }))).toEqual(["22012", [{ n: 2 }]]);
+        // The client's own begin.
+        expect(await textsDuring((opened, wait) => c.begin(async (tx) => {
+          await tx`INSERT INTO iso VALUES (3)`;
+          opened();
+          await wait;
+          await tx`INSERT INTO iso VALUES (4)`;
+        }))).toEqual(["22012", [{ n: 4 }]]);
+        // Another client's reservation with a manual transaction.
+        expect(await textsDuring(async (opened, wait) => {
+          const r = await c.reserve();
+          await r`BEGIN`;
+          await r`INSERT INTO iso VALUES (5)`;
+          opened();
+          await wait;
+          await r`INSERT INTO iso VALUES (6)`;
+          await r`COMMIT`;
+          r.release();
+        })).toEqual(["22012", [{ n: 6 }]]);
+
+        // A statement with parameters that ends just as PGlite's transaction() begins: the client reads the session
+        // again under PGlite's locks before it rolls anything back, so that transaction is waited for, never taken for
+        // one the statement left open (the statement answers, the transaction keeps its writes).
+        let beginAfter: (() => Promise<void>) | undefined;
+        const racing = createPgliteClient({
+          pglite: {
+            query: async (text, params, options) => {
+              const r = await own.query(text, params, options as never);
+              const b = beginAfter;
+              beginAfter = undefined;
+              if (b !== undefined) await b();
+              return r;
+            },
+            exec: (text, options) => own.exec(text, options as never),
+            _runExclusiveTransaction: (fn) => own._runExclusiveTransaction(fn),
+            runExclusive: (fn) => own.runExclusive(fn),
+            execProtocolStream: (message, options) => own.execProtocolStream(message, options),
+            syncToFs: () => own.syncToFs(),
+            get parsers() {
+              return own.parsers;
+            },
+            close: () => own.close(),
+            get closed() {
+              return own.closed;
+            },
+            isInTransaction: () => own.isInTransaction(),
+          },
+          schema: "public",
+        });
+        await racing`SELECT 1`; // its session's array types and search_path
+        let tx: Promise<unknown> | undefined;
+        beginAfter = () => new Promise<void>((opened) => {
+          tx = own.transaction(async (t) => {
+            await t.query("INSERT INTO iso VALUES (7)");
+            opened();
+            await sleep(30);
+            await t.query("INSERT INTO iso VALUES (8)");
+          });
+        });
+        expect([...(await racing`SELECT ${41}::int + 1 AS v`)]).toEqual([{ v: 42 }]);
+        await tx;
+        expect((await own.query<{ id: number }>("SELECT id FROM iso ORDER BY id")).rows.map((r) => r.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+        expect(own.isInTransaction()).toBe(false);
+      } finally {
+        await own.close();
+      }
+    });
+
     it("[[pglite.client.transaction-isolation]] the session is never handed on inside a transaction: a statement that leaves one open is rolled back and refused, and a reservation released inside one has it rolled back", async () => {
       // A client's hidden BEGIN, then another client's acknowledged write, then the first client's ROLLBACK.
       await expect(a.unsafe("/* caller A */ BEGIN")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
@@ -357,6 +457,7 @@ describe("PGlite client", () => {
         const disguised: PgliteDatabase = {
           query: (text, params, options) => own.query(text, params, options as never),
           exec: (text, options) => own.exec(text === "SELECT 'disguised'" ? "BEGIN" : text, options as never),
+          _runExclusiveTransaction: (fn) => own._runExclusiveTransaction(fn),
           runExclusive: (fn) => own.runExclusive(fn),
           execProtocolStream: (message, options) =>
             own.execProtocolStream(message.length === disguisedQuery.length && message.every((x, i) => x === disguisedQuery[i]) ? begin : message, options),

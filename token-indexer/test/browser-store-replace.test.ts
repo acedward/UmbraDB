@@ -29,6 +29,10 @@
  *   its engine stops for it, leaves the replacement to the next boot: the old store is removed, the new one holds
  *   nothing, the saved settings are the new ones with no replacement left to do, and a start runs them on the new store
  *   (a range that starts above the old archive's cursor leaves no gap to refuse).
+ * - `[[browser.host.replacement-order]]` — the newer of a pending import and a store replacement asked by `range` wins at
+ *   the next boot: a range saved after an import kept its journal makes the new store and drops that journal; an import
+ *   whose journal is written after a range left its replacement to do wins once it has cleared the range's mark (right
+ *   after its journal), and a worker that ends before that leaves the range's new store (the import was not answered).
  * - `[[browser.host.range-saved-first]]` — `range` saves the new range before it replaces the store: when that save
  *   fails nothing changes, and a worker that ends while the store is replaced leaves the new range (with the automatic
  *   start and the mark that the store is to be replaced) saved, so the next boot starts it on the new store.
@@ -505,7 +509,7 @@ describe("replacing the browser engine's store", () => {
       failing = true;
       const r = await call(t.host, "range", { startHeight: U1.from + 10, endHeight: U1.from + 12 });
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error).toEqual({ code: "start-failed", message: "the new range could not be saved (the quota is exceeded): nothing was changed" });
+      if (!r.ok) expect(r.error).toEqual({ code: "settings-failed", message: "the new range could not be saved (the quota is exceeded): nothing was changed" });
       expect(await result<DigestResult>(t.host, "digest")).toEqual({ ...before, elapsedMs: expect.any(Number) });
       expect(await settings.load()).toEqual(saved);
       expect(openStores(t)).toEqual([t.opened[0]]);
@@ -553,6 +557,7 @@ describe("replacing the browser engine's store", () => {
       { what: "range, right after its settings are saved", request: "range", at: "saved" },
       { what: "range, while its engine stops", request: "range", at: "stopping" },
       { what: "reset, right after its settings are saved", request: "reset", at: "saved" },
+      { what: "reset, while its engine stops", request: "reset", at: "stopping" },
     ] as const;
     for (const c of cases) {
       const dir = storeDir();
@@ -599,6 +604,99 @@ describe("replacing the browser engine's store", () => {
       expect(done.engine?.error, c.what).toBeNull();
       await next.host.close();
       hosts.splice(hosts.indexOf(next), 1);
+    }
+  }, 300_000);
+  it("[[browser.host.replacement-order]] the newer of a pending import and a store replacement asked by range wins at the next boot: a range saved after an import kept its journal makes the new store and drops that journal; an import whose journal is written after a range left its replacement to do wins once it has cleared the range's mark, and a worker that ends before that leaves the range's new store", async () => {
+    const snap = await snapshotAtMid();
+    const range = { ...U1_TAPE, startHeight: U1.from + 10, endHeight: U1.from + 12 };
+    const quota = (): Error => Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
+    type Hold = "range saved" | "journal saved" | "mark cleared" | undefined;
+    /** A store directory and a worker on it whose steps can fail or hold: the worker is left there, as one that ended. */
+    const rig = () => {
+      const dir = storeDir();
+      const files = nodeStoreFiles(dir);
+      const identity = memoryStoreIdentity();
+      const saved = memorySettingsStore({ config: { source: { kind: "tape", range: "u1" } }, autoStart: true });
+      const ctl = { settingsFail: false, migrateFail: false, hold: undefined as Hold, reached: false };
+      const stop = async (at: Hold): Promise<void> => {
+        if (ctl.hold !== at) return;
+        ctl.reached = true;
+        await never;
+      };
+      const w = abandoned({
+        dataDir: dir,
+        storeIdentity: identity,
+        settings: {
+          ...saved,
+          save: async (x) => {
+            if (ctl.settingsFail) throw quota();
+            await saved.save(x);
+            if (x.newStore === true) await stop("range saved");
+            else if (ctl.hold === "mark cleared" && x.config.startHeight === range.startHeight && x.autoStart) await stop("mark cleared");
+          },
+        },
+        snapshotFiles: { ...files, writeJournal: async (f) => { await files.writeJournal(f); await stop("journal saved"); } },
+        migrate: async (s) => { if (ctl.migrateFail) throw new Error("a migration failed"); await migrateStore(s); },
+      });
+      const reached = async (what: string): Promise<void> => {
+        const end = Date.now() + 60_000;
+        while (!ctl.reached) {
+          if (Date.now() > end) throw new Error(`${what}: never reached`);
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      };
+      const next = () => host({ dataDir: dir, snapshotFiles: files, storeIdentity: identity, settings: saved });
+      return { w, files, saved, ctl, reached, next };
+    };
+
+    // An import kept its journal (its continuing configuration could not be saved), then a range is saved and the
+    // worker ends: the range is newer, so the next boot makes the new store and drops the journal.
+    {
+      const r = rig();
+      await result(r.w.host, "start", { config: { ...U1_TAPE, endHeight: U1.from + 3 } });
+      await untilU1(r.w, U1.from + 3);
+      r.ctl.settingsFail = true;
+      expect((await call(r.w.host, "import", { snapshot: snap.file })).ok).toBe(false);
+      r.ctl.settingsFail = false;
+      expect(await r.files.readJournal(), "the import's journal, kept").toBeDefined();
+      r.ctl.hold = "range saved";
+      void call(r.w.host, "range", { startHeight: range.startHeight, endHeight: range.endHeight });
+      await r.reached("the range saved");
+      const n = r.next();
+      expect(await n.host.boot()).toMatchObject({ phase: "ready", storeProblem: null });
+      const s = await result<HostStatus>(n.host, "status");
+      expect(s.cursors, "the new store holds nothing").toEqual({ sync: null, scan: null });
+      expect(s.settings).toEqual({ config: range, autoStart: true });
+      expect(await r.saved.load()).toEqual({ config: range, autoStart: true });
+      expect(await r.files.readJournal(), "the older import's journal is dropped").toBeUndefined();
+    }
+
+    // A range whose new store could not be made (its migrations failed) leaves its replacement to do; then an import's
+    // journal is written. Ended once the import has cleared the range's mark: the import wins. Ended before: the range's
+    // new store (the import was never answered).
+    for (const at of ["mark cleared", "journal saved"] as const) {
+      const r = rig();
+      await result(r.w.host, "start", { config: { ...U1_TAPE, endHeight: U1.from + 3 } });
+      await untilU1(r.w, U1.from + 3);
+      r.ctl.migrateFail = true;
+      expect(await call(r.w.host, "range", { startHeight: range.startHeight, endHeight: range.endHeight }), at).toMatchObject({ ok: false, error: { code: "boot-failed" } });
+      r.ctl.migrateFail = false;
+      expect(await r.saved.load(), `${at}: the replacement left to do`).toEqual({ config: range, autoStart: true, newStore: true });
+      r.ctl.hold = at;
+      void call(r.w.host, "import", { snapshot: snap.file });
+      await r.reached(at);
+      const n = r.next();
+      expect(await n.host.boot(), at).toMatchObject({ phase: "ready", storeProblem: null });
+      const s = await result<HostStatus>(n.host, "status");
+      if (at === "mark cleared") {
+        expect(s.cursors?.sync, at).toEqual({ height: MID, startHeight: U1.from });
+        expect(s.settings, at).toEqual(CONTINUING);
+        expect(await result<DigestResult>(n.host, "digest"), at).toEqual({ ...snap.digest, elapsedMs: expect.any(Number) });
+      } else {
+        expect(s.cursors, at).toEqual({ sync: null, scan: null });
+        expect(s.settings, at).toEqual({ config: range, autoStart: true });
+      }
+      expect(await r.files.readJournal(), `${at}: no journal left`).toBeUndefined();
     }
   }, 300_000);
 });

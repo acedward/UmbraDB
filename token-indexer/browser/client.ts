@@ -240,19 +240,32 @@ export interface PersistenceResult {
   error: string | null;
 }
 
+/** What {@link startSaved} found or did: `started` the saved configuration; found the engine `running` (someone started
+ *  it first: a page, another tab); found it `stopped` (an engine ran on this worker and was stopped or failed: left as it
+ *  is); or found the saved settings `off` (they do not start it by itself). */
+export type SavedStart = "started" | "running" | "stopped" | "off";
+
 /**
  * Starts the saved configuration of the worker behind `client` when the worker runs no engine yet and its saved settings
  * say the engine starts by itself: what a newly booted worker runs (the leader tab's automatic start, the next leader
  * after a handover, a worker the watchdog put in place of a stuck one) comes from the store's own saved settings
  * (`settings.ts`), which every acknowledged `start`, `stop`, `range`, `reset` and import changed before it was answered,
- * never from what a page last saw running. `proceed`, asked once the status is read, can call the start off. Resolves
- * with whether the start was sent (it rejects as `start` does).
+ * never from what a page last saw running. It sends `start` with no configuration, so the worker runs what is saved
+ * when the start runs; an engine someone else started first (`already-running`) counts as started. `proceed`, asked
+ * once the status is read, can call the start off (`off`). Rejects as `start` does otherwise.
  */
-export async function startSaved(client: Pick<EngineClient, "status" | "start">, proceed: () => boolean = () => true): Promise<boolean> {
+export async function startSaved(client: Pick<EngineClient, "status" | "start">, proceed: () => boolean = () => true): Promise<SavedStart> {
   const s = await client.status();
-  if (s.engine !== null || s.settings?.autoStart !== true || !proceed()) return false;
-  await client.start(s.settings.config);
-  return true;
+  if (s.engine?.running === true) return "running";
+  if (s.engine !== null) return "stopped";
+  if (s.settings?.autoStart !== true || !proceed()) return "off";
+  try {
+    await client.start();
+  } catch (e) {
+    if (e instanceof EngineError && e.code === "already-running") return "running";
+    throw e;
+  }
+  return "started";
 }
 
 /** Asks the browser to keep this site's storage (`navigator.storage.persist()`) unless it already does, and reports the
