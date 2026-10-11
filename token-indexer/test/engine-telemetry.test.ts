@@ -685,7 +685,7 @@ describe("system snapshot schema and redaction", () => {
     s.sync.lastError = { message: huge, at: 1 };
     s.logs = [{ seq: 0, at: 1, level: "error", source: "sync", text: huge }];
     const r = redactSnapshot(s);
-    expect(r.sync.lastError!.message).toMatch(/^RPC error: token=\[redacted\] \[\d+ more characters\]$/u);
+    expect(r.sync.lastError!.message).toMatch(/^RPC error: token=\[redacted\]… \[\d+ more characters\]$/u);
     expect(r.logs[0]!.text.length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
     expect(() => JSON.parse(diagnosticsJson(s))).not.toThrow();
     // Any long text: cut, saying how much, before it is read, and what is cut never reaches the snapshot.
@@ -799,6 +799,27 @@ describe("system snapshot schema and redaction", () => {
     let eight = JSON.stringify({ token: secret });
     for (let i = 0; i < 7; i++) eight = JSON.stringify(eight);
     expect(redactText(eight)).not.toContain(secret);
+  });
+
+  it("[[engine.telemetry.redaction-cut-mark]] the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form, and it stays within the snapshot's bound", () => {
+    const forms = ["token=a ", "t=a ", "password=b;", "apiKey: c\n", '"secret":"d",', "Bearer abcdefghijklmnopq ", "https://u:p@h.invalid/?k=v#f ", "seed: a b c d e f g h i j k l\n", "cookie: z=1\n", '\\"token\\":\\"v\\",', "authorization: Basic QWxhZGRpbjpvcGVu\n"];
+    let cut = 0;
+    for (const form of forms) {
+      for (let pad = 0; pad < form.length + 3; pad++) {
+        for (const n of [4_090, 4_096, 4_097, 4_160, 4_161, 8_000, 20_000]) {
+          const input = ("x".repeat(pad) + form.repeat(Math.ceil(n / form.length))).slice(0, n);
+          const once = redactText(input);
+          expect(redactText(once), `${JSON.stringify(form)} ${pad} ${n}`).toBe(once);
+          expect(once.length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
+          if (/… \[\d+ more characters\]$/u.test(once)) cut++;
+        }
+      }
+    }
+    expect(cut).toBeGreaterThan(0);
+    // The value the cut splits is removed whole, and the mark follows it.
+    const split = redactText(`${"x".repeat(TEXT_MAX_CHARS - 9)} token=abcdefghij rest`);
+    expect(split).toMatch(new RegExp(`^x{${TEXT_MAX_CHARS - 9}} token=\\[redacted\\]… \\[\\d+ more characters\\]$`, "u"));
+    expect(redactText(split)).toBe(split);
   });
 
   it("[[engine.telemetry.redaction-url-paths]] a URL keeps its origin and its path but path segments that look like keys: an endpoint key in the path does not reach the snapshot or the diagnostics file", () => {

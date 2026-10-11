@@ -9,8 +9,9 @@
  *   outside this schema (a page URL, a request target, a header) can travel inside a snapshot. Times are epoch
  *   milliseconds; durations are milliseconds; heights are block heights; sizes are bytes.
  * - **No secrets:** {@link redactSnapshot} runs over every string of a snapshot before it is validated and handed out.
- *   A text longer than 4,096 characters (`TEXT_MAX_CHARS`) is cut to them first, saying how much was cut, so redaction reads
- *   at most a few kilobytes and every expression and scan of it is linear in the text's length. Then:
+ *   A text longer than 4,096 characters (`TEXT_MAX_CHARS`) is cut to them first, so redaction reads at most a few
+ *   kilobytes and every expression and scan of it is linear in the text's length; the mark saying how much was cut is
+ *   added after the redaction, which never reads it (so redacting a redacted text gives it back). Then:
  *   URLs lose their userinfo, query and fragment, and the path segments that look like keys (16 or more letters,
  *   digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`, `key: value` and JSON
  *   `"key": value` forms whose key names a secret ({@link keyKind}: a name ending in password, token, secret,
@@ -803,13 +804,33 @@ export function redactWhole(value: string): string {
 
 /**
  * `text` with the secrets this module knows removed (see the module documentation); idempotent. A text longer than
- * {@link TEXT_MAX_CHARS} is cut to that length first ({@link capText}, which says how much was cut), unless it is
- * already a cut text; a result that redaction made longer than that (`[redacted]` is longer than some values) is cut
- * the same way and redacted again (so a value cut in two is removed whole). What it gives always fits the snapshot.
+ * {@link TEXT_MAX_CHARS} is cut to that length first, and what is kept is redacted on its own (so a value cut in two is
+ * removed whole); a result that redaction made longer than that (`[redacted]` is longer than some values) is cut again
+ * and redacted again. The mark that says how much was cut is added after the redaction, which never reads it: a cut
+ * text (its mark at its end, within the snapshot's bound) keeps its mark as it is, and only what comes before it is
+ * redacted. What it gives always fits the snapshot.
  */
 export function redactText(value: string): string {
-  const out = redactWhole(value.length > TEXT_MAX_CHARS && !isCut(value) ? capText(value) : value);
-  return out.length > TEXT_MAX_CHARS && !isCut(out) ? redactWhole(capText(out)) : out;
+  if (isCut(value)) {
+    const mark = CUT_MARK.exec(value)!;
+    const out = `${redactWhole(value.slice(0, mark.index))}${mark[0]}`;
+    return out.length <= TEXT_LIMIT ? out : cutAndRedact(out);
+  }
+  if (value.length > TEXT_MAX_CHARS) return cutAndRedact(value);
+  const out = redactWhole(value);
+  return out.length > TEXT_MAX_CHARS ? cutAndRedact(out) : out;
+}
+
+/** `text` (longer than {@link TEXT_MAX_CHARS}) cut to that length and redacted, cut again and redacted again when the
+ *  redaction made it longer, then marked with how many characters were cut. */
+function cutAndRedact(text: string): string {
+  let more = text.length - TEXT_MAX_CHARS;
+  let out = redactWhole(text.slice(0, TEXT_MAX_CHARS));
+  if (out.length > TEXT_MAX_CHARS) {
+    more += out.length - TEXT_MAX_CHARS;
+    out = redactWhole(out.slice(0, TEXT_MAX_CHARS));
+  }
+  return `${out}… [${more} more characters]`;
 }
 
 /** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut; a text already cut stays as it is. */
