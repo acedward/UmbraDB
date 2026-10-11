@@ -23,7 +23,8 @@
  * - `[[browser.worker.store-version]]` — a store whose identity names another PGlite version: the explorer's panel shows
  *   the refusal with its two choices and keeps reset, range and import enabled (start and export disabled), the store's
  *   files are left as they were; importing a snapshot made by this build replaces it (its digests, the identity
- *   rewritten); refused again, the panel's reset button creates a new store and starts the saved configuration.
+ *   rewritten); refused again, the panel's reset button creates a new store and, as the store held an imported
+ *   snapshot, starts the build's default configuration (the finalized tip), not the snapshot's first height.
  * - `[[browser.worker.hidden-tab]]` — the engine page's window minimized (the page `hidden`): the worker replays the IDX
  *   range to its end while the page stays hidden, to the recorded digests; its throughput is measured against the same
  *   replay with the page visible (reported; both must finish).
@@ -55,7 +56,10 @@ const U1_CONFIG = { source: { kind: "tape", range: "u1" }, startHeight: U1.from,
 const STORE_ENTRIES = ["umbradb-stagenet", "umbradb-stagenet.engine.json", "umbradb-stagenet.store.json", "umbradb-stagenet.import.snapshot.tar"];
 const PGLITE = (JSON.parse(readFileSync(join(REPO_ROOT, "node_modules/@electric-sql/pglite/package.json"), "utf8")) as { version: string }).version;
 /** The build: no automatic start; the storage guard reads the figures before every batch and every 300 ms while paused. */
-const DEFINE = { __UMBRADB_BROWSER_CONFIG__: JSON.stringify({ autoStart: false, quota: { checkEveryMs: 0, recheckMs: 300 } }) };
+/** The build's default configuration (what a new store and a reset after an import start): the recorded U1 range at its
+ *  finalized tip, so nothing here reaches the network. */
+const DEFAULT_START = { source: { kind: "tape", range: "u1", finalizedHeight: U1.to }, sync: { idleMs: 200 }, scan: { idleMs: 200 } } as const;
+const DEFINE = { __UMBRADB_BROWSER_CONFIG__: JSON.stringify({ autoStart: false, start: DEFAULT_START, quota: { checkEveryMs: 0, recheckMs: 300 } }) };
 const RECOVERY = "reset it (its data is dropped and synced again) or load a snapshot made by this build";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -235,7 +239,7 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
     }
   }, 300_000);
 
-  it("[[browser.worker.store-version]] a store of another PGlite version: the panel shows the refusal and keeps reset, range and import usable; the store's files are untouched; a snapshot of this build replaces it; refused again, the panel's reset starts a new store with the saved configuration", async () => {
+  it("[[browser.worker.store-version]] a store of another PGlite version: the panel shows the refusal and keeps reset, range and import usable; the store's files are untouched; a snapshot of this build replaces it; refused again, the panel's reset starts a new store with the build's default configuration (the store held an imported snapshot)", async () => {
     await withBrowser(async (b) => {
       // A store of this build holding U1, a snapshot of it, and its identity.
       let p = await open(b, "index.html");
@@ -282,7 +286,9 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
       expect((await identity()).pglite).toBe(PGLITE);
       await p.close();
 
-      // Refused again: the panel's reset button creates a new store and starts the saved configuration.
+      // Refused again: the panel's reset button creates a new store. The store held an imported snapshot, so the reset
+      // starts over as a new store does, with the build's default configuration (at the finalized tip), not at the
+      // snapshot's first height.
       await setIdentity(old);
       p = await open(b, "index.html");
       expect((await drive(p).status()).boot.storeProblem).toBe("version");
@@ -291,8 +297,8 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
       const reset = await untilEnd(p, U1.to);
       expect(reset.boot).toMatchObject({ phase: "ready", storeProblem: null });
       expect(reset.store!.created).toBe(true);
-      expect(reset.engine?.config).toMatchObject({ source: { kind: "tape", range: "u1" }, startHeight: U1.from });
-      expect((await digest(p)).archive.sha256).toBe(U1_ARCHIVE);
+      expect(reset.engine?.config).toEqual(DEFAULT_START);
+      expect(reset.cursors?.sync).toEqual({ height: U1.to, startHeight: U1.to });
       expect((await identity()).pglite).toBe(PGLITE);
       expect(p.exceptions).toEqual([]);
       await blank.close();
