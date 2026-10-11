@@ -10,9 +10,10 @@
  * - **counts failed statements** (errors the database reports), for the reopen rule: PGlite 0.5.8 fails every statement
  *   with "stack depth limit exceeded" (SQLSTATE 54001) once a database has failed about 1,700–1,870 statements
  *   (`exec` and `query` respectively, measured), until it is reopened;
- * - **tracks the statement in flight** (`statementSince`) and counts statements, failures and turns (`counts`); an
- *   exclusive run (`_runExclusiveTransaction`, how the client runs a simple-protocol text and reads an open
- *   transaction before rolling it back) is one statement;
+ * - **tracks the statement in flight** (`statementSince`) and counts statements, failures and turns (`counts`): a
+ *   `query`, an `exec`, or an exclusive run (`runExclusive`, how the client runs each of its statements through the
+ *   protocol) is one statement; the transaction lock a client holds while it has the session
+ *   (`_runExclusiveTransaction`) is not one;
  * - **closes PGlite only when no statement is in flight**: once `close()` is called a new statement fails at once as on
  *   a closed database (`closed` reads true), and PGlite is closed after the statements already in flight have ended. A
  *   statement still queued inside PGlite when it closes would otherwise run on the shut-down backend and never return.
@@ -107,12 +108,15 @@ export function monitorSession(db: PgliteDatabase, opts: SessionMonitorOptions =
     },
     query: (query: string, params?: unknown[], options?: PgliteQueryOptions): Promise<PgliteResults> => run(() => db.query(query, params, options)),
     exec: (query: string, options?: PgliteQueryOptions): Promise<PgliteResults[]> => run(() => db.exec(query, options)),
-    // The client runs a simple-protocol text as one run of protocol messages under PGlite's two locks: that run is the
-    // statement.
-    _runExclusiveTransaction: <T>(fn: () => Promise<T>): Promise<T> => run(() => db._runExclusiveTransaction(fn)),
-    runExclusive: <T>(fn: () => Promise<T>): Promise<T> => db.runExclusive(fn),
+    // The client holds PGlite's transaction lock for as long as it holds the session, and runs each statement as one
+    // run of protocol messages under PGlite's statement lock: that run is the statement.
+    _runExclusiveTransaction: <T>(fn: () => Promise<T>): Promise<T> => db._runExclusiveTransaction(fn),
+    runExclusive: <T>(fn: () => Promise<T>): Promise<T> => run(() => db.runExclusive(fn)),
     execProtocolStream: (message: Uint8Array, options?: { syncToFs?: boolean }): Promise<readonly PgliteBackendMessage[]> =>
       db.execProtocolStream(message, options),
+    _handleBlob: (blob?: Blob): Promise<void> => db._handleBlob(blob),
+    _cleanupBlob: (): Promise<void> => db._cleanupBlob(),
+    _getWrittenBlob: (): Promise<Blob | undefined> => db._getWrittenBlob(),
     syncToFs: (): Promise<void> => db.syncToFs(),
     get parsers() {
       return db.parsers;

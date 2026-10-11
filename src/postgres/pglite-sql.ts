@@ -32,9 +32,19 @@
  * with `UNSAFE_TRANSACTION` before it runs, also when the `BEGIN` or `START TRANSACTION` follows comments or other
  * statements of the same text; and the session is never handed on inside a transaction: when a top-level statement
  * leaves one open (whatever its text), it is rolled back and the statement refused, and a transaction still open when a
- * reservation is released (or a `begin` ends) is rolled back. Every statement also takes PGlite's own locks, as
- * PGlite's `query` and `exec` do: none runs while a transaction of PGlite's `transaction()` (used on the same database
- * outside these clients) is open, and none is taken for the holder's own while one is.
+ * reservation is released (or a `begin` ends) is rolled back.
+ *
+ * What holds the session — a statement, a `begin` transaction, a reservation — also holds PGlite's transaction lock (the
+ * lock PGlite's `transaction()` holds for its whole callback and its `query` and `exec` take while they run) from when it
+ * gets the session until it hands it on, and runs its own statements through PGlite's protocol under PGlite's statement
+ * lock only, as PGlite's `transaction()` runs the statements of its callback. So a transaction of PGlite's
+ * `transaction()`, or a `query` or `exec` on the same database outside these clients, waits until the holder has handed
+ * the session on (and a holder waits for them): neither runs inside the other's transaction, sees its uncommitted rows
+ * or commits them. The same rule makes it wrong to call PGlite's `query`, `exec` or `transaction()` while the session is
+ * held by the caller's own transaction or reservation, or to await a statement of these clients inside a callback of
+ * PGlite's `transaction()`: each waits for the other.
+ * {@link pgliteBlobQuery} runs a `COPY` with a file (PGlite's `blob` option) on a client, a transaction handle or a
+ * reserved handle instead.
  * Inside a `begin` callback every statement must go through the transaction handle: a statement on the outer client
  * waits for the session the transaction holds. Such a waiting statement fails with `PGLITE_SESSION_DEADLOCK` once the
  * transaction (or reservation) holding the session has run no statement for `deadlockTimeoutMs`, instead of waiting
@@ -49,6 +59,7 @@
  * accepts by configuration; a `durable` client keeps the PostgreSQL rule, so `fsync` must be on.
  */
 import type { PGliteOptions } from "@electric-sql/pglite";
+import type { ISql } from "postgres";
 import type { UmbraDBSql } from "./client.js";
 import type { DurabilityMode } from "./durability-probe.js";
 import { DEFAULT_SCHEMA, assertValidSchemaName } from "./schema-name.js";
@@ -89,14 +100,22 @@ export interface PgliteDatabase {
   exec(query: string, options?: PgliteQueryOptions): Promise<PgliteResults[]>;
   /** Runs `fn` holding the lock PGlite's `transaction()` holds for its whole callback and `query` and `exec` hold while
    *  they run (PGlite's `_runExclusiveTransaction`, declared on its database classes): no transaction of PGlite's
-   *  `transaction()` is open while `fn` runs. */
+   *  `transaction()`, and no `query` or `exec`, runs while `fn` runs. Each holder of the session holds it for its whole
+   *  life. */
   _runExclusiveTransaction<T>(fn: () => Promise<T>): Promise<T>;
   /** Runs `fn` with no other statement of the database running beside it (PGlite's `runExclusive`: the lock each
-   *  statement holds; it does not wait for a transaction of PGlite's `transaction()`, see {@link _runExclusiveTransaction}). */
+   *  statement holds; it does not take the lock of {@link _runExclusiveTransaction}). Each statement of the client runs
+   *  in it. */
   runExclusive<T>(fn: () => Promise<T>): Promise<T>;
   /** Sends one frontend protocol message and gives the backend's messages; an error the backend sends is thrown
    *  (PGlite's `execProtocolStream`). Called inside {@link runExclusive} only. */
   execProtocolStream(message: Uint8Array, options?: { syncToFs?: boolean }): Promise<readonly PgliteBackendMessage[]>;
+  /** Sets the file a `COPY … FROM '/dev/blob'` reads (none: `undefined`) (PGlite's `_handleBlob`). */
+  _handleBlob(blob?: Blob): Promise<void>;
+  /** Forgets the file of {@link _handleBlob} (PGlite's `_cleanupBlob`). */
+  _cleanupBlob(): Promise<void>;
+  /** The file the last `COPY … TO '/dev/blob'` wrote, if any (PGlite's `_getWrittenBlob`). */
+  _getWrittenBlob(): Promise<Blob | undefined>;
   /** Writes the database's changes to its file system (PGlite's `syncToFs`). */
   syncToFs(): Promise<void>;
   /** The database's own result parsers by type oid, array types included (PGlite's `parsers`). */
@@ -431,57 +450,62 @@ interface SimpleStatement {
   readonly describesRows: boolean;
 }
 
-/** PGlite's frontend message serializer (its `protocol.serialize`), loaded with PGlite's module when first needed. */
-let serializer: Promise<{ query(text: string): Uint8Array; sync(): Uint8Array }> | undefined;
-const frontend = (): Promise<{ query(text: string): Uint8Array; sync(): Uint8Array }> =>
-  (serializer ??= import("@electric-sql/pglite").then((m) => m.protocol.serialize));
+/** PGlite's frontend message serializer (`protocol.serialize`) and result reader (`parse`), loaded with PGlite's module
+ *  when first needed. */
+interface PgliteWire {
+  query(text: string): Uint8Array;
+  sync(): Uint8Array;
+  parse(statement: { text: string; types?: number[] }): Uint8Array;
+  describe(target: { type: "S" | "P" }): Uint8Array;
+  bind(values: { values: unknown[] }): Uint8Array;
+  execute(): Uint8Array;
+  parseResults(messages: readonly PgliteBackendMessage[], parsers: Readonly<Record<number, PgliteParser>>, options: PgliteQueryOptions, blob: Blob | undefined): PgliteResults[];
+  parameterTypes(messages: readonly PgliteBackendMessage[]): number[];
+}
+let wire: Promise<PgliteWire> | undefined;
+const pgliteWire = (): Promise<PgliteWire> =>
+  (wire ??= import("@electric-sql/pglite").then(({ protocol: { serialize }, parse }) => ({
+    query: (text) => serialize.query(text),
+    sync: () => serialize.sync(),
+    parse: (statement) => serialize.parse(statement),
+    describe: (target) => serialize.describe(target),
+    bind: (values) => serialize.bind(values as Parameters<typeof serialize.bind>[0]),
+    execute: () => serialize.execute({}),
+    parseResults: (messages, parsers, options, blob) =>
+      parse.parseResults(messages as Parameters<typeof parse.parseResults>[0], parsers as never, options as never, blob) as PgliteResults[],
+    parameterTypes: (messages) => parse.parseDescribeStatementResults(messages as Parameters<typeof parse.parseDescribeStatementResults>[0]),
+  })));
 
-/** What a text run with the simple protocol gave: its statements, and whether it left a transaction block open, which
- *  was rolled back (when the run was asked to close one). */
-interface SimpleRun {
-  statements: SimpleStatement[];
-  rolledBack: boolean;
+/** A server error of `text` carries the statement and its parameters, as PGlite's `query` and `exec` give them. */
+function withStatement(error: unknown, text: string, params: readonly unknown[] | undefined, options?: PgliteQueryOptions): unknown {
+  if (isServerError(error)) Object.assign(error, { query: text, params, queryOptions: options });
+  return error;
 }
 
-/** Database errors of texts that also left a transaction block open, which their run rolled back. */
-const ROLLED_BACK = new WeakSet<object>();
-
 /**
- * Runs `text` with the simple protocol as PGlite's `exec` runs it — the same `Query` message (PGlite's serializer), with
- * the same two locks (no transaction of PGlite's `transaction()` open, no other statement beside it), then a `Sync`,
- * then (when it succeeded) the file system written — and reads the backend's messages itself, so that each statement
- * keeps whether it describes rows. Values are parsed by `parsers`, then the database's own parsers, as `exec` parses
- * them. A database error carries the statement text (`query`), as `exec` gives it, and is thrown from inside the run
- * (a session monitor counts it). With `closeTransaction`, a transaction block the text left open is rolled back before
- * the locks are released, so no other statement runs in it (a database error of such a text is in {@link ROLLED_BACK}).
+ * Runs `text` with the simple protocol as PGlite's `exec` runs it — the same `Query` message (PGlite's serializer), under
+ * PGlite's statement lock (the holder running it holds PGlite's transaction lock), then a `Sync`, then (when it
+ * succeeded) the file system written and any file a `COPY … TO '/dev/blob'` wrote dropped — and reads the backend's
+ * messages itself, so that each statement keeps whether it describes rows. Values are parsed by `parsers`, then the
+ * database's own parsers, as `exec` parses them. A database error carries the statement text (`query`), as `exec` gives
+ * it, and is thrown from inside the run (a session monitor counts it).
  */
-async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Record<number, PgliteParser>>, closeTransaction: boolean): Promise<SimpleRun> {
-  const serialize = await frontend();
-  const send = async (body: string): Promise<readonly PgliteBackendMessage[]> => {
-    try {
-      return await db.execProtocolStream(serialize.query(body), { syncToFs: false });
-    } finally {
-      await db.execProtocolStream(serialize.sync(), { syncToFs: false });
-    }
-  };
-  return db._runExclusiveTransaction(() => db.runExclusive(async (): Promise<SimpleRun> => {
+async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Record<number, PgliteParser>>): Promise<SimpleStatement[]> {
+  const w = await pgliteWire();
+  return db.runExclusive(async (): Promise<SimpleStatement[]> => {
     if (db.closed) throw connectionClosed();
-    let messages: readonly PgliteBackendMessage[] = [];
-    let failure: { error: unknown } | undefined;
+    await db._handleBlob(undefined);
+    let messages: readonly PgliteBackendMessage[];
     try {
-      messages = await send(text);
+      messages = await db.execProtocolStream(w.query(text), { syncToFs: false });
     } catch (error) {
-      if (!isServerError(error)) throw error;
-      Object.assign(error, { query: text, params: undefined });
-      failure = { error };
+      throw withStatement(error, text, undefined);
+    } finally {
+      await db.execProtocolStream(w.sync(), { syncToFs: false });
     }
-    const rolledBack = closeTransaction && db.isInTransaction?.() === true;
-    if (rolledBack) await send("rollback");
-    if (failure === undefined || rolledBack) await db.syncToFs();
-    if (failure !== undefined) {
-      if (rolledBack) ROLLED_BACK.add(failure.error as object);
-      throw failure.error;
-    }
+    await db._cleanupBlob();
+    await db.syncToFs();
+    await db._getWrittenBlob();
     const out: SimpleStatement[] = [];
     let fields: Array<{ name: string; dataTypeID: number }> = [];
     let rows: Array<Record<string, unknown>> = [];
@@ -506,8 +530,48 @@ async function execSimple(db: PgliteDatabase, text: string, parsers: Readonly<Re
         describesRows = false;
       }
     }
-    return { statements: out, rolledBack };
-  }));
+    return out;
+  });
+}
+
+/** The options of a statement with parameters: as PGlite's `query` takes them, and a file for `COPY … '/dev/blob'`. */
+interface ExtendedOptions extends PgliteQueryOptions {
+  blob?: Blob;
+}
+
+/**
+ * Runs `text` with the extended protocol exactly as PGlite's `query` runs it — `Parse`, `Describe` (the parameters'
+ * types), `Bind` with each value serialized for its type (`options.serializers`, else its text), `Describe`, `Execute`,
+ * then `Sync`; the file system written; the result read by PGlite's own reader (`parse.parseResults`) — under PGlite's
+ * statement lock only: the holder running it holds PGlite's transaction lock. `options.blob` is what a `COPY … FROM
+ * '/dev/blob'` reads; the result's `blob` is what a `COPY … TO '/dev/blob'` wrote.
+ */
+async function execExtended(db: PgliteDatabase, text: string, params: readonly unknown[], options: ExtendedOptions): Promise<PgliteResults & { blob?: Blob }> {
+  const w = await pgliteWire();
+  return db.runExclusive(async () => {
+    if (db.closed) throw connectionClosed();
+    await db._handleBlob(options.blob);
+    const send = (message: Uint8Array): Promise<readonly PgliteBackendMessage[]> => db.execProtocolStream(message, { syncToFs: false });
+    const messages: PgliteBackendMessage[] = [];
+    try {
+      messages.push(...(await send(w.parse({ text, ...(options.paramTypes === undefined ? {} : { types: options.paramTypes }) }))));
+      const types = w.parameterTypes(await send(w.describe({ type: "S" })));
+      const values = params.map((v, i) => {
+        if (v === null || v === undefined) return null;
+        const serialize = options.serializers?.[types[i]!];
+        return serialize !== undefined ? serialize(v) : String(v);
+      });
+      messages.push(...(await send(w.bind({ values }))), ...(await send(w.describe({ type: "P" }))), ...(await send(w.execute())));
+    } catch (error) {
+      throw withStatement(error, text, params as unknown[], options);
+    } finally {
+      messages.push(...(await send(w.sync())));
+    }
+    await db._cleanupBlob();
+    await db.syncToFs();
+    const blob = await db._getWrittenBlob();
+    return w.parseResults(messages, db.parsers, options, blob)[0]!;
+  });
 }
 
 /**
@@ -739,6 +803,8 @@ class Holder {
   done = false;
   /** A statement may have left the session's `search_path` other than the client's schema. */
   searchPathTouched = false;
+  /** Lets go of PGlite's transaction lock, which the holder holds for its whole life ({@link acquireHolder}). */
+  releasePglite: (() => void) | undefined;
   private tail: Promise<unknown> = Promise.resolve();
 
   constructor(readonly kind: HolderKind, private readonly lock: SessionLock) {}
@@ -888,14 +954,14 @@ function sessionOf(db: PgliteDatabase): Session {
 /** Loads the array types once per session (postgres.js does it once per connection). Runs inside the lock. */
 async function loadArrayTypes(session: Session): Promise<void> {
   session.arrayTypes ??= (async () => {
-    const res = await session.db.query(`
+    const res = await execExtended(session.db, `
       select b.oid, b.typarray
       from pg_catalog.pg_type a
       left join pg_catalog.pg_type b on b.oid = a.typelem
       where a.typcategory = 'A'
       group by b.oid, b.typarray
       order by b.oid
-    `);
+    `, [], {});
     for (const row of res.rows as Array<{ oid: number | null; typarray: number | null }>) {
       if (row.oid === null || row.typarray === null) continue;
       session.arrayOf[row.oid] = row.typarray;
@@ -1039,7 +1105,7 @@ async function applySearchPath(state: ClientState): Promise<void> {
   if (session.searchPath === state.schema) return;
   session.searchPath = undefined;
   try {
-    await session.db.query(`select set_config('search_path', '${state.schema.replace(/'/g, "''")}', false)`);
+    await execExtended(session.db, `select set_config('search_path', '${state.schema.replace(/'/g, "''")}', false)`, [], {});
   } catch (error) {
     throw databaseError(state, error);
   }
@@ -1059,34 +1125,20 @@ async function runStatement(state: ClientState, holder: Holder, q: PgliteQuery, 
   state.debug?.(state.id, compiled.text, compiled.params, compiled.types);
   if (topLevel && startsTransactionBlock(compiled.text)) throw unsafeTransaction();
   let res: PgliteResults | undefined;
-  let run: SimpleRun | undefined;
-  let rolledBack = false;
+  let all: SimpleStatement[] | undefined;
   try {
-    if (q.simple) {
-      // A top-level text that leaves a transaction block open has it rolled back inside the run (see execSimple).
-      run = await execSimple(session.db, compiled.text, state.parsers, topLevel);
-    } else {
-      res = await session.db.query(compiled.text, compiled.params, {
-        paramTypes: compiled.types,
-        serializers: session.serializers,
-        parsers: state.parsers,
-      });
-    }
+    if (q.simple) all = await execSimple(session.db, compiled.text, state.parsers);
+    else res = await execExtended(session.db, compiled.text, compiled.params, { paramTypes: compiled.types, serializers: session.serializers, parsers: state.parsers });
   } catch (error) {
-    if (typeof error !== "object" || error === null || !ROLLED_BACK.has(error)) throw databaseError(state, error);
-    rolledBack = true;
+    throw databaseError(state, error);
   } finally {
     if (MENTIONS_SEARCH_PATH.test(compiled.text)) {
       session.searchPath = undefined;
       holder.searchPathTouched = true;
     }
   }
-  if (rolledBack || run?.rolledBack === true) {
-    holder.searchPathTouched = true;
-    throw unsafeTransaction();
-  }
   if (RESETS_SEARCH_PATH.test(compiled.text)) await applySearchPath(state);
-  return run !== undefined ? simpleResult(run.statements) : toResult(res);
+  return all !== undefined ? simpleResult(all) : toResult(res);
 }
 
 function unsafeTransaction(): PgliteSqlError {
@@ -1094,32 +1146,44 @@ function unsafeTransaction(): PgliteSqlError {
 }
 
 /**
- * Rolls back a transaction left open on the session, if any; whether there was one. Runs inside the holder's turn. The
- * session is read again under PGlite's locks before anything is rolled back: a transaction of PGlite's `transaction()`
- * that began after the holder's statement is waited for, never taken for one the holder left open.
+ * Rolls back a transaction left open on the session, if any; whether there was one. Runs inside the holder's turn: the
+ * holder holds PGlite's transaction lock, so an open transaction can only be the holder's own.
  */
 async function rollBackOpenTransaction(state: ClientState, holder: Holder): Promise<boolean> {
   const { db } = state.session;
   if (db.closed || db.isInTransaction?.() !== true) return false;
-  const serialize = await frontend();
+  holder.searchPathTouched = true;
   try {
-    return await db._runExclusiveTransaction(() => db.runExclusive(async () => {
-      if (db.closed || db.isInTransaction?.() !== true) return false;
-      holder.searchPathTouched = true;
-      try {
-        await db.execProtocolStream(serialize.query("rollback"), { syncToFs: false });
-      } finally {
-        await db.execProtocolStream(serialize.sync(), { syncToFs: false });
-      }
-      await db.syncToFs();
-      return true;
-    }));
+    await execSimple(db, "rollback", state.parsers);
   } catch (error) {
     throw databaseError(state, error);
   }
+  return true;
 }
 
-/** Hands the session on: first rolls back any transaction its holder left open, so no other statement runs inside it. */
+/**
+ * The session for one statement, a transaction or a reservation: the clients' lock, then PGlite's transaction lock,
+ * held until {@link releaseHolder}, so no transaction of PGlite's `transaction()` and no `query` or `exec` on the
+ * database runs inside the holder's work, nor the holder's statements inside theirs.
+ */
+async function acquireHolder(state: ClientState, kind: HolderKind): Promise<Holder> {
+  const holder = await state.session.lock.acquire(kind, state.deadlockTimeoutMs);
+  try {
+    await holder.run(() => new Promise<void>((held, failed) => {
+      state.session.db._runExclusiveTransaction(() => new Promise<void>((release) => {
+        holder.releasePglite = release;
+        held();
+      })).catch(failed);
+    }));
+  } catch (error) {
+    state.session.lock.release(holder);
+    throw databaseError(state, error);
+  }
+  return holder;
+}
+
+/** Hands the session on: first rolls back any transaction its holder left open, so no other statement runs inside it;
+ *  then lets go of PGlite's transaction lock and of the clients' lock. */
 async function releaseHolder(state: ClientState, holder: Holder): Promise<void> {
   try {
     await holder.run(() => rollBackOpenTransaction(state, holder));
@@ -1127,8 +1191,47 @@ async function releaseHolder(state: ClientState, holder: Holder): Promise<void> 
     // The database failed or closed: there is no session left to hand on inside a transaction.
   } finally {
     if (holder.searchPathTouched) state.session.searchPath = undefined;
+    holder.releasePglite?.();
+    holder.releasePglite = undefined;
     state.session.lock.release(holder);
   }
+}
+
+/** The client and the holder behind each handle ({@link pgliteBlobQuery}): a client's own has no holder. */
+const HANDLES = new WeakMap<object, { state: ClientState; holder: Holder | undefined; ended: () => boolean }>();
+
+/**
+ * Runs `text` (a `COPY … FROM '/dev/blob'` or `COPY … TO '/dev/blob'`) on the session of `sql` — a client (a statement
+ * of its own), a transaction handle or a reserved handle (in its turn) — as PGlite's `query` with its `blob` option:
+ * `blob` is the file a `COPY … FROM` reads; the result's `blob` is the file a `COPY … TO` wrote. postgres.js has no such
+ * call; it is how a store's rows travel as files (the browser engine's snapshots).
+ */
+export async function pgliteBlobQuery(sql: ISql<{ bigint: bigint }>, text: string, blob?: Blob): Promise<{ affectedRows: number; blob: Blob | undefined }> {
+  const handle = HANDLES.get(sql);
+  if (handle === undefined) throw new PgliteSqlError("NOT_SUPPORTED", "pgliteBlobQuery needs a handle of the PGlite client");
+  const { state } = handle;
+  if (handle.ended()) throw new PgliteSqlError("TRANSACTION_ENDED", "the handle has ended; it cannot run statements");
+  const run = (holder: Holder) => holder.run(async () => {
+    if (state.session.db.closed) throw connectionClosed();
+    state.debug?.(state.id, text, [], []);
+    try {
+      const res = await execExtended(state.session.db, text, [], { parsers: state.parsers, ...(blob === undefined ? {} : { blob }) });
+      return { affectedRows: res.affectedRows ?? 0, blob: res.blob };
+    } catch (error) {
+      throw databaseError(state, error);
+    }
+  });
+  if (handle.holder !== undefined) return run(handle.holder);
+  if (state.ended) throw connectionEnded();
+  return track(state, (async () => {
+    const holder = await acquireHolder(state, "statement");
+    try {
+      await holder.run(() => applySearchPath(state));
+      return await run(holder);
+    } finally {
+      await releaseHolder(state, holder);
+    }
+  })());
 }
 
 type SqlFunction = ((...args: any[]) => any) & Record<string, unknown>;
@@ -1179,6 +1282,7 @@ async function transactionScope(
     holder.run(() => runStatement(state, holder, q, false)).then(q.resolve, q.reject);
   };
   const tx = makeSql(state, handler);
+  HANDLES.set(tx, { state, holder, ended: () => holder.done });
   tx.savepoint = function savepoint(this: unknown, label: unknown, body?: (tx: SqlFunction) => unknown): Promise<unknown> {
     if (label !== null && typeof label === "object" && Array.isArray((label as { raw?: unknown }).raw)) {
       const args = arguments;
@@ -1217,7 +1321,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
       return;
     }
     const op = (async () => {
-      const holder = await state.session.lock.acquire("statement", state.deadlockTimeoutMs);
+      const holder = await acquireHolder(state, "statement");
       try {
         return await holder.run(async () => {
           await applySearchPath(state);
@@ -1228,9 +1332,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
           } catch (error) {
             failure = { error };
           }
-          // A text (simple protocol) was checked inside its run, under PGlite's locks; a statement with parameters,
-          // which cannot start a transaction block unless its text says so, is checked here.
-          if (!q.simple && (await rollBackOpenTransaction(state, holder))) throw unsafeTransaction();
+          if (await rollBackOpenTransaction(state, holder)) throw unsafeTransaction();
           if (failure !== undefined) throw failure.error;
           return result;
         });
@@ -1241,6 +1343,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
     track(state, op).then(q.resolve, q.reject);
   };
   const sql = makeSql(state, topLevel);
+  HANDLES.set(sql, { state, holder: undefined, ended: () => state.ended });
 
   sql.begin = (mode: unknown, fn?: (tx: SqlFunction) => unknown): Promise<unknown> => {
     if (fn === undefined) {
@@ -1250,7 +1353,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
     if (state.ended) return Promise.reject(connectionEnded());
     const body = fn;
     const op = (async () => {
-      const holder = await state.session.lock.acquire("transaction", state.deadlockTimeoutMs);
+      const holder = await acquireHolder(state, "transaction");
       try {
         await holder.run(() => applySearchPath(state));
         const start = new PgliteQuery([`begin ${String(mode).replace(/[^a-z ]/gi, "")}`], [], () => undefined, true);
@@ -1266,7 +1369,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
 
   sql.reserve = async (): Promise<SqlFunction> => {
     if (state.ended) throw connectionEnded();
-    const holder = await state.session.lock.acquire("reservation", state.deadlockTimeoutMs);
+    const holder = await acquireHolder(state, "reservation");
     try {
       await holder.run(() => applySearchPath(state));
     } catch (error) {
@@ -1283,6 +1386,7 @@ function makeClient(state: ClientState, db: PgliteDatabase): UmbraDBSql {
       }
       holder.run(() => runStatement(state, holder, q, false)).then(q.resolve, q.reject);
     });
+    HANDLES.set(reserved, { state, holder, ended: () => released });
     reserved.release = (): void => {
       if (released) return;
       released = true;
