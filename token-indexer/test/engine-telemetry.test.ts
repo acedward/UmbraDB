@@ -598,7 +598,7 @@ describe("system snapshot schema and redaction", () => {
       return v;
     };
     const leaked = (text: string): string[] => words.filter((w) => new RegExp(`\\b${w}\\b`, "iu").test(text));
-    // The finding's own shape (three encodings) first, then one to four for every kind of value.
+    // A seed phrase in three encodings first, then one to four encodings of every kind of value.
     expect(leaked(redactText(encoded({ seed: phrase }, 2)))).toEqual([]);
     for (let times = 1; times <= 4; times++) {
       for (const [value, want] of [
@@ -795,7 +795,7 @@ describe("system snapshot schema and redaction", () => {
       depth++;
     }
     expect(depth).toBeGreaterThanOrEqual(9); // up to 8 encodings fit in 4,096 characters here
-    // The finding's own shape: eight encodings, 127 backslashes before the key's quotes.
+    // Eight encodings: 127 backslashes before the key's quotes.
     let eight = JSON.stringify({ token: secret });
     for (let i = 0; i < 7; i++) eight = JSON.stringify(eight);
     expect(redactText(eight)).not.toContain(secret);
