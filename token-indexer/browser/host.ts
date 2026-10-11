@@ -116,7 +116,7 @@ import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOpt
 import { rangeTables } from "../engine/range-tables.ts";
 import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
 import { checkCapabilities } from "./capabilities.ts";
-import { JSONRPC_CHAIN_ID, JSONRPC_MAX_REQUESTS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
+import { JSONRPC_CHAIN_ID, JSONRPC_MAX_REQUESTS, JSONRPC_START_TIMEOUT_MS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
 import { NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
 import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
 import { registerReadOnlyMethods } from "../../evm-rpc/read-only.js";
@@ -208,7 +208,13 @@ export interface WorkerHostOptions {
   /** The JSON RPC module: the client version it reports (the worker gives the build's; default
    *  `jsonRpcClientVersion("unknown")`), its chain ID (the worker gives the build's; default the module's, 2400) and how
    *  it starts (default {@link startJsonRpcModule}). */
-  jsonRpc?: { clientVersion?: string; chainId?: bigint; start?: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule> };
+  jsonRpc?: {
+    clientVersion?: string;
+    chainId?: bigint;
+    start?: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule>;
+    /** The deadline of the module's start. Default {@link JSONRPC_START_TIMEOUT_MS}. */
+    startTimeoutMs?: number;
+  };
   clock?: EngineClock;
   /** Default: {@link yieldingScheduler}. */
   schedule?: EngineScheduler;
@@ -277,6 +283,28 @@ class StoreProblem extends Error {
 type StoreOpening = "open" | "reset";
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** The refusal of a call that was waiting for the JSON RPC module's start when the module was switched off. */
+const SWITCHED_OFF = new Error("the JSON RPC module was switched off");
+
+/** `p`, unless `signal` ends first: then rejects with {@link SWITCHED_OFF} at once (no listener left behind). */
+function unlessSwitchedOff<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(SWITCHED_OFF);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(SWITCHED_OFF);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
 
 /** JSON with every object's keys sorted, for comparing values that may list their keys in another order. */
 function canonicalJson(v: unknown): string {
@@ -1076,8 +1104,14 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let jsonRpc: Promise<JsonRpcModule> | undefined;
   /** The module that answers now (its start has ended), for its last indexer problem. */
   let jsonRpcOpen: JsonRpcModule | undefined;
-  /** Modules being stopped (each ends its requests, then closes its database); `close` waits for them. */
+  /** Modules being stopped (each ends its requests, then closes its database); `close` waits for them, but for those
+   *  whose start had not ended when they were stopped ({@link jsonRpcStartPending}). */
   const jsonRpcStopping = new Set<Promise<void>>();
+  const jsonRpcStartPending = new Set<Promise<void>>();
+  /** The starts that have ended (a module, or a failure). */
+  const jsonRpcSettled = new WeakSet<Promise<JsonRpcModule>>();
+  /** Aborted when the module is switched off: the calls waiting for its start are answered `module-off`. */
+  let jsonRpcOff: AbortController | undefined;
   const jsonRpcEnabled = (): boolean => modules.jsonrpc ?? true;
   /** The module's calls since the worker started (`jsonrpc-state`). */
   const jsonRpcCalls = { answered: 0, inFlight: 0, refusedBusy: 0, refusedOff: 0, failed: 0 };
@@ -1100,7 +1134,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const t = monotonic();
     const closing = [...jsonRpcStopping];
     const pacer = pacerFor(opts.indexerUrl);
-    const started = Promise.all(closing).then(() => (opts.jsonRpc?.start ?? startJsonRpcModule)({
+    const raw = Promise.all(closing).then(() => (opts.jsonRpc?.start ?? startJsonRpcModule)({
       indexerUrl: opts.indexerUrl,
       clientVersion: opts.jsonRpc?.clientVersion ?? jsonRpcClientVersion("unknown"),
       ...(opts.jsonRpc?.chainId === undefined ? {} : { chainId: opts.jsonRpc.chainId }),
@@ -1108,7 +1142,28 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       ...(pacer === undefined ? {} : { pacer }),
       now: () => clock.now(),
     }));
+    // The start has a deadline: past it the start counts as failed (the next call starts the module again), and a
+    // module that comes later is closed at once.
+    const limit = opts.jsonRpc?.startTimeoutMs ?? JSONRPC_START_TIMEOUT_MS;
+    const started = new Promise<JsonRpcModule>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`it did not start within ${limit / 1000} s`));
+        raw.then((m) => m.close().catch(() => {}), () => {});
+      }, limit);
+      raw.then(
+        (m) => {
+          clearTimeout(timer);
+          resolve(m);
+        },
+        (e: unknown) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      );
+    });
     jsonRpc = started;
+    jsonRpcOff = new AbortController();
+    void started.then(() => jsonRpcSettled.add(started), () => jsonRpcSettled.add(started));
     started.then(
       (m) => {
         if (jsonRpc === started) jsonRpcOpen = m;
@@ -1129,6 +1184,10 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const started = jsonRpc;
     if (started === undefined) return;
     jsonRpc = undefined;
+    // The calls still waiting for the start are answered `module-off` now.
+    jsonRpcOff?.abort();
+    jsonRpcOff = undefined;
+    const pending = !jsonRpcSettled.has(started);
     jsonRpcPastProblem = jsonRpcOpen?.lastIndexerProblem() ?? jsonRpcPastProblem;
     jsonRpcOpen = undefined;
     const stopping = (async () => {
@@ -1146,7 +1205,13 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
       }
     })();
     jsonRpcStopping.add(stopping);
-    void stopping.finally(() => jsonRpcStopping.delete(stopping));
+    // A start that has not ended: the next start still waits for it (one module at a time, until its deadline), but
+    // the worker's close does not.
+    if (pending) jsonRpcStartPending.add(stopping);
+    void stopping.finally(() => {
+      jsonRpcStopping.delete(stopping);
+      jsonRpcStartPending.delete(stopping);
+    });
   }
 
   /** A `jsonrpc` request: the module's answer to `body`, once the boot is ready; refused while the module is off, when
@@ -1167,9 +1232,15 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         throw new HostError("module-off", "the JSON RPC module is off: switch it on in the Modules section to call its methods");
       }
       let m: JsonRpcModule;
+      const run = jsonRpcRun();
+      const off = jsonRpcOff?.signal;
       try {
-        m = await jsonRpcRun();
+        m = await (off === undefined ? run : unlessSwitchedOff(run, off));
       } catch (e) {
+        if (e === SWITCHED_OFF) {
+          jsonRpcCalls.refusedOff++;
+          throw new HostError("module-off", "the JSON RPC module was switched off before this request was answered");
+        }
         jsonRpcCalls.failed++;
         throw new HostError("internal", `the JSON RPC module could not start: ${messageOf(e)}`);
       }
@@ -1479,7 +1550,9 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         closed = true;
       });
       stopJsonRpc();
-      await Promise.all([...jsonRpcStopping]);
+      // A module that has started is closed; a start that has not ended is not waited for (its module is closed when
+      // it comes).
+      await Promise.all([...jsonRpcStopping].filter((s) => !jsonRpcStartPending.has(s)));
       await boot();
       if (store !== undefined) await store.close();
     },

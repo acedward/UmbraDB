@@ -49,6 +49,7 @@ PostgreSQL.
 | `zod-jitless.ts` | Turns zod's JIT (`new Function`) off before any schema exists; the first module of the worker and of every page |
 | `index.html`, `explorer-page.ts`, `shell.ts`, `explorer.css` | The main page (see [Main page](#main-page)): the header's tabs (Overview, Token Indexer, JSON RPC, Database) and the system status link, the tab in the URL |
 | `engine-panel.ts`, `panel-model.ts` | The overview's indexer section: health, heights, the finalized tip and the lag, blocks per second, uptime, the storage line, and the engine's controls |
+| `explain.ts` | An explanation on demand: a control (underlined text) opening a box by hover, click, tap, Enter or Space, kept open and updated in place across refreshes (the storage line, the Database tab's cut values) |
 | `modules.ts`, `modules-view.ts` | The overview's Modules section: the indexer's modules, and the Token Indexer and JSON RPC switches (`module`) |
 | `explorer-host.ts`, `explorer-transport.ts` | The token explorer of `GET /ui` in the Token Indexer tab, reading the API through the engine |
 | `database-view.ts`, `database-model.ts`, `store-tables.ts` | The Database tab: the page, its pure view of the engine's answers, and the worker's reads of the store's tables (`tables`, `rows`) |
@@ -85,10 +86,13 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
 - **The storage line** is one short line: the store's own size (an OPFS walk), the quota, the usage at which the sync
   pauses and whether the site's storage is persistent, e.g. "42.3 MB · quota 11.8 GB · pauses at 10.6 GB · not
   persistent" ("· paused" while the sync is paused; the page's own `navigator.storage` figures until the engine has a
-  reading). Its tooltip explains it: the usage the browser counts against the quota (larger than the store while it
-  is open, because Chrome reserves space for the open store's files), what the pause does, what "not persistent"
-  means — and that the browser refused to keep the site's storage, or that asking failed, when it did — and the
-  pause's reason.
+  reading). The line is a control (dotted underline) whose explanation opens in a box under the figures on demand —
+  the mouse resting on it, a click or a tap, Enter or Space; a second click, Escape or a click elsewhere closes it —
+  and stays open, updated in place, across the overview's refreshes (`explain.ts`; no native tooltip, which opens only
+  after a still hover and never on a click, a tap or the keyboard). It explains the usage the browser counts against
+  the quota (larger than the store while it is open, because Chrome reserves space for the open store's files), what
+  the pause does, what "not persistent" means — and that the browser refused to keep the site's storage, or that
+  asking failed, when it did — and the pause's reason.
 - **Controls**, each one request (from a follower the leader performs it): **start** (the saved configuration),
   **stop**, **change range** (a start, `tip` or a height, and an optional end, checked before it is sent), **reset**,
   **export snapshot**, **import snapshot** (a file). A range change, a reset or an import on a store that holds blocks
@@ -137,7 +141,9 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
   primary key (…)" for the others (`chain_blobs` by hash, `watermarks`, `mip0018_fields`, …); a table without one in
   physical order, the last written row first — 25 rows a page, "newer" and "older" to page, up to 10,000 rows deep. Values are cut in the worker's SQL: a
   `bytea` value as the hex of its first 16 bytes and its length (the cell shows 8 of them), any other value as its text
-  form's first 256 characters and its length (the cell shows 48); what was read is in the cell's tooltip. The table is
+  form's first 256 characters and its length (the cell shows 48); a cut cell is a control that opens what was read
+  in a box under the table on demand, as the storage line's explanation does; each column shows its type under its
+  name. The table is
   named to the engine by the schema and name it listed, and the engine looks both up in the store's catalog before any
   statement names them: anything else is refused (`bad-request`, shown under the table). Each read is an autocommit
   statement of its own (the catalog, then the page), so the engine's block transactions take their turns between them.
@@ -163,7 +169,8 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
     endpoint the worker as a whole starts one request there every 250 ms, whichever part sends it, unless a `start`
     sets `sync.minIntervalMs`: that explicit spacing is the sync's own, outside the queue), and starts its 20 s
     timeout, Node's, only then; at most 8 of the module's indexer requests wait in the queue or are in flight at once
-    (the others wait in the module), so a burst of calls never fills the queue ahead of the sync; a `429` to the module
+    (in flight until the answer's body is read; the others wait in the module), so a burst of calls never fills the
+    queue ahead of the sync; a `429` to the module
     holds the queue for its `Retry-After` (1 s without one, 60 s at most) and is answered `-32603`, as Node answers it;
     a caller that stops leaves its place at once: the sync's waits end with its run (a stop, a range, a reset, an
     import), the module's when it is switched off or closed, with the requests in flight). A method that
@@ -171,7 +178,9 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
     `npm run evm-rpc` does.
   - *database (empty here)*: accounts from the module's `evm_rpc` database — a PGlite database in memory made by the
     module's migrations at its first request, empty here (the wallet monitor and the relayer that fill it run in
-    Node), so they answer as an empty Node deployment does.
+    Node), so they answer as an empty Node deployment does. Its start has a 60 s deadline: past it the waiting calls
+    are answered `internal` and the next call starts it again (a module that comes later is closed at once); switched
+    off meanwhile, the waiting calls are answered `module-off`, and the worker's close does not wait for the start.
   - *not implemented (-32004)*: callable; each answers `-32004` with its classification and reason.
   - *Node only*: `eth_getLogs` (the log ingest), `eth_sendRawTransaction` (the relayer), `eth_subscribe` and
     `eth_unsubscribe` (the WebSocket server), and the ERC20 views of `eth_call`: listed and described, never called.
@@ -272,7 +281,7 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
 | `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
 | `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
-| `module` | `module` (`token-indexer` or `jsonrpc`), `enabled` | status: the choice saved with the settings (`settings.modules`; a module not named is on; a module a later build added is kept in the file as it is, at most 64 ids in all: this build's first, then the newest others; settings the reader would refuse are never written), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`). `token-indexer`: a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced. `jsonrpc`: off, `jsonrpc` is refused from the answer on, the requests the module is answering end at once (`module-off`) and its database is closed; every worker reads the switch from the settings |
+| `module` | `module` (`token-indexer` or `jsonrpc`), `enabled` | status: the choice saved with the settings (`settings.modules`; a module not named is on; a module a later build added is kept in the file as it is, at most 64 ids in all: this build's first, then the newest others; settings the reader would refuse are never written), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`). `token-indexer`: a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced. `jsonrpc`: off, `jsonrpc` is refused from the answer on, the requests the module is answering or that wait for its start end at once (`module-off`) and its database is closed; every worker reads the switch from the settings |
 | `tables` | — | each schema's tables (name, kind, the table it is a partition of, estimated rows, size) and the database's size, from the catalog |
 | `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
 | `jsonrpc-state` | — | the JSON RPC module's state: `enabled`, `database` (`none`, `starting`, `open`, `closing`), `chainId`, `clientVersion`, `indexerUrl`, `methods` (`served`, `notImplemented`, `nodeOnly`), `calls` since the worker started (`answered`, `inFlight`, `refusedBusy`, `refusedOff`, `failed`), `pacing` of the indexer's origin (`origin`, `minIntervalMs`, `waiting`, `heldForMs`), `lastError` (`{ at, message }` or `null`: a failed start, an indexer request that failed or answered an HTTP error; kept when the module stops); while the store is replaced or reopened it is answered once the new one is in place, as `jsonrpc` is |
@@ -353,7 +362,7 @@ A browser profile runs one engine per store, however many tabs are open. A page 
 - **Persistent storage.** `navigator.storage.persist()` exists only in a window: every page asks for it when it loads
   (`requestPersistentStorage()` in `client.ts`; the grant is per site, so any tab's request counts; the engine page keeps
   the answer in `window.umbradbEngine.persistence`), and the worker's `storage.persisted` reports the outcome. A
-  refusal changes nothing else: the engine runs, and the overview's storage line says "not persistent", its tooltip
+  refusal changes nothing else: the engine runs, and the overview's storage line says "not persistent", its explanation
   that the browser refused to keep the site's storage (or that asking failed), so the store may be cleared when space
   runs low.
 - **Storage quota** (`quota.ts`). Before a sync batch (reading again when the last reading is 10 s old) the worker

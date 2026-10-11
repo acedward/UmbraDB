@@ -124,6 +124,8 @@ export class PacingQueue implements Pacer {
           if (at < 0) return;
           this.#waiting.splice(at, 1);
           reject(signal.reason);
+          // No one left to start: no timer is kept (it would keep a Node process up until the slot).
+          if (this.#waiting.length === 0) this.#clearTimer();
           this.#pump();
         };
         signal.addEventListener("abort", waiter.onAbort, { once: true });

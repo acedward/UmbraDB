@@ -6,11 +6,12 @@
  * - The list: each schema's tables with their kind, size and, where the catalog has an estimate, estimated rows (a
  *   store no tool has analyzed has none: the column is then left out), read when the tab is
  *   first shown and on "refresh". Picking a table (its row in the list, or the picker) reads its first page.
- * - A page: the table's columns (type in the tooltip), {@link ROWS_LIMITS}`.defaultLimit` rows by the primary key,
- *   descending (newest first for a table whose key leads with a block height), with the order in words beside them
- *   (`orderText`), "newer" and "older" to page, up to the engine's deepest offset. A `bytea` value is the hex of its first
- *   bytes with its length; a long value is cut, with its length, and what the engine sent of it is in the cell's tooltip
- *   (`database-model.ts`).
+ * - A page: the table's columns, each with its type under its name, {@link ROWS_LIMITS}`.defaultLimit` rows by the
+ *   primary key, descending (newest first for a table whose key leads with a block height), with the order in words
+ *   beside them (`orderText`), "newer" and "older" to page, up to the engine's deepest offset. A `bytea` value is the hex
+ *   of its first bytes with its length; a long value is cut, with its length, and its cell is a control: what the
+ *   engine sent of it opens under the table on demand (the mouse resting on it, a click, a tap, Enter or Space;
+ *   `explain.ts`, `database-model.ts`).
  * - The table is named to the engine by the schema and name the engine listed; the engine checks them against the
  *   store's catalog and refuses anything else, whose reason is shown.
  *
@@ -21,6 +22,7 @@ import { type EngineClient } from "./client.ts";
 import { cellText, hasEstimates, kindText, orderText, pageText, rowsEstimateText, sizeText, tableLabel, tablesSummary } from "./database-model.ts";
 import { messageOf } from "./engine-panel.ts";
 import { ROWS_LIMITS, type RowsResult, type TablesResult } from "./protocol.ts";
+import { explainControl, explanation } from "./explain.ts";
 import { dataNode, visibleText } from "./visible-text.ts";
 
 export interface DatabaseViewOptions {
@@ -114,7 +116,9 @@ export function mountDatabaseView(opts: DatabaseViewOptions): DatabaseView {
   const rowsTable = node("table");
   rowsTable.setAttribute("data-field", "db-rows.table");
   rowsWrap.append(rowsTable);
-  page.append(pageHead, pageNote, rowsWrap);
+  // A cut value's whole text (what the engine sent): one box under the table, opened by the value's cell.
+  const fullValue = explanation("db-rows-value", "db-rows.value");
+  page.append(pageHead, pageNote, rowsWrap, fullValue.box);
   root.append(page);
 
   const message = node("div", "note");
@@ -174,22 +178,38 @@ export function mountDatabaseView(opts: DatabaseViewOptions): DatabaseView {
     page.hidden = false;
     pageTitle.replaceChildren(dataNode(document, `${r.schema}.${r.table}`));
     pageNote.replaceChildren(dataNode(document, `${pageText(r)} · ${orderText(r)} · up to ${r.limit} rows a page`));
+    fullValue.clear();
     const headRow = node("tr");
     for (const c of r.columns) {
       const th = node("th");
-      th.append(dataNode(document, c.name));
-      th.title = visibleText(c.type);
+      const name = th.appendChild(node("span", "col"));
+      name.setAttribute("data-field", "db-rows.column");
+      name.append(dataNode(document, c.name));
+      const type = th.appendChild(node("span", "type"));
+      type.setAttribute("data-field", "db-rows.type");
+      type.append(dataNode(document, c.type));
       headRow.append(th);
     }
     const body = node("tbody");
     for (const values of r.rows) {
       const tr = node("tr");
-      for (const v of values) {
+      values.forEach((v, i) => {
         const { text, title, isNull } = cellText(v);
-        const td = dataCell(text, isNull ? "no" : v.kind === "bytes" ? "hex" : undefined, "db-rows.cell");
-        if (title !== null) td.title = visibleText(title);
+        const cls = isNull ? "no" : v.kind === "bytes" ? "hex" : undefined;
+        if (title === null) {
+          tr.append(dataCell(text, cls, "db-rows.cell"));
+          return;
+        }
+        // A cut value: the cell is a control that opens what the engine sent of it.
+        const td = node("td", cls);
+        td.setAttribute("data-field", "db-rows.cell");
+        const control = explainControl();
+        control.append(dataNode(document, text));
+        const column = r.columns[i]?.name ?? "";
+        fullValue.attach(control, () => `${column}: ${title}`);
+        td.append(control);
         tr.append(td);
-      }
+      });
       body.append(tr);
     }
     const thead = node("thead");

@@ -17,8 +17,9 @@
  * - **Bounds**: at most {@link JSONRPC_MAX_REQUESTS} requests are answered at once; another one is refused at once
  *   ({@link JsonRpcModuleError} `busy`), never answered with an error of the module's own. At most
  *   {@link JSONRPC_INDEXER_SLOTS} of the module's indexer requests wait for their turn in the origin's queue or are in
- *   flight at once; the others (8 requests, a batch dispatching 8 entries at a time) wait in the module, so a burst of
- *   calls never fills the queue ahead of the archive sync.
+ *   flight at once (a request is in flight until its answer's body is read); the others (8 requests, a batch
+ *   dispatching 8 entries at a time) wait in the module, so a burst of calls never fills the queue ahead of the archive
+ *   sync.
  * - **The `evm_rpc` database** is a PGlite database in memory, made by the module's own migrations
  *   (`src/postgres/migrations/evm_rpc`) when the module starts and closed when it stops. It is empty: the wallet monitor
  *   and the relayer that fill it in Node do not run here, so its methods answer as an empty Node deployment does.
@@ -45,8 +46,40 @@ export const JSONRPC_CHAIN_ID = 2400n;
 
 /** The most requests the module answers at once. */
 export const JSONRPC_MAX_REQUESTS = 8;
+/** How long the worker waits for the module's start (an in-memory PGlite, its files fetched from the site, and the
+ *  migrations: about a second) before it answers the waiting calls `internal` and starts it again at the next call. */
+export const JSONRPC_START_TIMEOUT_MS = 60_000;
 /** The most indexer requests of the module waiting for their turn in the origin's queue or in flight at once. */
 export const JSONRPC_INDEXER_SLOTS = 8;
+
+/** `body` read through, calling `done` once when it ends: read to the end, failed, or cancelled by its reader. */
+function releasingBody(body: ReadableStream<Uint8Array>, done: () => void): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let over = false;
+  const end = (): void => {
+    if (over) return;
+    over = true;
+    done();
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          end();
+          controller.close();
+        } else controller.enqueue(chunk.value);
+      } catch (e) {
+        end();
+        controller.error(e);
+      }
+    },
+    async cancel(reason) {
+      end();
+      await reader.cancel(reason).catch(() => {});
+    },
+  });
+}
 
 /** At most `n` holders at once, the others waiting in arrival order; a wait ends at once when its signal does. */
 class Slots {
@@ -174,23 +207,27 @@ export async function startJsonRpcModule(opts: JsonRpcModuleOptions): Promise<Js
   })();
   let problem: { at: number; message: string } | null = null;
   const now = opts.now ?? Date.now;
-  // A slot is taken before the turn (`beforeRequest`) and given back when the request has its answer or has failed.
+  // A slot is taken before the turn (`beforeRequest`) and given back once the request is over: its answer's body read
+  // to the end (or failed, or cancelled), or at once when it failed, or for an answer whose body is not read (an HTTP
+  // error, which the GraphQL client refuses unread: its body is cancelled).
   const slots = new Slots(JSONRPC_INDEXER_SLOTS);
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    let response: Response;
     try {
-      let response: Response;
-      try {
-        response = await base(input, { ...init, signal: init?.signal == null ? stopping.signal : AbortSignal.any([init.signal, stopping.signal]) });
-      } catch (e) {
-        if (!stopping.signal.aborted) problem = { at: now(), message: `a request to ${origin} failed: ${e instanceof Error ? e.message : String(e)}` };
-        throw e;
-      }
-      if (response.status === 429) turns.holdFor(parseRetryAfterMs(response.headers.get("retry-after")) ?? THROTTLE_HOLD_MS);
-      if (!response.ok) problem = { at: now(), message: `${origin} answered HTTP ${response.status}` };
-      return response;
-    } finally {
+      response = await base(input, { ...init, signal: init?.signal == null ? stopping.signal : AbortSignal.any([init.signal, stopping.signal]) });
+    } catch (e) {
       slots.release();
+      if (!stopping.signal.aborted) problem = { at: now(), message: `a request to ${origin} failed: ${e instanceof Error ? e.message : String(e)}` };
+      throw e;
     }
+    if (response.status === 429) turns.holdFor(parseRetryAfterMs(response.headers.get("retry-after")) ?? THROTTLE_HOLD_MS);
+    if (!response.ok) problem = { at: now(), message: `${origin} answered HTTP ${response.status}` };
+    if (!response.ok || response.body === null) {
+      slots.release();
+      if (response.body !== null) void response.body.cancel().catch(() => {});
+      return response;
+    }
+    return new Response(releasingBody(response.body, () => slots.release()), { status: response.status, statusText: response.statusText, headers: response.headers });
   }) as typeof fetch;
   const ctx: RpcContext = {
     chainId: opts.chainId ?? JSONRPC_CHAIN_ID,
