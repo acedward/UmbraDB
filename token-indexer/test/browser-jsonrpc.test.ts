@@ -17,8 +17,9 @@
  *   and the next caller moves up; closing it ends every wait.
  * - `[[browser.pacing.hold]]` — the pacing queue on a test clock: a hold lasts at most 60 s whatever an endpoint asks;
  *   a wait its caller cancels during a hold (the archive sync's `Pacer.wait` with its run's signal) leaves at once and
- *   never starts; the other callers start when the hold ends; an already-ended signal is refused at once; the last
- *   waiter cancelled leaves no timer behind.
+ *   never starts; the other callers start when the hold ends; an already-ended signal is refused at once; a timer that
+ *   fires late puts the next start the interval after that late start; the last waiter cancelled leaves no timer
+ *   behind.
  * - `[[browser.jsonrpc.burst]]` — a burst of requests whose indexer calls wait far longer than the indexer timeout for
  *   their pacing slots (8 batches of 8 at 30 ms apart, against a 200 ms timeout): every answer is Node's, every indexer
  *   request starts with a live timeout, the starts the interval apart; a request beyond the module's 8 in flight is
@@ -369,6 +370,19 @@ describe("the browser engine's JSON RPC module", () => {
     expect(q.state().heldForMs).toBe(60_000);
     // A caller whose signal has already ended is refused without waiting.
     await expect(q.wait(AbortSignal.abort(new Error("gone")))).rejects.toThrow("gone");
+    // A timer that fires late: the next start is the interval after that late start, never sooner.
+    const late = new PacingQueue({ minIntervalMs: 250, clock });
+    const startedAt: number[] = [];
+    const three = [late.admit(), late.admit(), late.admit()].map((p) => p.then(() => startedAt.push(t.now)));
+    await settle();
+    const [timerId, timer] = [...t.timers.entries()].sort((x, y) => x[1].at - y[1].at)[0]!;
+    t.timers.delete(timerId);
+    t.now = timer.at + 16;
+    timer.fn();
+    await settle();
+    await advance(1_000);
+    await Promise.all(three);
+    expect(startedAt.slice(1).map((v, i) => v - startedAt[i]!)).toEqual([266, 250]);
     // The last waiter cancelled: no timer is left behind (a Node process is not kept up by it); a later caller still
     // waits for the hold.
     const alone = new AbortController();
@@ -1202,12 +1216,14 @@ describe("the browser engine's JSON RPC module", () => {
     let throttleNext = false;
     const recorded = recordedIndexerFetch().fetch;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      // The start is when the request is made (reading its body below takes a while of its own).
+      const at = performance.now();
       const request = new Request(input, init);
       const url = new URL(request.url);
       const body = await request.text();
       // The module's queries select the block's author or look a transaction up; the sync's do neither.
       const who = url.origin === new URL(BROWSER_INDEXER_URL).origin && (body.includes("author") || body.includes("transactions(offset")) ? "jsonrpc" : "sync";
-      starts.push({ origin: url.origin, who, at: performance.now() });
+      starts.push({ origin: url.origin, who, at });
       if (who === "jsonrpc") {
         if (throttleNext) {
           throttleNext = false;

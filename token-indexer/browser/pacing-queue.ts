@@ -5,8 +5,9 @@
  * archive sync's clients wait in it (`Pacer.wait`), and the JSON RPC module (`jsonrpc-module.ts`) admits each indexer
  * request through it before the request's timeout starts, so waiting for a turn never uses up a request's time.
  *
- * - {@link PacingQueue.admit} resolves when the caller may start. A caller that finds `maxWaiting` callers waiting is
- *   refused at once ({@link QueueFullError}).
+ * - {@link PacingQueue.admit} resolves when the caller may start: at least `minIntervalMs` after the previous caller
+ *   actually started (its admission, on the queue's clock), so a timer that fires late never brings the next start
+ *   closer. A caller that finds `maxWaiting` callers waiting is refused at once ({@link QueueFullError}).
  * - A wait can be cancelled with an `AbortSignal` (`admit`, and `wait`, the archive sync's, with its run's signal): the
  *   caller leaves the queue at once (it is refused with the signal's reason, its request never starts) and the
  *   callers after it keep their turns.
