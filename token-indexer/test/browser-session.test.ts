@@ -16,9 +16,14 @@
  *   (on a directory store, so the data stays): requests are held, the engine stops at a full block and starts again
  *   with the same configuration, and the replay ends with the same tables as an uninterrupted one; the telemetry counts
  *   the reopen and the failed statements start again from zero.
- * - `[[browser.reopen.stack-depth]]` — with the count rule off, PGlite's own defect appears (every statement fails with
- *   "stack depth limit exceeded", SQLSTATE 54001, after about 1,870 failures); the first such failure reopens the store
- *   at once and the engine continues to the same tables.
+ * - `[[browser.reopen.stack-depth]]` — with the count rule off, failures of other kinds do not reopen the store, and the
+ *   first statement that fails with "stack depth limit exceeded" (SQLSTATE 54001, the error of PGlite's defect, raised
+ *   here by the database on purpose so the test does not wait for the defect) reopens it at once: the engine continues
+ *   to the same tables, and the reopen is counted and logged with its reason.
+ * - A measurement, not a required test: after how many failed statements PGlite's own defect appears (about 1,870 for
+ *   PGlite 0.5.8 in Node; every statement then fails with 54001), printed; when it appears, it must come after the
+ *   count rule's 1,000 (the rule reopens first); when it does not appear within 3,000 failed statements (a machine
+ *   under coverage or heavy load) the test is skipped, saying so.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -225,24 +230,20 @@ describe("worker reopen", () => {
     expect(await tablesOf(h)).toBe(expected);
   }, 180_000);
 
-  it("[[browser.reopen.stack-depth]] with the count rule off PGlite's own defect appears (every statement fails with stack depth limit exceeded, 54001) after about 1,870 failures; the first such failure reopens the store at once and the engine continues to the same tables", async () => {
+  it("[[browser.reopen.stack-depth]] with the count rule off, failures of other kinds do not reopen the store, and the first statement that fails with stack depth limit exceeded (54001, raised on purpose) reopens it at once; the engine continues to the same tables, and the reopen is counted and logged with its reason", async () => {
     const expected = await u1Reference();
     const h = newHost({ dataDir: tempDir(), reopenAfterFailedStatements: Number.POSITIVE_INFINITY });
     await result(h.host, "start", { config: { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 4, advance: { everyMs: 150, by: 2 } }, startHeight: U1.from, ...FAST } });
     await untilStatus(h.host, "a first part", (s) => (s.cursors?.scan?.nextHeight ?? 0) > U1.from + 2);
     const first = h.opened[0]!;
-    let failures = 0;
-    let stackDepth: string | undefined;
-    while (stackDepth === undefined && failures < 3_000) {
-      const e = await first.mip0018`select 1/0`.then(() => undefined, (x: { code?: string; message?: string }) => x);
-      failures++;
-      if (e?.code === "54001") stackDepth = e.message;
-    }
-    console.log("PGlite fails with 54001 at failed statement", failures, stackDepth);
-    expect(stackDepth).toBe("stack depth limit exceeded");
-    expect(failures).toBeGreaterThan(1_500);
-    expect(failures).toBeLessThan(2_000);
+    for (let i = 0; i < 50; i++) await first.mip0018`select 1/0`.catch(() => {});
+    expect(h.opened, "other failures, with the count rule off").toHaveLength(1);
+    // The database raises the error PGlite's defect gives: the same SQLSTATE and message, through the same session.
+    const e = await first.mip0018.unsafe("DO $$ BEGIN RAISE EXCEPTION 'stack depth limit exceeded' USING ERRCODE = '54001'; END $$")
+      .then(() => undefined, (x: { code?: string; message?: string }) => x);
+    expect(e).toMatchObject({ code: "54001", message: "stack depth limit exceeded" });
     await until(() => h.opened.length === 2, "the reopen");
+    expect(first.pglite.closed).toBe(true);
     await untilStatus(h.host, "the rest of the range", (s) => s.cursors?.sync?.height === U1.to && s.cursors?.scan?.nextHeight === U1.to + 1);
     const snap = (await result<SystemResult>(h.host, "system", { refresh: {} })).snapshot!;
     expect(snap.engine.pgliteReopens).toBe(1);
@@ -251,5 +252,27 @@ describe("worker reopen", () => {
     expect(s.engine).toMatchObject({ running: true, error: null });
     await result(h.host, "stop");
     expect(await tablesOf(h)).toBe(expected);
+  }, 180_000);
+
+  it("measurement: PGlite 0.5.8's own defect (every statement failing with stack depth limit exceeded, 54001) appears after the count rule's 1,000 failed statements, or is not seen within 3,000 (skipped, saying so)", async (ctx) => {
+    const pglite = await PGlite.create();
+    try {
+      const sql = createPgliteClient({ pglite, schema: "public" });
+      let failures = 0;
+      let seen: string | undefined;
+      while (seen === undefined && failures < 3_000) {
+        const e = await sql`select 1/0`.then(() => undefined, (x: { code?: string; message?: string }) => x);
+        failures++;
+        if (e?.code === "54001") seen = e.message;
+      }
+      console.log(seen === undefined
+        ? `PGlite's stack-depth defect did not appear within ${failures} failed statements`
+        : `PGlite's stack-depth defect appeared at failed statement ${failures}: ${seen}`);
+      if (seen === undefined) ctx.skip(`PGlite's stack-depth defect did not appear within ${failures} failed statements on this machine`);
+      expect(seen).toBe("stack depth limit exceeded");
+      expect(failures).toBeGreaterThan(REOPEN_AFTER_FAILED_STATEMENTS);
+    } finally {
+      await pglite.close();
+    }
   }, 180_000);
 });

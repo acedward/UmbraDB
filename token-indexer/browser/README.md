@@ -660,7 +660,11 @@ PGlite runs every statement synchronously on the worker's thread, so the worker 
   1,000 since it was opened, or at once on the first "stack depth limit exceeded": it holds new requests, stops the
   engine at a full block, lets the requests reading the store end, closes PGlite, opens it again and runs the same
   engine configuration (it continues at the cursors). Closing PGlite waits for the statements in flight: a statement
-  queued inside PGlite 0.5.8 when it closes never returns.
+  queued inside PGlite 0.5.8 when it closes never returns. The required tests check the host's rules with failures
+  they cause (1,000 divisions by zero; one error with SQLSTATE 54001 raised by the database); after how many failures
+  the defect itself appears depends on the machine (about 1,870 in Node; not within 3,000 under coverage), so
+  `test/browser-session.test.ts` only measures it: it prints the count, checks that it comes after the rule's 1,000 when
+  the defect appears, and is skipped, saying so, when it does not appear within 3,000.
 
 ## System snapshot
 
