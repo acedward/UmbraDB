@@ -6,7 +6,8 @@ name: Browser and PGlite gate
 #     on OPFS in Chromium, including the parity suite: tape digests, the MIP vectors, the recorded cases through the
 #     in-browser API, the API crawl against the Node handler) and the explorer page's Chromium tests.
 #   - `pglite`: the whole suite on PGlite in Node (`npm run test:pglite`), Chromium tests included, then the
-#     required-test reconciliation with the PostgreSQL-only list (`test/helpers/postgresql-only.ts`).
+#     required-test reconciliation with the PostgreSQL-only list (`test/helpers/postgresql-only.ts`): about 21 minutes,
+#     within its `timeout-minutes: 45`.
 # Both run on PGlite (`UMBRADB_BACKEND=pglite`): no database server and no Docker inside the job container. The same
 # browser tests also run on PostgreSQL in the required conformance gate (`conformance.yml`, with the runner image's
 # Chrome, whose path and version that job prints before its tests).
@@ -62,7 +63,7 @@ jobs:
 
   pglite:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     container:
       # mcr.microsoft.com/playwright:v1.63.0-noble (image index digest; linux/amd64 and linux/arm64)
       image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
