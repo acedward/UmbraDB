@@ -8,11 +8,13 @@
  *   hold it, its uncaught exception, its console calls and its workers' (the last lines only, each cut), and the
  *   report a failed test prints is every such page's diagnostics.
  * - `[[browser.harness.load-retry]]` — in Chromium, page loads the machine's network aborted are loaded again, at most
- *   three times, and nothing else is: a stylesheet or a later fetch failed once with an error taken for the network's
- *   (here `net::ERR_CONNECTION_ABORTED`, which DevTools can produce, standing for `net::ERR_NETWORK_CHANGED`) is loaded
- *   again once, at once, printed and dropped from what the page recorded; failing every time fails after three
- *   attempts; another error is not retried; a worker's script aborted while the machine's interfaces changed (the
- *   state injected) is loaded again, and the same abort with no change is not.
+ *   three times, and nothing else is: a stylesheet, a module import (a dev server's `/@fs/…` path) or a later fetch
+ *   failed once with an error taken for the network's (here `net::ERR_CONNECTION_ABORTED`, which DevTools can produce,
+ *   standing for `net::ERR_NETWORK_CHANGED`) is loaded again once, at once, with one printed line, and dropped from what
+ *   the page recorded; failing every time fails after three attempts, with a printed line for each of the two retries;
+ *   another error, a missing module (404) or a failed step is not retried, also while the machine's interfaces change;
+ *   a worker's script aborted while the machine's interfaces changed (the state injected) is loaded again, and the same
+ *   abort with no change is not.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
@@ -38,6 +40,10 @@ const x = 1;
 throw new Error("worker boom " + x);
 `;
 
+// A page that imports a module the way a dev server serves source files, and one whose module is missing.
+const MODULE = `<!doctype html><meta charset="utf-8"><title>module</title><script type="module">import { value } from "/@fs/repo/mod.ts"; window.value = value;</script>`;
+const MISSING_MODULE = `<!doctype html><meta charset="utf-8"><title>missing</title><script type="module">import "/@fs/repo/missing.ts"; window.value = 1;</script>`;
+
 // A page with a stylesheet, a fetch after it loads and a worker; each sets what it got.
 const LOADS = `<!doctype html><meta charset="utf-8"><title>loads</title><link rel="stylesheet" href="/style.css"><script>
 window.late = null;
@@ -60,6 +66,12 @@ describe("the Chromium tests' driver", () => {
       } else if (path === "/loads") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(LOADS);
+      } else if (path === "/module" || path === "/missing-module") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(path === "/module" ? MODULE : MISSING_MODULE);
+      } else if (path === "/@fs/repo/mod.ts") {
+        res.writeHead(200, { "content-type": "text/javascript" });
+        res.end("export const value = 7;");
       } else if (path === "/style.css") {
         res.writeHead(200, { "content-type": "text/css" });
         res.end("body { color: rgb(1, 2, 3); }");
@@ -133,8 +145,11 @@ describe("the Chromium tests' driver", () => {
     return { page, failed: () => failed };
   }
 
-  it("[[browser.harness.load-retry]] loads the machine's network aborted are loaded again (at most three times, printed, the aborted attempt dropped); a load that fails every time fails after three attempts; another error, or an aborted worker script with no network change, is not retried; a worker script aborted while the interfaces changed is", async () => {
+  it("[[browser.harness.load-retry]] loads the machine's network aborted are loaded again (at most three times, one printed line each, the aborted attempt dropped); a load that fails every time fails after three attempts; another error, a missing module, a failed step, or an aborted worker script with no network change, is not retried; a worker script aborted while the interfaces changed is", async () => {
     const printed = vi.spyOn(console, "error");
+    /** The lines printed for retries of `page`. */
+    const retryLines = (page: Page): string[] =>
+      printed.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith(`browser page ${page.targetId.slice(0, 8)} `) && l.includes("loading it again"));
     const aborted = { environmentalErrors: ["net::ERR_CONNECTION_ABORTED"] };
     try {
       // A stylesheet aborted once: loaded again at once; the second attempt's page is what the test sees.
@@ -144,9 +159,25 @@ describe("the Chromium tests' driver", () => {
       expect(css.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("1 load failed with net::ERR_CONNECTION_ABORTED") }]);
       expect(await css.page.eval("getComputedStyle(document.body).color")).toBe("rgb(1, 2, 3)");
       expect(css.page.requests.filter((r) => r.failed !== undefined)).toEqual([]);
-      expect(printed.mock.calls.some((c) => /loading it again \(attempt 2 of 3, /u.test(String(c[0])))).toBe(true);
+      expect(retryLines(css.page)).toEqual([expect.stringMatching(/: 1 load failed with net::ERR_CONNECTION_ABORTED \(.*\/style\.css\): loading it again \(attempt 2 of 3, /u)]);
       expect(css.page.diagnostics()).toContain("loaded again (1):");
       await css.page.close();
+
+      // A module import (a dev server's source file) aborted once: the page is loaded again and the module runs.
+      const mod = await failingPage("/@fs/repo/mod.ts", 1, "ConnectionAborted", aborted);
+      await mod.page.goto(`${site.origin}/module`, 30_000, () => mod.page.waitFor("window.value === 7", 10_000, "the module"));
+      expect(mod.failed()).toBe(1);
+      expect(mod.page.loadRetries).toEqual([{ url: `${site.origin}/module`, reason: expect.stringContaining("/@fs/repo/mod.ts") }]);
+      expect(retryLines(mod.page)).toHaveLength(1);
+      await mod.page.close();
+
+      // A missing module (404) is the page's: not retried, the step fails.
+      const missing = await browser.newPage(aborted);
+      await expect(missing.goto(`${site.origin}/missing-module`, 30_000, () => missing.waitFor("window.value === 1", 2_000, "the module")))
+        .rejects.toThrow("timed out waiting for the module");
+      expect(missing.loadRetries).toEqual([]);
+      expect(missing.requests.find((r) => r.url.endsWith("/@fs/repo/missing.ts"))).toMatchObject({ status: 404 });
+      await missing.close();
 
       // A fetch after the load aborted once: the ready step is left as soon as the abort is seen, not at its timeout.
       const late = await failingPage("/late.json", 1, "ConnectionAborted", aborted);
@@ -161,6 +192,7 @@ describe("the Chromium tests' driver", () => {
       await expect(always.page.goto(`${site.origin}/loads`, 30_000, () => always.page.waitFor("window.late === true", 30_000, "the late load")))
         .rejects.toThrow(new RegExp(`load failed with net::ERR_CONNECTION_ABORTED .*in each of ${LOAD_ATTEMPTS} attempts`, "u"));
       expect(always.failed()).toBe(LOAD_ATTEMPTS);
+      expect(retryLines(always.page).map((l) => /attempt (\d) of 3/u.exec(l)![1])).toEqual(["2", "3"]);
       await always.page.close();
 
       // Another error is the page's: not retried, the ready step's own failure is the result.
@@ -168,14 +200,27 @@ describe("the Chromium tests' driver", () => {
       await expect(refused.page.goto(`${site.origin}/loads`, 30_000, () => refused.page.waitFor("window.late === true", 2_000, "the late load")))
         .rejects.toThrow("timed out waiting for the late load");
       expect(refused.page.loadRetries).toEqual([]);
+      expect(retryLines(refused.page)).toEqual([]);
       await refused.page.close();
+
+      // A failed step while the machine's interfaces change, with no load failed: the page's, not retried.
+      let moving = "eth0=10.0.0.2";
+      const stepFails = await browser.newPage({ networkState: () => moving });
+      const timer = setTimeout(() => { moving = "eth0=10.0.0.2;br-test=10.97.0.1"; }, 300);
+      await expect(stepFails.goto(`${site.origin}/loads`, 30_000, () => stepFails.waitFor("window.never === true", 2_000, "the step")))
+        .rejects.toThrow("timed out waiting for the step");
+      clearTimeout(timer);
+      expect(moving).toContain("br-test");
+      expect(stepFails.loadRetries).toEqual([]);
+      await stepFails.close();
 
       // A worker's script aborted (Chrome reports net::ERR_ABORTED for it) while the machine's interfaces changed: the
       // network's; the same abort with no change: the page's.
       let state = "eth0=10.0.0.2";
       const changing = await failingPage("/hello.js", 1, "Aborted", { networkState: () => state }, () => { state = "eth0=10.0.0.2;br-test=10.97.0.1"; });
       await changing.page.goto(`${site.origin}/loads`, 30_000, () => changing.page.waitFor("window.workerSaid === 'hi'", 10_000, "the worker"));
-      expect(changing.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("the machine's network interfaces changed while it loaded") }]);
+      expect(changing.page.loadRetries).toEqual([{ url: `${site.origin}/loads`, reason: expect.stringContaining("the machine's network interfaces changed while it loaded and 1 worker script failed with net::ERR_ABORTED") }]);
+      expect(retryLines(changing.page)).toHaveLength(1);
       await changing.page.close();
       const still = await failingPage("/hello.js", 1, "Aborted", { networkState: () => "eth0=10.0.0.2" });
       await expect(still.page.goto(`${site.origin}/loads`, 30_000, () => still.page.waitFor("window.workerSaid === 'hi'", 2_000, "the worker")))

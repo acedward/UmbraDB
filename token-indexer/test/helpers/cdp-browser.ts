@@ -26,17 +26,20 @@
  * lines of each list only.
  *
  * A page load the machine's network aborted is loaded again ({@link Page.goto}, at most {@link LOAD_ATTEMPTS} times,
- * each time printed). Chrome on Linux watches the machine's network interfaces, and when an address appears or goes
- * (a container started beside the browser: Testcontainers' PostgreSQL in a job whose Chrome runs on the runner itself)
- * it fails every request still waiting for a connection, with `net::ERR_NETWORK_CHANGED` — and a dedicated worker's
- * script with `net::ERR_ABORTED`; requests already sent go on. Chrome has no switch to ignore such changes. So an
- * attempt (the navigation, and the `ready` step the caller gives) is taken for the environment's, and made again, when
- * one of its loads failed with {@link ENVIRONMENTAL_LOAD_ERRORS}, or when the machine's interfaces ({@link
- * networkState}) changed while it ran and it failed or one of its loads failed; the next attempt starts once the
- * interfaces have stayed the same for three seconds (Chrome passes a change on more than once: a second notice about
- * two seconds after the first fails the requests waiting then too). Anything else fails as it fails, and so
- * does an attempt aborted {@link LOAD_ATTEMPTS} times; what an aborted attempt recorded (its requests, console, log
- * entries, exceptions, worker errors and workers) is dropped, and its reason kept in {@link Page.loadRetries}.
+ * one printed line each: `loading it again (attempt N of 3`). Chrome on Linux watches the machine's network
+ * interfaces, and when an address appears or goes (a container started beside the browser: Testcontainers' PostgreSQL
+ * in a job whose Chrome runs on the runner itself) it fails every request still waiting for a connection, with
+ * `net::ERR_NETWORK_CHANGED` — and a dedicated worker's script with `net::ERR_ABORTED`; requests already sent go on.
+ * Chrome has no switch to ignore such changes. So an attempt (the navigation, and the `ready` step the caller gives) is
+ * taken for the environment's, and made again, only when a load of the page (the document, a script or module, a
+ * stylesheet, a fetch, a worker's script) failed with {@link ENVIRONMENTAL_LOAD_ERRORS}, or when the machine's
+ * interfaces ({@link networkState}) changed while it ran and the script of a worker the page created failed with
+ * `net::ERR_ABORTED`. A failed step, an error of another load or a load answered with an error status is the page's,
+ * with or without a network change: it fails as it fails, and so does an attempt aborted {@link LOAD_ATTEMPTS} times.
+ * The next attempt starts once the interfaces have stayed the same for three seconds (Chrome passes a change on more
+ * than once: a second notice about two seconds after the first fails the requests waiting then too). What an aborted
+ * attempt recorded (its requests, console, log entries, exceptions, worker errors and workers) is dropped, and its
+ * reason kept in {@link Page.loadRetries}. A step that runs after the page is ready (not in `goto`) is not covered.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
@@ -121,6 +124,8 @@ export interface PageOptions {
 
 /** The load error Chrome gives the requests it fails when the machine's network changes. */
 export const ENVIRONMENTAL_LOAD_ERRORS: readonly string[] = ["net::ERR_NETWORK_CHANGED"];
+/** The load error Chrome gives a dedicated worker's script it fails when the machine's network changes. */
+const WORKER_SCRIPT_ABORT = "net::ERR_ABORTED";
 /** How many times {@link Page.goto} loads a page whose loads the machine's network aborted. */
 export const LOAD_ATTEMPTS = 3;
 /** Before loading an aborted page again, the machine's network state must have stayed the same this long (Chrome tells
@@ -277,13 +282,13 @@ export class Page {
       let failure: { error: unknown } | undefined;
       try {
         await this.load(url, timeoutMs);
-        if (ready !== undefined) await this.unlessAborted(ready(), marks.requests, network);
+        if (ready !== undefined) await this.unlessAborted(ready(), marks, network);
       } catch (error) {
         failure = { error };
       } finally {
         network.stop();
       }
-      const reason = this.abortedBy(marks.requests, network.changed(), failure !== undefined);
+      const reason = this.abortedBy(marks, network.changed());
       if (reason === undefined) {
         if (failure !== undefined) throw failure.error;
         return;
@@ -346,28 +351,38 @@ export class Page {
     };
   }
 
-  /** Why the load attempt since request `from` was the environment's, or `undefined` (see the module documentation). */
-  private abortedBy(from: number, networkChanged: boolean, failed: boolean): string | undefined {
-    const loads = this.requests.slice(from).filter((r) => r.failed !== undefined).map((r) => ({ url: r.url, error: r.failed! }));
+  /** Why the load attempt that began at `from` (the lengths of the page's lists then) was the environment's, or
+   *  `undefined` (see the module documentation). */
+  private abortedBy(from: { requests: number; workerErrors: number }, networkChanged: boolean): string | undefined {
+    const loads = this.requests.slice(from.requests).filter((r) => r.failed !== undefined).map((r) => ({ url: r.url, error: r.failed! }));
     if (this.navigationError !== undefined) loads.unshift({ url: this.url, error: this.navigationError });
     const described = (list: Array<{ url: string; error: string }>): string =>
       `${[...new Set(list.map((l) => l.url))].slice(0, 3).join(", ")}${list.length > 3 ? ", …" : ""}`;
     const environmental = loads.filter((l) => this.environmentalErrors.some((e) => l.error.includes(e)));
     if (environmental.length > 0)
       return `${environmental.length} load${environmental.length === 1 ? "" : "s"} failed with ${[...new Set(environmental.map((l) => l.error))].join(", ")} (${described(environmental)})`;
-    if (networkChanged && (failed || loads.length > 0))
-      return `the machine's network interfaces changed while it loaded${loads.length === 0 ? "" : ` and ${loads.length} load${loads.length === 1 ? "" : "s"} failed (${[...new Set(loads.map((l) => l.error))].join(", ")}: ${described(loads)})`}`;
+    if (!networkChanged) return undefined;
+    const workerScripts = new Set(this.workerErrors.slice(from.workerErrors).map((e) => {
+      try {
+        return new URL(e.worker, this.url).href;
+      } catch {
+        return e.worker;
+      }
+    }));
+    const aborted = loads.filter((l) => l.error.includes(WORKER_SCRIPT_ABORT) && workerScripts.has(l.url));
+    if (aborted.length > 0)
+      return `the machine's network interfaces changed while it loaded and ${aborted.length} worker script${aborted.length === 1 ? "" : "s"} failed with ${WORKER_SCRIPT_ABORT} (${described(aborted)})`;
     return undefined;
   }
 
   /** `step`'s outcome, or nothing as soon as the attempt is seen aborted by the environment (`step` then runs on,
    *  unawaited, against a page about to be loaded again). */
-  private async unlessAborted(step: Promise<unknown>, from: number, network: { changed(): boolean }): Promise<void> {
+  private async unlessAborted(step: Promise<unknown>, from: { requests: number; workerErrors: number }, network: { changed(): boolean }): Promise<void> {
     step.catch(() => { /* awaited below, or abandoned */ });
     let done = false;
     const aborted = (async () => {
       while (!done) {
-        if (this.abortedBy(from, network.changed(), false) !== undefined) return;
+        if (this.abortedBy(from, network.changed()) !== undefined) return;
         await sleep(100);
       }
     })();
