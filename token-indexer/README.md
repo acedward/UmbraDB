@@ -262,6 +262,7 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | The dev server (`npm run dev:browser`): every stylesheet, icon and font the main page and the status page link served as what it is, never as a page; in Chromium, the dev main page styled (its font, the logo's size, the overview's grid) | `test/browser-dev-chrome.test.ts` |
 | The static deploy: `npm run serve:browser`'s server (every file kind's content type, no `Content-Encoding`, every `_headers` header, nothing outside the folder, a folder without `_headers` refused) and its command; in Chromium, the site `npm run build:browser` writes served by it: the main page starts the engine by itself, the status page follows it, the published snapshot imports with the recorded digests, only the site and the build's chain are requested, no CSP violation | `test/browser-deploy.test.ts`, `test/browser-deploy-chrome.test.ts` |
 | Pages inside a frame (a host without the headers): each, the main page on every tab, shows a notice and starts no engine | `test/browser-frame-chrome.test.ts` |
+| The Chromium tests' driver explains a failure: a worker's `error` event with its message, file, line and column, and a failed test's report of what each page and its workers recorded (the last lines of each list) | `test/browser-harness-chrome.test.ts` |
 | The build's licence notices: `THIRD-PARTY-NOTICES.txt` lists every bundled package with its licence text, PostgreSQL's, the font's and UmbraDB's; an unknown package without a licence text fails the build | `test/browser-notices.test.ts` |
 
 Fixtures:
