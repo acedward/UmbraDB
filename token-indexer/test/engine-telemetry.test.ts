@@ -763,6 +763,44 @@ describe("system snapshot schema and redaction", () => {
     expect(JSON.parse(redactText(JSON.stringify({ message: 'refused: token=\\"x', next: "kept" })))).toEqual({ message: "refused: token=[redacted]", next: "kept" });
   });
 
+  it("[[engine.telemetry.redaction-cut]] a text longer than 4,096 characters is cut to them before redaction, saying how much was cut, a cut text is not cut again, and a member's secret is removed at every depth of JSON encoding a cut text can hold", () => {
+    // Exactly 4,096 is the limit: a longer text is cut, whatever the margin the snapshot's bound leaves for the mark.
+    for (const n of [4_095, 4_096]) expect(redactText("x".repeat(n))).toBe("x".repeat(n));
+    for (const n of [4_097, 4_100, 4_159, 4_160, 4_161, 10_000]) {
+      const out = redactText("x".repeat(n));
+      expect(out, `${n}`).toBe(`${"x".repeat(TEXT_MAX_CHARS)}… [${n - TEXT_MAX_CHARS} more characters]`);
+      expect(redactText(out), `${n}: idempotent`).toBe(out);
+    }
+    // A text whose redaction is longer than the limit is cut after it, and stays within the snapshot's bound.
+    const grown = redactText("token=x ".repeat(512));
+    expect(grown.length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
+    expect(grown).toMatch(/… \[\d+ more characters\]$/u);
+    expect(redactText(grown)).toBe(grown);
+    // A forged cut mark on a long text does not stop the cut.
+    const forged = `${"y".repeat(5_000)}… [3 more characters]`;
+    expect(redactText(forged).length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
+
+    // A member written as a JSON string again and again: removed at every depth a cut text can hold.
+    const secret = ["private", "secret", "value"].join("-");
+    let t = JSON.stringify({ token: secret, n: 1 });
+    let depth = 0;
+    while (t.length <= TEXT_MAX_CHARS) {
+      const out = redactText(t);
+      expect(out, `${depth} encodings`).not.toContain(secret);
+      expect(redactText(out)).toBe(out);
+      let v: unknown = out;
+      for (let i = 0; i <= depth; i++) v = JSON.parse(v as string);
+      expect(v, `${depth} encodings`).toEqual({ token: "[redacted]", n: 1 });
+      t = JSON.stringify(t);
+      depth++;
+    }
+    expect(depth).toBeGreaterThanOrEqual(9); // up to 8 encodings fit in 4,096 characters here
+    // The finding's own shape: eight encodings, 127 backslashes before the key's quotes.
+    let eight = JSON.stringify({ token: secret });
+    for (let i = 0; i < 7; i++) eight = JSON.stringify(eight);
+    expect(redactText(eight)).not.toContain(secret);
+  });
+
   it("[[engine.telemetry.redaction-url-paths]] a URL keeps its origin and its path but path segments that look like keys: an endpoint key in the path does not reach the snapshot or the diagnostics file", () => {
     const key = "9aa3d95b3bc440fa88ea12eaa4456161";
     expect(publicUrl(`https://mainnet.example.test/v3/${key}`)).toBe("https://mainnet.example.test/v3/[redacted]");
