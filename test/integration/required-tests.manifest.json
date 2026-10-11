@@ -1775,7 +1775,7 @@
     {
       "id": "engine.telemetry.redaction-cut",
       "file": "token-indexer/test/engine-telemetry.test.ts",
-      "description": "a text longer than 4,096 characters is cut to them before redaction, saying how much was cut (4,095 and 4,096 kept, 4,097 to 4,161 cut), a cut text is not cut again, a forged cut mark does not stop the cut, and a member's secret is removed at every depth of JSON encoding a cut text can hold"
+      "description": "a text longer than 4,096 characters is cut to at most them before redaction, saying how much was cut (4,095 and 4,096 kept, 4,097 to 4,161 cut); a cut text (at most 4,096 characters, then the mark) is not cut again, and a forged mark after more, also within 4,097 to 4,160 characters, does not stop the cut; and a member's secret is removed at every depth of JSON encoding a cut text can hold"
     },
     {
       "id": "engine.telemetry.redaction-cut-mark",

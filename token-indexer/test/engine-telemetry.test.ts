@@ -763,7 +763,7 @@ describe("system snapshot schema and redaction", () => {
     expect(JSON.parse(redactText(JSON.stringify({ message: 'refused: token=\\"x', next: "kept" })))).toEqual({ message: "refused: token=[redacted]", next: "kept" });
   });
 
-  it("[[engine.telemetry.redaction-cut]] a text longer than 4,096 characters is cut to them before redaction, saying how much was cut, a cut text is not cut again, and a member's secret is removed at every depth of JSON encoding a cut text can hold", () => {
+  it("[[engine.telemetry.redaction-cut]] a text longer than 4,096 characters is cut to at most them before redaction, saying how much was cut; a cut text (at most 4,096 characters, then the mark) is not cut again, and a forged mark after more does not stop the cut; and a member's secret is removed at every depth of JSON encoding a cut text can hold", () => {
     // Exactly 4,096 is the limit: a longer text is cut, whatever the margin the snapshot's bound leaves for the mark.
     for (const n of [4_095, 4_096]) expect(redactText("x".repeat(n))).toBe("x".repeat(n));
     for (const n of [4_097, 4_100, 4_159, 4_160, 4_161, 10_000]) {
@@ -776,9 +776,18 @@ describe("system snapshot schema and redaction", () => {
     expect(grown.length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
     expect(grown).toMatch(/… \[\d+ more characters\]$/u);
     expect(redactText(grown)).toBe(grown);
-    // A forged cut mark on a long text does not stop the cut.
-    const forged = `${"y".repeat(5_000)}… [3 more characters]`;
-    expect(redactText(forged).length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
+    // A forged cut mark does not stop the cut: a text is a cut text only when at most 4,096 characters come before its
+    // mark, also within the 4,097–4,160 characters the snapshot's bound allows.
+    for (const before of [4_097, 4_100, 4_120, 4_139, 5_000]) {
+      const forged = `${"y".repeat(before)}… [3 more characters]`;
+      const out = redactText(forged);
+      expect(out, `${before}`).toBe(`${"y".repeat(TEXT_MAX_CHARS)}… [${forged.length - TEXT_MAX_CHARS} more characters]`);
+      expect(redactText(out)).toBe(out);
+    }
+    // At most 4,096 characters before a mark: a cut text, kept as it is but redacted.
+    const short = `${"y".repeat(4_000)} token=abc… [3 more characters]`;
+    expect(redactText(short)).toBe(`${"y".repeat(4_000)} token=[redacted]… [3 more characters]`);
+    expect(redactText(`${"y".repeat(4_096)}… [3 more characters]`)).toBe(`${"y".repeat(4_096)}… [3 more characters]`);
 
     // A member written as a JSON string again and again: removed at every depth a cut text can hold.
     const secret = ["private", "secret", "value"].join("-");
@@ -816,10 +825,20 @@ describe("system snapshot schema and redaction", () => {
       }
     }
     expect(cut).toBeGreaterThan(0);
-    // The value the cut splits is removed whole, and the mark follows it.
-    const split = redactText(`${"x".repeat(TEXT_MAX_CHARS - 9)} token=abcdefghij rest`);
-    expect(split).toMatch(new RegExp(`^x{${TEXT_MAX_CHARS - 9}} token=\\[redacted\\]… \\[\\d+ more characters\\]$`, "u"));
+    // The value the cut splits is removed whole; when its redaction would make what is kept longer than 4,096 characters,
+    // less of the text is kept, and the count says how much of the text was left out.
+    const text = `${"x".repeat(TEXT_MAX_CHARS - 9)} token=abcdefghij rest`;
+    const split = redactText(text);
+    const kept = split.slice(0, split.indexOf("… ["));
+    expect(kept.length).toBeLessThanOrEqual(TEXT_MAX_CHARS);
+    expect(split).not.toContain("abc");
+    expect(split.endsWith(`… [${text.length - kept.length} more characters]`)).toBe(true);
     expect(redactText(split)).toBe(split);
+    // Kept parts never exceed 4,096 characters, for every form above.
+    for (const form of forms) {
+      const once = redactText(form.repeat(Math.ceil(9_000 / form.length)));
+      expect(once.indexOf("… ["), JSON.stringify(form)).toBeLessThanOrEqual(TEXT_MAX_CHARS);
+    }
   });
 
   it("[[engine.telemetry.redaction-url-paths]] a URL keeps its origin and its path but path segments that look like keys: an endpoint key in the path does not reach the snapshot or the diagnostics file", () => {
