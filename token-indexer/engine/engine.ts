@@ -279,10 +279,9 @@ export interface IndexerEngine {
 /** What the engine uses for an option that is not given. */
 /** Answers of the node and the indexer read for a start at the finalized tip; the highest is taken (see `resolveTip`). */
 export const TIP_SAMPLES = 3;
-/** A node finalized height more than this below the indexer's tip, at the start, is an answer from a backend behind the
- *  chain: 100 blocks is about 10 minutes at Midnight's 6 s blocks, far beyond the few blocks a node's finality and the
- *  indexer normally differ by, and far below the tens of thousands a stale backend of a load-balanced endpoint was seen
- *  to lag. */
+/** A node finalized height more than this below the indexer's tip, at the start, is taken as an answer from a backend
+ *  behind the chain: 100 blocks is about 10 minutes at Midnight's 6 s blocks, far beyond the few blocks a node's
+ *  finality and the indexer normally differ by. */
 export const STALE_TIP_BLOCKS = 100;
 /** Readings in a row that may look stale before the start takes the last one as it is (the node's finality itself may
  *  lag the indexer). */
