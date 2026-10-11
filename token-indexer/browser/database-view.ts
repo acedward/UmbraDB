@@ -3,7 +3,8 @@
  * read-only, through the engine (`tables` and `rows` of `protocol.ts`; no SQL is written here and no `/v1` route is
  * used).
  *
- * - The list: each schema's tables with their kind, estimated rows and size (catalog statistics), read when the tab is
+ * - The list: each schema's tables with their kind, size and, where the catalog has an estimate, estimated rows (a
+ *   store no tool has analyzed has none: the column is then left out), read when the tab is
  *   first shown and on "refresh". Picking a table (its row in the list, or the picker) reads its first page.
  * - A page: the table's columns (type in the tooltip), {@link ROWS_LIMITS}`.defaultLimit` rows by the primary key,
  *   descending (newest first for a table whose key leads with a block height), with the order in words beside them
@@ -17,7 +18,7 @@
  * nothing is parsed as markup and no `style` attribute is set.
  */
 import { type EngineClient } from "./client.ts";
-import { cellText, kindText, orderText, pageText, rowsEstimateText, sizeText, tableLabel, tablesSummary } from "./database-model.ts";
+import { cellText, hasEstimates, kindText, orderText, pageText, rowsEstimateText, sizeText, tableLabel, tablesSummary } from "./database-model.ts";
 import { messageOf } from "./engine-panel.ts";
 import { ROWS_LIMITS, type RowsResult, type TablesResult } from "./protocol.ts";
 import { dataNode, visibleText } from "./visible-text.ts";
@@ -85,7 +86,10 @@ export function mountDatabaseView(opts: DatabaseViewOptions): DatabaseView {
   const list = node("table");
   list.setAttribute("data-field", "db-tables");
   const listHead = node("tr");
-  for (const c of ["schema", "table", "kind", "estimated rows", "size"]) listHead.append(node("th", c === "estimated rows" || c === "size" ? "num" : undefined, c));
+  const drawHead = (estimates: boolean): void => {
+    listHead.replaceChildren(...["schema", "table", "kind", ...(estimates ? ["estimated rows"] : []), "size"].map((c) => node("th", c === "estimated rows" || c === "size" ? "num" : undefined, c)));
+  };
+  drawHead(false);
   list.appendChild(node("thead")).append(listHead);
   const listBody = list.appendChild(node("tbody"));
   listWrap.append(list);
@@ -132,6 +136,8 @@ export function mountDatabaseView(opts: DatabaseViewOptions): DatabaseView {
 
   function drawTables(t: TablesResult): void {
     summary.replaceChildren(dataNode(document, tablesSummary(t)));
+    const estimates = hasEstimates(t);
+    drawHead(estimates);
     const options: HTMLElement[] = [];
     const none = node("option", undefined, "pick a table");
     none.value = "";
@@ -151,7 +157,7 @@ export function mountDatabaseView(opts: DatabaseViewOptions): DatabaseView {
           dataCell(s.name, undefined, "db-tables.schema"),
           dataCell(x.name, undefined, "db-tables.name"),
           dataCell(kindText(x), undefined, "db-tables.kind"),
-          dataCell(rowsEstimateText(x.estimatedRows), "num", "db-tables.estimatedRows"),
+          ...(estimates ? [dataCell(rowsEstimateText(x.estimatedRows), "num", "db-tables.estimatedRows")] : []),
           dataCell(sizeText(x.totalBytes), "num", "db-tables.totalBytes"),
         );
         tr.addEventListener("click", () => void pick(s.name, x.name, 0));

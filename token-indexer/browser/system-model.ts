@@ -283,8 +283,8 @@ function scan(s: SystemSnapshot): StatusSection {
 
 function partitionedText(p: { count: number; estimatedRows: number | null; totalBytes: number } | null): string {
   if (p === null) return "partitioned";
-  const rows = p.estimatedRows === null ? "no estimate" : `${countText(Math.round(p.estimatedRows))} estimated rows`;
-  return `partitioned: ${countText(p.count)} partitions, ${rows}, ${bytesText(p.totalBytes)}`;
+  const rows = p.estimatedRows === null ? "" : `${countText(Math.round(p.estimatedRows))} estimated rows, `;
+  return `partitioned: ${countText(p.count)} partitions, ${rows}${bytesText(p.totalBytes)}`;
 }
 
 function databases(s: SystemSnapshot): StatusSection {
@@ -311,7 +311,8 @@ function databases(s: SystemSnapshot): StatusSection {
         return [
           cell(t.name, f("name")),
           cell(kind),
-          num(t.estimatedRows === null ? "no estimate" : countText(Math.round(t.estimatedRows)), f("estimatedRows")),
+          // Where the catalog has no estimate (PGlite never analyzes its tables), nothing.
+          num(t.estimatedRows === null ? "" : countText(Math.round(t.estimatedRows)), f("estimatedRows")),
           num(bytesText(t.totalBytes), f("totalBytes")),
           num(t.exactRows === null ? "not counted" : countText(t.exactRows), f("exactRows")),
         ];

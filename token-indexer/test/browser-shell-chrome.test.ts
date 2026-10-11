@@ -406,7 +406,10 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(listed.map((r) => `${r[0]}.${r[1]}`).sort()).toEqual(catalog);
       const tables = (await p.eval<{ tables: TablesResult }>("window.umbradbOverview.database()")).tables;
       expect(listed.map((r) => `${r[0]}.${r[1]}`)).toEqual(tables.schemas.flatMap((s) => s.tables.map((t) => `${s.name}.${t.name}`)));
-      expect(listed.find((r) => r[1] === "blocks")!.slice(2)).toEqual(["partitioned", "no estimate", expect.stringMatching(/^\d+\.\d kB$|^\d+\.\d MB$/)]);
+      // PGlite never analyzes its tables: no estimate, so no estimated rows column and no placeholder.
+      expect(listed.find((r) => r[1] === "blocks")!.slice(2)).toEqual(["partitioned", expect.stringMatching(/^\d+\.\d kB$|^\d+\.\d MB$/)]);
+      expect(await p.eval<string[]>("[...document.querySelectorAll('[data-field=db-tables] thead th')].map((t) => t.textContent)")).toEqual(["schema", "table", "kind", "size"]);
+      expect(await p.eval<string>("document.querySelector('#database-view').textContent")).not.toContain("no estimate");
       expect(await p.eval<string[]>("[...document.querySelectorAll('#db-table option')].map((o) => o.textContent).slice(0, 3)")).toEqual(["pick a table", expect.stringMatching(/^_migrations · /), expect.stringMatching(/^blocks · /)]);
 
       // A table picked: its first page, newest first, each value drawn from the answer.

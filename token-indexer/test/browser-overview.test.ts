@@ -17,7 +17,7 @@
  *   (astral characters counted as one), what was sent in the tooltip; sizes, estimates, kinds, the order and the page.
  */
 import { describe, expect, it } from "vitest";
-import { CELL_CHARS, cellText, kindText, orderText, pageText, rowsEstimateText, sizeText, tableLabel, tablesSummary } from "../browser/database-model.ts";
+import { CELL_CHARS, cellText, hasEstimates, kindText, orderText, pageText, rowsEstimateText, sizeText, tableLabel, tablesSummary } from "../browser/database-model.ts";
 import { INDEXER_MODULES } from "../browser/modules.ts";
 import { healthText, type PanelInputs, panelView, snapshotFigures } from "../browser/panel-model.ts";
 import { type HostStatus, MODULE_IDS } from "../browser/protocol.ts";
@@ -147,12 +147,16 @@ describe("the static build's main page (no browser)", () => {
     expect(cellText({ kind: "text", text: "\u202e<b>", chars: 4 }).text).toBe("\u202e<b>");
 
     expect([sizeText(0), sizeText(8_192), sizeText(999_999), sizeText(4_259_840)]).toEqual(["0.0 kB", "8.2 kB", "1000.0 kB", "4.3 MB"]);
-    expect([rowsEstimateText(null), rowsEstimateText(699.4), rowsEstimateText(12_345)]).toEqual(["no estimate", "~699 rows", "~12,345 rows"]);
+    expect([rowsEstimateText(null), rowsEstimateText(699.4), rowsEstimateText(12_345)]).toEqual(["", "~699 rows", "~12,345 rows"]);
     expect([kindText({ kind: "table", partitionOf: null }), kindText({ kind: "partitioned", partitionOf: null }), kindText({ kind: "partition", partitionOf: "blocks" })]).toEqual(
       ["table", "partitioned", "partition of blocks"]);
-    expect(tableLabel({ name: "blocks_p0", kind: "partition", partitionOf: "blocks", estimatedRows: null, totalBytes: 106_496 })).toBe("blocks_p0 · no estimate · 106.5 kB");
+    expect(tableLabel({ name: "blocks_p0", kind: "partition", partitionOf: "blocks", estimatedRows: null, totalBytes: 106_496 })).toBe("blocks_p0 · 106.5 kB");
+    expect(tableLabel({ name: "blocks_p0", kind: "partition", partitionOf: "blocks", estimatedRows: 699, totalBytes: 106_496 })).toBe("blocks_p0 · ~699 rows · 106.5 kB");
     expect(tablesSummary({ databaseBytes: 10_551_419, elapsedMs: 3, schemas: [{ name: "a", tables: [] }, { name: "b", tables: [{ name: "t", kind: "table", partitionOf: null, estimatedRows: 1, totalBytes: 1 }] }] })).toBe(
-      "2 schemas · 1 tables · 10.6 MB in all · estimated rows and sizes from the catalog · read-only");
+      "2 schemas · 1 tables · 10.6 MB in all · sizes and estimated rows from the catalog · read-only");
+    const unanalyzed = { databaseBytes: 10_551_419, elapsedMs: 3, schemas: [{ name: "b", tables: [{ name: "t", kind: "table" as const, partitionOf: null, estimatedRows: null, totalBytes: 1 }] }] };
+    expect(hasEstimates(unanalyzed)).toBe(false);
+    expect(tablesSummary(unanalyzed)).toBe("1 schemas · 1 tables · 10.6 MB in all · sizes from the catalog · read-only");
     // Newest first only where the key, after the network, leads with a block height; any other key is named as it is.
     expect(orderText({ orderBy: ["net", "height", "block_hash"] })).toBe("newest first: by net, height, block_hash, descending");
     expect(orderText({ orderBy: ["network", "block_height", "tx_index", "item_index"] })).toBe("newest first: by network, block_height, tx_index, item_index, descending");

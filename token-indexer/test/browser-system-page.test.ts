@@ -129,7 +129,7 @@ describe("system status page: text and view", () => {
     expect(valueOf(s, "databases.statements")).toBe("2, 5 ms in all, the longest 4 ms");
     expect(tableOf(s, "databases.chain_archive.migrations")).toEqual([["000_schema", "2026-10-10 07:15:02 UTC (1 h 0 min ago)"], ["001_chain_archive_core", "2026-10-10 07:15:03 UTC (59 min 59 s ago)"]]);
     expect(tableOf(s, "databases.chain_archive.tables")).toEqual([
-      ["blocks", "partitioned: 2 partitions, 699 estimated rows, 4,259,840 B (4.1 MiB)", "no estimate", "0 B", "699"],
+      ["blocks", "partitioned: 2 partitions, 699 estimated rows, 4,259,840 B (4.1 MiB)", "", "0 B", "699"],
       ["blocks_p0", "partition of blocks", "699", "4,218,880 B (4.0 MiB)", "699"],
       ["watermarks", "table", "1", "16,384 B (16.0 KiB)", "not counted"],
     ]);

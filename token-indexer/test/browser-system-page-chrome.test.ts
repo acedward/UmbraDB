@@ -298,7 +298,7 @@ describe("the system status page in Chrome (static build with its headers)", () 
       for (const r of rels!) {
         const f = (k: string): string => one(d, `databases.${r.schema}.${r.name}.${k}`);
         expect(f("totalBytes"), `${r.schema}.${r.name} size`).toBe(bytesText(Number(r.total)));
-        expect(f("estimatedRows"), `${r.schema}.${r.name} estimate`).toBe(r.reltuples < 0 ? "no estimate" : countText(Math.round(r.reltuples)));
+        expect(f("estimatedRows"), `${r.schema}.${r.name} estimate`).toBe(r.reltuples < 0 ? "" : countText(Math.round(r.reltuples)));
         if (r.reltuples >= 0) estimated++;
       }
       expect(estimated, "tables with an estimate after ANALYZE").toBeGreaterThan(10);

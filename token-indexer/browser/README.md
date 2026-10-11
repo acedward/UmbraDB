@@ -127,7 +127,9 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
     dev server (`npm run dev:browser`) the same plugin serves what the pages link from `../mip0018/ui/` (the style, the
     icon) from that directory, through the same transforms, so the dev pages have the build's style and font.
 - **Database** (`database-view.ts`, `database-model.ts`; the worker's side `store-tables.ts`). Read-only: each schema's
-  tables (`chain_archive`, `mip0018`, partitions included) with their kind, estimated rows and size (`tables`: the
+  tables (`chain_archive`, `mip0018`, partitions included) with their kind, size and, where the catalog has one, an
+  estimate of their rows (PGlite never analyzes its tables, so a browser store has none and the column is left out;
+  nothing stands in for a missing estimate) (`tables`: the
   catalog statistics of the system snapshot), read when the tab is first shown and on "refresh". Picking a table (its
   row, or the picker) shows a page of its rows (`rows`) by the primary key's columns, descending, and says so: "newest
   first" for the tables whose key, after the network, leads with a block height (their highest heights first), "by
@@ -589,7 +591,8 @@ reason, this tab's role, the first indexed height, the archive and scan heights,
 blocks and time), **Configuration** (network, genesis, endpoints, pacing, batches, retry, start mode and range,
 automatic start, durability, watchdog limit, API queue cap, build), **Sync** (heights, rates, requests per endpoint by
 answer, last success, next attempt, last error), **Scan**, **Databases** (data directory, server version, `fsync`,
-durability, size; per schema the applied migrations and per table the estimated rows and size, exact counts on
+durability, size; per schema the applied migrations and per table the size and the estimated rows where the catalog
+has an estimate (empty otherwise), exact counts on
 demand), **Storage**, **API**, **Engine** (role, connected tabs, uptime, watchdog restarts, reopens, failed
 statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest first).
 

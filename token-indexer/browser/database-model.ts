@@ -41,9 +41,15 @@ export function sizeText(bytes: number): string {
   return bytes < 1e6 ? `${(bytes / 1e3).toFixed(1)} kB` : formatBytes(bytes);
 }
 
-/** Estimated rows: `~N rows`, or "no estimate" while the catalog has none. */
+/** Estimated rows: `~N rows`, or nothing (`""`) while the catalog has no estimate (PGlite never analyzes its tables, so a
+ *  browser store has none). */
 export function rowsEstimateText(estimatedRows: number | null): string {
-  return estimatedRows === null ? "no estimate" : `~${countText(Math.round(estimatedRows))} rows`;
+  return estimatedRows === null ? "" : `~${countText(Math.round(estimatedRows))} rows`;
+}
+
+/** Whether any table of the answer has an estimate (the list shows its estimated rows column only then). */
+export function hasEstimates(t: TablesResult): boolean {
+  return t.schemas.some((s) => s.tables.some((x) => x.estimatedRows !== null));
 }
 
 /** A table's kind in words. */
@@ -51,15 +57,16 @@ export function kindText(t: Pick<TableEntry, "kind" | "partitionOf">): string {
   return t.kind === "partition" ? `partition of ${t.partitionOf ?? "?"}` : t.kind === "partitioned" ? "partitioned" : "table";
 }
 
-/** A table's line in the picker: its name, estimated rows and size. */
+/** A table's line in the picker: its name, its estimated rows where the catalog has an estimate, and its size. */
 export function tableLabel(t: TableEntry): string {
-  return `${t.name} · ${rowsEstimateText(t.estimatedRows)} · ${sizeText(t.totalBytes)}`;
+  return t.estimatedRows === null ? `${t.name} · ${sizeText(t.totalBytes)}` : `${t.name} · ${rowsEstimateText(t.estimatedRows)} · ${sizeText(t.totalBytes)}`;
 }
 
 /** The line above the list: schemas, tables, the database's size. */
 export function tablesSummary(t: TablesResult): string {
   const tables = t.schemas.reduce((a, s) => a + s.tables.length, 0);
-  return `${t.schemas.length} schemas · ${tables} tables · ${formatBytes(t.databaseBytes)} in all · estimated rows and sizes from the catalog · read-only`;
+  const from = hasEstimates(t) ? "sizes and estimated rows from the catalog" : "sizes from the catalog";
+  return `${t.schemas.length} schemas · ${tables} tables · ${formatBytes(t.databaseBytes)} in all · ${from} · read-only`;
 }
 
 /** Key columns that name the network: a store holds one, so an order that starts with them goes by what follows. */
