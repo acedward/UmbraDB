@@ -111,7 +111,7 @@ import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOpt
 import { rangeTables } from "../engine/range-tables.ts";
 import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
 import { checkCapabilities } from "./capabilities.ts";
-import { JSONRPC_CHAIN_ID, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
+import { JSONRPC_CHAIN_ID, JSONRPC_MAX_REQUESTS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
 import { NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
 import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
 import { registerReadOnlyMethods } from "../../evm-rpc/read-only.js";
@@ -128,6 +128,7 @@ import {
   type HostStatus,
   type ImportResult,
   type JsonRpcStateResult,
+  boundedModules,
   issuesOf,
   type ModuleId,
   type Notice,
@@ -145,7 +146,7 @@ import {
 import { browserStorageEnvironment, createQuotaGuard, isRefusedWrite, type StorageEnvironment } from "./quota.ts";
 import { yieldingScheduler } from "./scheduler.ts";
 import { STACK_DEPTH_EXCEEDED } from "./session.ts";
-import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore } from "./settings.ts";
+import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore, SavedSettingsSchema } from "./settings.ts";
 import { pgliteVersionOf, type SnapshotManifest, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
 import {
   exportSnapshot,
@@ -386,9 +387,15 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   const sameSettings = (a: EngineSettings, b: EngineSettings): boolean => canonicalJson(a) === canonicalJson(b);
   const withModules = (s: EngineSettings, m: typeof modules = modules): EngineSettings => (Object.keys(m).length === 0 ? s : { ...s, modules: { ...m } });
   /** Saves `next` with the modules (default: the current ones) and, with `newStore`, the mark that the store is to be
-   *  replaced by a new one first; rejects when the browser refuses the write. */
-  const writeSettings = (next: EngineSettings, o: { modules?: typeof modules; newStore?: true } = {}): Promise<void> =>
-    settingsStore.save({ ...withModules(next, o.modules), ...(o.newStore === true ? { newStore: true } : {}) });
+   *  replaced by a new one first; rejects when the browser refuses the write, and without writing anything when the
+   *  settings are not what the reader takes back (the same schema), so the file on record is never one a worker would
+   *  read as none. */
+  const writeSettings = async (next: EngineSettings, o: { modules?: typeof modules; newStore?: true } = {}): Promise<void> => {
+    const file = { ...withModules(next, o.modules), ...(o.newStore === true ? { newStore: true as const } : {}) };
+    const checked = SavedSettingsSchema.safeParse(file);
+    if (!checked.success) throw new Error(`the settings would not be read back (${checked.error.issues[0]?.message ?? "invalid"})`);
+    await settingsStore.save(file);
+  };
   /** Whether the token indexer (the MIP-0018 scan) is on. */
   const scanEnabled = (): boolean => modules["token-indexer"] ?? true;
   const quota = createQuotaGuard({
@@ -1020,7 +1027,9 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
 
   /** One pacing queue per endpoint origin for the worker's whole life, shared by every client of that origin (the
    *  sync's node and indexer clients, the JSON RPC module): on a public endpoint the worker starts at most one request
-   *  every 250 ms there, whichever client sends it. */
+   *  every 250 ms there, whichever client sends it — unless a `start` sets `sync.minIntervalMs`, an explicit spacing
+   *  the sync keeps on its own pacer (`engine.ts`). Each caller waits with its own signal (the sync's run, the
+   *  module's stop), so a stop ends its waits at once whatever the queue holds. */
   const pacers = new Map<string, PacingQueue>();
   function pacerFor(url: string): PacingQueue | undefined {
     let origin: string;
@@ -1117,16 +1126,22 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   }
 
   /** A `jsonrpc` request: the module's answer to `body`, once the boot is ready; refused while the module is off, when
-   *  it is switched off before the answer (`module-off`), and while it answers as many requests as it may (`busy`). */
+   *  it is switched off before the answer (`module-off`), and while it answers as many requests as it may (`busy`).
+   *  The bound is applied first, before anything is awaited: a request holds its slot while it waits for the boot and
+   *  for the module's start, until its answer, so no more than {@link JSONRPC_MAX_REQUESTS} requests are ever held. */
   async function jsonRpcRequest(body: string): Promise<ApiResult> {
-    while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
-    await ready();
-    if (!jsonRpcEnabled()) {
-      jsonRpcCalls.refusedOff++;
-      throw new HostError("module-off", "the JSON RPC module is off: switch it on in the Modules section to call its methods");
+    if (jsonRpcCalls.inFlight >= JSONRPC_MAX_REQUESTS) {
+      jsonRpcCalls.refusedBusy++;
+      throw new HostError("busy", `the JSON RPC module is answering ${JSONRPC_MAX_REQUESTS} requests: try again once one is answered`);
     }
     jsonRpcCalls.inFlight++;
     try {
+      while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
+      await ready();
+      if (!jsonRpcEnabled()) {
+        jsonRpcCalls.refusedOff++;
+        throw new HostError("module-off", "the JSON RPC module is off: switch it on in the Modules section to call its methods");
+      }
       let m: JsonRpcModule;
       try {
         m = await jsonRpcRun();
@@ -1155,8 +1170,10 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     }
   }
 
-  /** A `jsonrpc-state` request: the module's state for the JSON RPC tab's status view. */
+  /** A `jsonrpc-state` request: the module's state for the JSON RPC tab's status view; while the store is replaced or
+   *  reopened, answered once the new one is in place, as a `jsonrpc` request is. */
   async function jsonRpcState(): Promise<JsonRpcStateResult> {
+    while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
     await ready();
     const pacer = pacerFor(opts.indexerUrl);
     const queue = pacer?.state() ?? { minIntervalMs: 0, waiting: 0, heldForMs: 0 };
@@ -1187,7 +1204,7 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
    *  nothing. */
   async function setModule(module: ModuleId, enabled: boolean): Promise<HostStatus> {
     await ready();
-    const next = { ...modules, [module]: enabled };
+    const next = boundedModules({ ...modules, [module]: enabled });
     const name = module === "jsonrpc" ? "the JSON RPC module" : "the token indexer";
     try {
       await writeSettings(saved ?? { config: opts.defaultStart ?? {}, autoStart: true }, { modules: next });

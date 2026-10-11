@@ -60,6 +60,18 @@ export type RequestType = (typeof REQUEST_TYPES)[number];
 export const MODULE_IDS = ["token-indexer", "jsonrpc"] as const;
 export type ModuleId = (typeof MODULE_IDS)[number];
 
+/** The most module ids the settings hold (this build's and later builds'). */
+export const MAX_MODULE_IDS = 64;
+
+/** `modules` within {@link MAX_MODULE_IDS}: this build's modules first, then the newest of the others (the oldest ones a
+ *  later build named are dropped first), so a switch never writes settings the reader would refuse. */
+export function boundedModules(modules: Readonly<Record<string, boolean>>): Record<string, boolean> {
+  const known = (MODULE_IDS as readonly string[]).filter((id) => Object.hasOwn(modules, id));
+  const others = Object.keys(modules).filter((id) => !known.includes(id));
+  const kept = [...known, ...others.slice(Math.max(0, others.length - (MAX_MODULE_IDS - known.length)))];
+  return Object.fromEntries(kept.map((id) => [id, modules[id]!]));
+}
+
 /** Bounds of a `rows` request: rows per page (and the default), the deepest offset, and how much of a value is read. */
 export const ROWS_LIMITS = {
   defaultLimit: 25,
@@ -381,7 +393,7 @@ export const EngineSettingsSchema = z.strictObject({
    */
   modules: z
     .record(z.string().min(1).max(64), z.boolean())
-    .refine((m) => Object.keys(m).length <= 64, { message: "at most 64 modules" })
+    .refine((m) => Object.keys(m).length <= MAX_MODULE_IDS, { message: `at most ${MAX_MODULE_IDS} modules` })
     .optional(),
 });
 export type EngineSettings = z.infer<typeof EngineSettingsSchema>;

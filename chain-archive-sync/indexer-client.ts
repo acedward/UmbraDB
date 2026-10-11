@@ -78,6 +78,9 @@ export interface IndexerClientOptions {
   /** A pacer shared with the other clients of the same endpoint, used instead of a pacer of the client's own (and of
    *  `minIntervalMs`). Default: none. */
   pacer?: Pacer;
+  /** The caller's stop: when it ends, a call waiting for the pacer's turn ends at once and never starts its request, a
+   *  request in flight is aborted, and a later call is refused. Default: none. */
+  signal?: AbortSignal;
 }
 
 /** The per-height block query, with each transaction's `__typename` and result. */
@@ -100,6 +103,7 @@ export class IndexerClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly pacer: Pacer;
+  private readonly signal: AbortSignal | undefined;
 
   constructor(opts: IndexerClientOptions) {
     this.url = opts.url;
@@ -107,6 +111,7 @@ export class IndexerClient {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.pacer = opts.pacer ?? new RequestPacer(opts.minIntervalMs ?? defaultMinIntervalMs(opts.url));
+    this.signal = opts.signal;
   }
 
   /** The effective request spacing (logged by the CLI). */
@@ -115,14 +120,15 @@ export class IndexerClient {
   }
 
   private async query<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-    await this.pacer.wait();
+    if (this.signal?.aborted === true) throw this.signal.reason;
+    await this.pacer.wait(this.signal);
     let res: Response;
     try {
       res = await this.fetchImpl(this.url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, variables }),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: this.signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([AbortSignal.timeout(this.timeoutMs), this.signal]),
       });
     } catch (err) {
       throw new IndexerClientError(

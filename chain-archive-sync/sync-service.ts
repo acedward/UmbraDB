@@ -154,7 +154,8 @@ export interface ChainArchiveSyncServiceOptions {
   concurrency?: number;
   /** Per-network-call retry/back-off on throttling and outages (`retry.ts`). */
   backoff?: BackoffOptions;
-  /** Ends back-off waits early on shutdown. */
+  /** The shutdown: ends back-off waits early, and is the node and indexer clients' stop (`signal` of their options,
+   *  unless they have their own): a request waiting for its pacer's turn or in flight ends at once. */
   signal?: AbortSignal;
 }
 
@@ -223,8 +224,8 @@ export class ChainArchiveSyncService {
     this.sql = opts.sql;
     this.schema = opts.schema ?? "chain_archive";
     this.store = new PgChainArchiveStore(opts.sql, this.schema);
-    this.node = new NodeRpcClient(opts.node);
-    this.indexer = new IndexerClient(opts.indexer);
+    this.node = new NodeRpcClient(opts.signal === undefined || opts.node.signal !== undefined ? opts.node : { ...opts.node, signal: opts.signal });
+    this.indexer = new IndexerClient(opts.signal === undefined || opts.indexer.signal !== undefined ? opts.indexer : { ...opts.indexer, signal: opts.signal });
     this.net = opts.net;
     checkHeight("startHeight", opts.startHeight);
     checkHeight("endHeight", opts.endHeight);
