@@ -676,7 +676,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   }
 
   /** The boot from the `store` phase on: open (finishing a pending import), ledger, migrations, identity, saved
-   *  settings (after a finished import: the continuing configuration saved, then its journal removed), then `ready`. On
+   *  settings (after a finished import: the continuing configuration saved, then its journal removed; after one whose
+   *  rows did not load: the build's default configuration saved, then its journal removed), then `ready`. On
    *  a failure the boot is `failed` (with `storeProblem` when the store is the reason) and the store is closed, its lock
    *  released. Never rejects. */
   async function bootStore(mode: StoreOpening, lock?: HeldLock): Promise<void> {
@@ -708,11 +709,13 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
         if (importFailure !== undefined) {
           // A pending import whose rows did not load left the store empty: it holds no snapshot, and the configuration
           // that continued the earlier store (or snapshot) gives way to the build's default, as on a new store (the
-          // automatic start as it was).
+          // automatic start as it was). The journal stays until that is saved: a worker that ends before that tries the
+          // import again at its next boot, and opens the store empty again when it fails again.
           const fresh = { config: opts.defaultStart ?? {}, autoStart: settings.autoStart };
           await usable(() => writeSettings(fresh, { imported: false }), "the configuration of the store opened empty could not be saved");
           saved = fresh;
           storeImported = false;
+          await usable(() => snapshotFiles.removeJournal(), "the journal of the import that could not be loaded could not be removed");
         }
         if (imported !== undefined) {
           // The journal stays until the configuration that continues the import is saved: a worker that ends before

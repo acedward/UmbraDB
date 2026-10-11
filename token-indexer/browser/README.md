@@ -268,7 +268,9 @@ The worker boots as soon as it loads, in phases posted as `boot` notices and rep
 - **migrate**: the chain archive's and MIP-0018's migrations, as the Node commands run them.
 
 Then the identity is written (a boot that cannot write it fails) and the saved configuration read; after an import it
-finished, the boot first saves the configuration that continues the import and only then removes the journal.
+finished, the boot first saves the configuration that continues the import and only then removes the journal, and after
+one whose rows did not load (the store opened empty), it first saves the build's default configuration and only then
+removes the journal.
 
 A failure from the store phase on ends the boot `failed`, with the error, and closes the store (releasing its lock).
 When the store is the reason, `storeProblem` says so: `version` and `unopenable` as above, `unusable` when it opened but
@@ -462,7 +464,10 @@ snapshot's (and the scan from its cursor). The settings also say that the store 
 history from the network again the user sets a `range` from it. The status says while the store holds an imported
 snapshot (`storeImported`), and the overview's reset question says the reset then starts over at the tip. A pending
 import whose rows do not load leaves the store empty: it then holds no snapshot, and its configuration is the build's
-default (the automatic start as it was), so nothing starts at an earlier snapshot's first height.
+default (the automatic start as it was), so nothing starts at an earlier snapshot's first height. Its journal is removed
+only once that configuration is saved: a boot that cannot save it fails, and a worker that ends before it leaves the
+journal, so the next boot tries the import again and, when its rows fail to load again, opens the store empty with the
+default configuration again.
 
 A snapshot's rows are trusted data: its SHA-256 detects damage, not who made it, and the explorer shows the rows it
 holds. A file crafted on purpose can only carry rows (never code), but its rows are shown as if indexed. Import

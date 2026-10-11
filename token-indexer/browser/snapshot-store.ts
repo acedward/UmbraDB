@@ -41,7 +41,10 @@
  *    journal, and the next open of the store finishes the import from it before the store is used, so a half-built
  *    store is never used. A journal that cannot be read back as a valid snapshot means the swap never started (the
  *    journal is written completely before the store is touched): it is dropped. If loading the journal fails anyway,
- *    the journal and the store's files are dropped, the store opens empty, and the failure is reported.
+ *    the store's files are dropped, the store opens empty, and the failure is reported; the journal is removed only
+ *    once the host has saved what follows from that (the build's default configuration, the store holding no
+ *    snapshot), so a worker that ends before that tries the import again at the next open, and opens the store empty
+ *    again when it fails again.
  */
 import { bytesToHex } from "../../src/postgres/bytes.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
@@ -634,7 +637,8 @@ export interface OpenedStore {
   /** The manifest of the import this open finished (`null`: none was pending). Its journal is still on file: remove
    *  it ({@link SnapshotFiles.removeJournal}) once what follows from the import is saved. */
   imported: SnapshotManifest | null;
-  /** Why a pending import could not be finished (the store was opened empty then), or `null`. */
+  /** Why a pending import could not be finished (the store was opened empty then), or `null`. Its journal is still on
+   *  file: remove it ({@link SnapshotFiles.removeJournal}) once what follows from the empty store is saved. */
   failure: string | null;
 }
 
@@ -650,8 +654,8 @@ export interface FinishingOptions extends Omit<OpenStoreOptions, "prepare"> {
 /**
  * Opens the store `dataDir`, first finishing an import its journal holds: under the store's lock, a valid journal's
  * snapshot replaces the store (its files removed, PGlite creating it anew, the migrations, the rows loaded and checked).
- * An invalid journal (the swap never started) is dropped. When the pending import cannot be finished, the journal and
- * the store's files are dropped and the store opens empty.
+ * An invalid journal (the swap never started) is dropped. When the pending import cannot be finished, the store's files
+ * are dropped and the store opens empty; the journal stays for the opener to remove (see {@link OpenedStore.failure}).
  */
 export async function openFinishingImport(
   open: StoreOpener,
@@ -712,8 +716,9 @@ async function reopenEmpty(
   failure: string,
 ): Promise<OpenedStore> {
   const { lock: _unused, ...rest } = options;
+  // The journal stays: the opener removes it once the configuration of the empty store is saved, and until then every
+  // open tries the import again (and opens the store empty again when it fails again).
   const prepare = async (): Promise<void> => {
-    await files.removeJournal();
     await files.removeStore();
   };
   let store: Store;

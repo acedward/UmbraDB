@@ -26,8 +26,9 @@
  * - `[[browser.snapshot.journal]]` — a store with an import journal is replaced by the journal's snapshot when it is next
  *   opened (also over a half-written store: its files are removed and PGlite creates the store anew), and the journal
  *   stays until the opener removes it; an invalid journal (the swap never started) is dropped and the store opens as it
- *   was; a journal whose rows fail to load leaves an empty store and the failure; a host booting over a journal reports
- *   the import, saves the continuing configuration and only then removes the journal.
+ *   was; a journal whose rows fail to load leaves an empty store and the failure, and stays until the opener removes
+ *   it; a host booting over a journal reports the import, saves the continuing configuration and only then removes the
+ *   journal.
  * - `[[browser.snapshot.published]]` — the build's published snapshot of the recorded range 714485–715183 holds the
  *   recorded live sync (archive digest `cb0d5e21…`, range-tables digest `af6583d0…c832c`) and no NULL `bytea[]`
  *   element, its index validates and lists the three, and an import of it answers the explorer's API with no chain
@@ -487,7 +488,7 @@ describe("browser engine snapshots", () => {
     expect(await settings.load()).toEqual(status.settings);
   }, 180_000);
 
-  it("[[browser.snapshot.journal]] an import journal replaces the store when it is next opened and stays until removed; an invalid one is dropped; rows that fail to load leave an empty store; a host booting over a journal saves the continuing configuration, then removes the journal", async () => {
+  it("[[browser.snapshot.journal]] an import journal replaces the store when it is next opened and stays until removed; an invalid one is dropped; rows that fail to load leave an empty store and the journal; a host booting over a journal saves the continuing configuration, then removes the journal", async () => {
     const source = await hostWithU1(MID);
     const file = await bytesOf((await result<ExportResult>(source, "export")).file);
     const { manifest } = decodeSnapshotFile(file);
@@ -557,7 +558,8 @@ describe("browser engine snapshots", () => {
     } finally {
       await failing.store.close();
     }
-    expect(existsSync(journal)).toBe(false);
+    expect(existsSync(journal), "the journal stays until the opener removes it").toBe(true);
+    await files.removeJournal();
 
     // A host booting over a journal reports the import and saves the configuration that continues it; the journal is
     // removed only after that.

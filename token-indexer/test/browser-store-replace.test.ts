@@ -39,7 +39,10 @@
  *   range chosen afterwards is what a later `reset` runs again.
  * - `[[browser.host.import-failed-empty]]` — a pending import whose rows fail to load opens the store empty with the
  *   build's default configuration (the store holds no snapshot any more; the automatic start as it was), so nothing
- *   starts at the earlier snapshot's first height; the status says while the store holds an imported snapshot.
+ *   starts at the earlier snapshot's first height; the status says while the store holds an imported snapshot. The
+ *   import's journal stays until that configuration is saved: a boot whose save of it fails, or a worker that ends
+ *   before it, leaves the next boot to open the store empty with the default configuration again, never the earlier
+ *   snapshot's.
  * - `[[browser.host.range-saved-first]]` — `range` saves the new range before it replaces the store: when that save
  *   fails nothing changes, and a worker that ends while the store is replaced leaves the new range (with the automatic
  *   start and the mark that the store is to be replaced) saved, so the next boot starts it on the new store.
@@ -769,5 +772,71 @@ describe("replacing the browser engine's store", () => {
     await result(b.host, "start");
     const started = await untilStatus(b.host, "the new archive", (x) => x.cursors?.sync !== null && x.cursors?.sync !== undefined);
     expect(started.cursors!.sync!.startHeight).toBe(U1.from + 25);
+  }, 300_000);
+
+  it("[[browser.host.import-failed-empty]] the journal of an import whose rows fail to load stays until the default configuration is saved: a boot whose save of it fails, or a worker that ends before it, leaves the next boot to open the store empty with the default configuration, never the earlier snapshot's", async () => {
+    const snap = await snapshotAtMid();
+    const { manifest, data } = decodeSnapshotFile(new Uint8Array(await snap.file.arrayBuffer()));
+    const defaultStart: StartConfig = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 25 }, ...FAST };
+    const DEFAULTS = { config: defaultStart, autoStart: false };
+    const quota = (): Error => Object.assign(new Error("the quota is exceeded"), { name: "QuotaExceededError" });
+    /** A store that holds the snapshot (its configuration saved, marked imported), then a journal whose rows do not load. */
+    async function importedThenBroken() {
+      const dir = storeDir();
+      const files = nodeStoreFiles(dir);
+      const identity = memoryStoreIdentity();
+      const saved = memorySettingsStore({ config: { source: { kind: "tape", range: "u1" } }, autoStart: true });
+      const a = host({ dataDir: dir, snapshotFiles: files, storeIdentity: identity, settings: saved, defaultStart });
+      expect((await result<ImportResult>(a.host, "import", { snapshot: snap.file })).status.storeImported).toBe(true);
+      await a.host.close();
+      hosts.splice(hosts.indexOf(a), 1);
+      await files.writeJournal(encodeSnapshotFile({ ...manifest, archive: { ...manifest.archive, height: MID - 1 } }, data));
+      return { dir, files, identity, saved, before: await saved.load() };
+    }
+    async function opensEmptyWithDefaults(at: Awaited<ReturnType<typeof importedThenBroken>>, what: string): Promise<void> {
+      const next = host({ dataDir: at.dir, snapshotFiles: at.files, storeIdentity: at.identity, settings: at.saved, defaultStart });
+      expect(await next.host.boot(), what).toMatchObject({ phase: "ready", storeProblem: null });
+      const s = await result<HostStatus>(next.host, "status");
+      expect(s.cursors, what).toEqual({ sync: null, scan: null });
+      expect(s.settings, what).toEqual(DEFAULTS);
+      expect(s.storeImported, what).toBeUndefined();
+      expect(await at.saved.load(), `${what}: no imported mark on file`).toEqual(DEFAULTS);
+      expect(await at.files.readJournal(), `${what}: the journal is removed once the configuration is saved`).toBeUndefined();
+      await next.host.close();
+      hosts.splice(hosts.indexOf(next), 1);
+    }
+
+    // The save of the default configuration fails: the boot fails, the journal and the snapshot's configuration stay.
+    const failed = await importedThenBroken();
+    expect(failed.before).toMatchObject({ config: { startHeight: U1.from }, imported: true });
+    const refusing = host({
+      dataDir: failed.dir, snapshotFiles: failed.files, storeIdentity: failed.identity, defaultStart,
+      settings: { load: () => failed.saved.load(), save: async () => { throw quota(); } },
+    });
+    expect(await refusing.host.boot()).toMatchObject({ phase: "failed", storeProblem: "unusable" });
+    expect(openStores(refusing), "the store is closed").toHaveLength(0);
+    await refusing.host.close();
+    hosts.splice(hosts.indexOf(refusing), 1);
+    expect(await failed.saved.load(), "the configuration on file is as it was").toEqual(failed.before);
+    expect(await failed.files.readJournal(), "the journal stays").toBeDefined();
+    await opensEmptyWithDefaults(failed, "after a failed save");
+
+    // The worker ends while the default configuration is saved (the store already open empty).
+    const killed = await importedThenBroken();
+    let journalAtSave: boolean | undefined;
+    let reached = false;
+    const w = abandoned({
+      dataDir: killed.dir, snapshotFiles: killed.files, storeIdentity: killed.identity, defaultStart,
+      settings: { load: () => killed.saved.load(), save: async () => { journalAtSave = existsSync(`${killed.dir}.import.snapshot.tar`); reached = true; await never; } },
+    });
+    void w.host.boot();
+    const end = Date.now() + 60_000;
+    while (!reached) {
+      if (Date.now() > end) throw new Error("the boot never saved the default configuration");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(journalAtSave, "the journal is still on file while the default configuration is saved").toBe(true);
+    expect(await killed.saved.load(), "the configuration on file is as it was").toEqual(killed.before);
+    await opensEmptyWithDefaults(killed, "after a worker that ended");
   }, 300_000);
 });

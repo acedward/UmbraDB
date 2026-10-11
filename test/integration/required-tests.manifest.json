@@ -2025,7 +2025,7 @@
     {
       "id": "browser.host.import-failed-empty",
       "file": "token-indexer/test/browser-store-replace.test.ts",
-      "description": "a pending import whose rows fail to load opens the store empty with the build's default configuration (the store holds no snapshot any more, the automatic start as it was), so nothing starts at the earlier snapshot's first height; the status says while the store holds an imported snapshot"
+      "description": "a pending import whose rows fail to load opens the store empty with the build's default configuration (the store holds no snapshot any more, the automatic start as it was), so nothing starts at the earlier snapshot's first height; the status says while the store holds an imported snapshot; the journal stays until that configuration is saved, so a boot whose save of it fails, or a worker that ends before it, leaves the next boot to open the store empty with the default configuration"
     },
     {
       "id": "browser.host.import-retry-keeps-journal",
