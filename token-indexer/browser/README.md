@@ -91,10 +91,20 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
   a tap, Enter or Space; a click on a box the mouse opened keeps it open; a second click, Escape or a click elsewhere
   closes it —
   and stays open, updated in place, across the overview's refreshes (`explain.ts`; no native tooltip, which opens only
-  after a still hover and never on a click, a tap or the keyboard). It explains the usage the browser counts against
-  the quota (larger than the store while it is open, because Chrome reserves space for the open store's files), what
-  the pause does, what "not persistent" means — and that the browser refused to keep the site's storage, or that
-  asking failed, when it did — and the pause's reason.
+  after a still hover and never on a click, a tap or the keyboard). It says, one short line each: the pause's reason
+  (while paused), the store's size, the browser's usage against the quota (higher than the store: Chrome reserves
+  space while it is open), where the sync pauses and resumes, and persistence, e.g.
+
+  ```
+  Store: 42.5 MB
+  Browser usage: 63.3 MB of a 10.8 GB quota (higher than the store: Chrome reserves space while it is open)
+  Sync pauses at 9.7 GB and resumes when space frees up
+  Not persistent: the browser may delete this data when the disk runs low
+  ```
+
+  ("Persistent: the browser keeps this data when the disk runs low", "Persistence: unknown", or "Not persistent (the
+  request failed: …)" when asking failed; before the engine's first reading, "Store: size not read yet" and the
+  page's own usage and quota).
 - **Controls**, each one request (from a follower the leader performs it): **start** (the saved configuration),
   **stop**, **change range** (a start, `tip` or a height, and an optional end, checked before it is sent), **reset**,
   **export snapshot**, **import snapshot** (a file). A range change, a reset or an import on a store that holds blocks
@@ -368,8 +378,7 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   (`requestPersistentStorage()` in `client.ts`; the grant is per site, so any tab's request counts; the engine page keeps
   the answer in `window.umbradbEngine.persistence`), and the worker's `storage.persisted` reports the outcome. A
   refusal changes nothing else: the engine runs, and the overview's storage line says "not persistent", its explanation
-  that the browser refused to keep the site's storage (or that asking failed), so the store may be cleared when space
-  runs low.
+  that the browser may delete this data when the disk runs low (and that the request failed, when it did).
 - **Storage quota** (`quota.ts`). Before a sync batch (reading again when the last reading is 10 s old) the worker
   compares `navigator.storage.estimate()`'s usage with its quota. While the store is open that usage includes the space
   Chrome reserves for the store's open files (about 1 GB in the session that creates the store, for about 42 MB of

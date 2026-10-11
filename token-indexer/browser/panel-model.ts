@@ -155,24 +155,22 @@ function stateOf(i: PanelInputs): { state: EngineState; detail: string } {
 /** Whether the site's storage is persistent, in one word or two. */
 const persistentWord = (persisted: boolean | null): string => (persisted === null ? "persistence unknown" : persisted ? "persistent" : "not persistent");
 
-/** The sentence of the storage line's explanation about persistence (and the browser's refusal, when it refused). */
+/** The persistence line of the storage line's explanation (with the browser's failure, when asking failed). */
 export function persistenceSentence(persisted: boolean | null, request: PersistenceResult | null | undefined): string {
-  if (persisted === true) return "Persistent: the browser keeps this site's storage when space runs low.";
-  if (persisted === null) return "Whether the browser keeps this site's storage is not known.";
+  if (persisted === true) return "Persistent: the browser keeps this data when the disk runs low";
+  if (persisted === null) return "Persistence: unknown";
   if (request !== null && request !== undefined && !request.persisted && request.error !== null)
-    return `Not persistent: asking the browser to keep this site's storage failed (${request.error}), so it may clear the store when space runs low; the engine runs anyway.`;
-  if (request !== null && request !== undefined && !request.persisted && request.requested)
-    return "Not persistent: the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway.";
-  return "Not persistent: the browser may clear this site's storage when space runs low.";
+    return `Not persistent (the request failed: ${request.error}): the browser may delete this data when the disk runs low`;
+  return "Not persistent: the browser may delete this data when the disk runs low";
 }
 
 /**
  * The storage line, one short line — the store's own size, the quota, the usage at which the sync pauses, and whether
  * the storage is persistent (`60.7 MB · quota 10.8 GB · pauses at 9.7 GB · not persistent`, then `· paused` while the
- * sync is paused) — and its explanation, which the line opens on demand (`explain.ts`): what the browser counts
- * against the quota (more than the store while it is open: Chrome reserves space for the store's open files), what the
- * pause does, what "not persistent" means and why, and the pause's reason. Until the engine has a storage reading, the
- * page's own `navigator.storage` figures.
+ * sync is paused) — and its explanation, which the line opens on demand (`explain.ts`): one short line each (`title`,
+ * lines separated by `\n`), the pause's reason first while the sync is paused, then the store's size, the browser's
+ * usage against the quota (higher than the store while it is open: Chrome reserves space), where the sync pauses, and
+ * persistence. Until the engine has a storage reading, the page's own `navigator.storage` figures.
  */
 export function storageLine(s: HostStatus | null, page: PageStorage | null, request: PersistenceResult | null | undefined): { text: string; title: string } {
   const st = s?.storage ?? null;
@@ -181,19 +179,18 @@ export function storageLine(s: HostStatus | null, page: PageStorage | null, requ
     if (st.pauseAtBytes !== null) parts.push(`pauses at ${formatBytes(st.pauseAtBytes)}`);
     parts.push(persistentWord(st.persisted));
     if (st.paused) parts.push("paused");
-    const title = [
-      st.storeBytes === null ? "The store's own size is not read yet." : `The store's own files take ${formatBytes(st.storeBytes)}.`,
-      `The browser counts ${formatBytes(st.usageBytes)} against this site's quota of ${formatBytes(st.quotaBytes)}; while the store is open that count includes the space Chrome reserves for the store's open files, so it is larger than the store.`,
-    ];
-    if (st.pauseAtBytes !== null) title.push(`The sync pauses when that count reaches ${formatBytes(st.pauseAtBytes)}, before the quota, and resumes once space frees; the scan and the API go on.`);
-    title.push(persistenceSentence(st.persisted, request));
-    if (st.paused) title.push(`Paused: ${st.pausedReason ?? "the usage is near the quota"}.`);
-    return { text: parts.join(" \u00b7 "), title: title.join(" ") };
+    const lines: string[] = [];
+    if (st.paused) lines.push(`Paused: ${st.pausedReason ?? "the usage is near the quota"}`);
+    lines.push(`Store: ${st.storeBytes === null ? "size not read yet" : formatBytes(st.storeBytes)}`);
+    lines.push(`Browser usage: ${formatBytes(st.usageBytes)} of a ${formatBytes(st.quotaBytes)} quota (higher than the store: Chrome reserves space while it is open)`);
+    if (st.pauseAtBytes !== null) lines.push(`Sync pauses at ${formatBytes(st.pauseAtBytes)} and resumes when space frees up`);
+    lines.push(persistenceSentence(st.persisted, request));
+    return { text: parts.join(" \u00b7 "), title: lines.join("\n") };
   }
   if (page !== null) {
     return {
       text: `size not read yet \u00b7 quota ${formatBytes(page.quotaBytes)} \u00b7 ${persistentWord(page.persisted)}`,
-      title: `The engine has not read the store's size yet. The browser counts ${formatBytes(page.usageBytes)} against this site's quota of ${formatBytes(page.quotaBytes)}. ${persistenceSentence(page.persisted, request)}`,
+      title: ["Store: size not read yet", `Browser usage: ${formatBytes(page.usageBytes)} of a ${formatBytes(page.quotaBytes)} quota`, persistenceSentence(page.persisted, request)].join("\n"),
     };
   }
   return { text: "unknown", title: "" };

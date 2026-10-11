@@ -193,8 +193,8 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
 
   it("[[browser.worker.persist-refused]] a refused or failing persist() is shown by the overview and the engine runs anyway to the recorded digest", async () => {
     for (const [variant, script, text] of [
-      ["refused", "StorageManager.prototype.persist = async function () { return false; };", "Not persistent: the browser refused to keep this site's storage, so it may clear the store when space runs low; the engine runs anyway."],
-      ["failing", "StorageManager.prototype.persist = async function () { throw new DOMException('not now', 'InvalidStateError'); };", "Not persistent: asking the browser to keep this site's storage failed (not now), so it may clear the store when space runs low; the engine runs anyway."],
+      ["refused", "StorageManager.prototype.persist = async function () { return false; };", "Not persistent: the browser may delete this data when the disk runs low"],
+      ["failing", "StorageManager.prototype.persist = async function () { throw new DOMException('not now', 'InvalidStateError'); };", "Not persistent (the request failed: not now): the browser may delete this data when the disk runs low"],
     ] as const) {
       await withBrowser(async (b) => {
         const p = await open(b, "index.html", { pageScript: `StorageManager.prototype.persisted = async function () { return false; }; ${script}` });
@@ -203,7 +203,7 @@ describe("the browser engine at its limits (Chrome, OPFS)", () => {
         const end = await untilEnd(p, U1.to);
         expect(end.storage?.persisted, variant).toBe(false);
         expect((await digest(p)).archive.sha256, variant).toBe(U1_ARCHIVE);
-        // The storage line says "not persistent"; its explanation (opened on demand) says why.
+        // The storage line says "not persistent"; its explanation (opened on demand) says what that means.
         await p.waitFor(`document.querySelector('#engine-panel [data-field=storage]')?.textContent.endsWith(" \u00b7 not persistent") && document.getElementById('engine-storage-explanation').textContent.includes(${JSON.stringify(text)})`, 30_000, `the overview's ${variant} persistence`);
         expect(p.exceptions).toEqual([]);
       });

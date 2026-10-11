@@ -24,8 +24,9 @@ import { dataNode } from "./visible-text.ts";
 export interface Explanation {
   /** The box (append it where the explanation belongs). */
   readonly box: HTMLElement;
-  /** Makes `control` open the box with the text `text()` returns (read when it opens and at each refresh). */
-  attach(control: HTMLButtonElement, text: () => string): void;
+  /** Makes `control` open the box with the text `text()` returns (read when it opens and at each refresh): one block,
+   *  or lines, each a block of its own (a line break inside a text is data, drawn as a visible mark). */
+  attach(control: HTMLButtonElement, text: () => string | readonly string[]): void;
   /** Redraws the open box's text when its control's text has changed; the box stays as it is, open or closed. */
   refresh(): void;
   /** The control whose text the box shows, or `null` while it is closed. */
@@ -68,7 +69,7 @@ export function explanation(id: string, field?: string): Explanation {
   const hide = (): void => {
     if (isOpen()) box.hidePopover();
   };
-  const texts = new Map<HTMLButtonElement, () => string>();
+  const texts = new Map<HTMLButtonElement, () => string | readonly string[]>();
   /** The control the box shows, and how it was opened: the pointer resting on it, or a click, a tap or a key. */
   let current: HTMLButtonElement | null = null;
   let via: "hover" | "press" | null = null;
@@ -84,10 +85,19 @@ export function explanation(id: string, field?: string): Explanation {
   const draw = (): void => {
     const of = current ?? (texts.size === 1 ? [...texts.keys()][0]! : null);
     if (of === null) return;
-    const text = texts.get(of)?.() ?? "";
-    if (text === shown) return;
-    shown = text;
-    box.replaceChildren(dataNode(document, text));
+    const got = texts.get(of)?.() ?? "";
+    const lines = typeof got === "string" ? [got] : got;
+    const key = JSON.stringify(lines);
+    if (key === shown) return;
+    shown = key;
+    box.replaceChildren(
+      ...lines.map((line) => {
+        const d = document.createElement("div");
+        d.className = "explain-line";
+        d.append(dataNode(document, line));
+        return d;
+      }),
+    );
   };
   const cancelLeave = (): void => {
     if (leaveTimer !== undefined) clearTimeout(leaveTimer);
@@ -139,7 +149,7 @@ export function explanation(id: string, field?: string): Explanation {
 
   return {
     box,
-    attach(control: HTMLButtonElement, text: () => string): void {
+    attach(control: HTMLButtonElement, text: () => string | readonly string[]): void {
       texts.set(control, text);
       control.setAttribute("aria-controls", box.id);
       control.addEventListener("pointerenter", (e) => {

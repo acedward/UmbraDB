@@ -83,13 +83,16 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const browserExe = findBrowser();
 
+/** An explanation's lines (`\n` between them) as the box draws them: each line with its hidden characters marked. */
+const shownLines = (text: string): string => text.split("\n").map(visibleText).join("\n");
+
 /** The overview's fields as drawn (text), the storage line's explanation (its box, open or not), and the sources it drew
  *  them from. */
 const OVERVIEW = `(() => {
   const p = document.getElementById('engine-panel');
   const fields = {};
   for (const f of p.querySelectorAll('.kv > .v[data-field]')) fields[f.getAttribute('data-field')] = f.textContent;
-  return { fields, storageTitle: document.getElementById('engine-storage-explanation').textContent, inputs: window.umbradbOverview.inputs(),
+  return { fields, storageTitle: [...document.getElementById('engine-storage-explanation').children].map((l) => l.textContent).join('\\n'), inputs: window.umbradbOverview.inputs(),
     tab: document.body.getAttribute('data-tab-shown'), title: document.title, search: location.search, hash: location.hash };
 })()`;
 type OverviewField = "health" | "role" | "network" | "state" | "configuration" | "history" | "synced" | "scanned" | "tip" | "lag" | "rate" | "uptime" | "durability" | "storage";
@@ -235,7 +238,7 @@ describe("the static build's main page in Chrome (served with its headers)", () 
     for (const k of ["health", "role", "network", "configuration", "history", "synced", "scanned", "tip", "lag", "rate", "uptime", "durability", "storage"] as const)
       expect(o.fields[k], k).toBe(visibleText(view[k]));
     expect(o.fields.state).toBe(visibleText(view.stateDetail === "" ? view.state : `${view.state} · ${view.stateDetail}`));
-    expect(o.storageTitle).toBe(visibleText(view.storageTitle));
+    expect(o.storageTitle).toBe(shownLines(view.storageTitle));
     return view;
   }
 
@@ -295,8 +298,8 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       expect(reading.pauseAtBytes).toBe(pauseThresholdBytes(quota));
       expect(o.fields.storage).toBe(`${formatBytes(reading.storeBytes)} · quota ${formatBytes(quota)} · pauses at ${formatBytes(pauseThresholdBytes(quota))} · ${reading.persisted ? "persistent" : "not persistent"}`);
       expect(o.fields.storage.length).toBeLessThan(80);
-      expect(o.storageTitle).toContain(`The browser counts ${formatBytes(reading.usageBytes)} against this site's quota of ${formatBytes(quota)}; while the store is open that count includes the space Chrome reserves`);
-      expect(o.storageTitle).toContain(reading.persisted ? "Persistent:" : "Not persistent: ");
+      expect(o.storageTitle.split("\n")).toContain(`Browser usage: ${formatBytes(reading.usageBytes)} of a ${formatBytes(quota)} quota (higher than the store: Chrome reserves space while it is open)`);
+      expect(o.storageTitle.split("\n").at(-1)).toMatch(reading.persisted ? /^Persistent: / : /^Not persistent: /);
       expect(view.tokenIndexer).toBe(true);
 
       // The snapshot is watched while the overview is shown, and not on another tab.
@@ -347,11 +350,11 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       /** Whether the box is shown, its text, the control's state, and the explanation of the figures drawn. */
       const read = (): Promise<{ shown: boolean; text: string; expanded: string | null; controls: string | null; expected: string; line: string; drawnLine: string }> => p.eval(`(() => {
         const i = window.umbradbOverview.inputs();
-        return { shown: ${BOX}.matches(':popover-open'), text: ${BOX}.textContent, expanded: ${CONTROL}.getAttribute('aria-expanded'), controls: ${CONTROL}.getAttribute('aria-controls'),
+        return { shown: ${BOX}.matches(':popover-open'), text: [...${BOX}.children].map((l) => l.textContent).join('\\n'), expanded: ${CONTROL}.getAttribute('aria-expanded'), controls: ${CONTROL}.getAttribute('aria-controls'),
           inputs: i, line: ${CONTROL}.textContent };
       })()`).then((r: Json) => {
         const model = storageLine(r.inputs.status, r.inputs.pageStorage, r.inputs.persistence);
-        return { shown: r.shown, text: r.text, expanded: r.expanded, controls: r.controls, expected: visibleText(model.title), line: r.line, drawnLine: visibleText(model.text) };
+        return { shown: r.shown, text: r.text, expanded: r.expanded, controls: r.controls, expected: shownLines(model.title), line: r.line, drawnLine: visibleText(model.text) };
       });
       let r = await read();
       expect([r.shown, r.expanded, r.controls, r.line]).toEqual([false, "false", "engine-storage-explanation", r.drawnLine]);
@@ -369,7 +372,7 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       await p.waitFor("(() => { const i = window.umbradbOverview.inputs(); return i !== null && i.status !== null && i.status.storage == null && i.pageStorage !== null; })()", 15_000, "the page's own figures");
       r = await read();
       expect(r.line).toMatch(/^size not read yet . quota /);
-      expect(r.expected).toMatch(/^The engine has not read the store's size yet\. The browser counts .* against this site's quota of /);
+      expect(r.expected).toMatch(/^Store: size not read yet\nBrowser usage: [^\n]+ of a [^\n]+ quota\n(Persistent|Not persistent|Persistence)/);
       await p.eval(`${CONTROL}.click(); ${BOX}.__mark = 1`);
       r = await read();
       expect([r.shown, r.expanded, r.text, r.line]).toEqual([true, "true", r.expected, r.drawnLine]);
@@ -377,7 +380,7 @@ describe("the static build's main page in Chrome (served with its headers)", () 
       await p.waitFor("window.umbradbOverview.inputs()?.status?.storage != null", 15_000, "the engine's storage reading");
       r = await read();
       expect([r.shown, r.expanded, r.text, r.line]).toEqual([true, "true", r.expected, r.drawnLine]);
-      expect(r.expected).toMatch(/^The store's own (files take|size is not read yet).* against this site's quota of /);
+      expect(r.expected).toMatch(/^(Paused: [^\n]*\n)?Store: [^\n]+\nBrowser usage: [^\n]+ quota \(higher than the store: Chrome reserves space while it is open\)\n/);
       expect(await p.eval(`${BOX}.__mark`)).toBe(1);
       await p.eval(`${CONTROL}.click()`);
       expect((await read()).shown).toBe(false);
