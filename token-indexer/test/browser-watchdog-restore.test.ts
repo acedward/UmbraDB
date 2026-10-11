@@ -415,13 +415,14 @@ describe("page watchdog: what a restart starts", () => {
         hold.armed = true;
         const ranging = c.range(range.startHeight as number, range.endHeight).then(() => "answered", (e: EngineError) => e.code);
         await until(() => hold.reached, `${at}: the worker held`, 30_000);
-        if (at === "replacing the store") expect(notices.filter((n) => n.notice === "engine").at(-1), at).toMatchObject({ engine: { state: "stopped" } });
+        // The engine's stop was reported (the notice arrives through the channel, after the host has moved on).
+        if (at === "replacing the store") await until(() => notices.some((n) => n.notice === "engine" && n.engine.state === "stopped"), `${at}: the engine's stop reported`, 30_000);
         const restarted = r.restart();
         if (at === "starting the range") hold.letGo();
         const next = await restarted;
         expect(await ranging, at).toBe("restarted");
         await until(() => next.received.some((m) => m.type === "start"), `${at}: the range started on the new worker`, 30_000);
-        expect(next.received.find((m) => m.type === "start"), at).toMatchObject({ config: range });
+        expect(next.received.find((m) => m.type === "start"), at).not.toHaveProperty("config");
         await until(async () => (await c.status()).engine?.status.sync.phase === "done", `${at}: the range on the new worker`);
         const s = await c.status();
         expect(s.engine, at).toMatchObject({ running: true, config: range, error: null });
