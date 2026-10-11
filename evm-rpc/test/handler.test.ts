@@ -14,7 +14,6 @@
  *   of text equals Node's decoding of the text's UTF-8 bytes, for ASCII, two-, three- and four-byte characters, lone
  *   surrogates and a byte-order mark.
  */
-import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asReadFromUtf8, handleHttpRequest, type HttpAnswer, MAX_REQUEST_BYTES, requestTooLarge, textBody, utf8ByteLength } from "../handler.js";
@@ -25,10 +24,8 @@ import { registerReadOnlyMethods } from "../read-only.js";
 import { MethodRegistry, type RpcContext } from "../registry.js";
 import { createRpcServer } from "../server.js";
 import { differentialCases, FAILING_CALLS, VALID_CALLS } from "./differential-cases.js";
+import { sendToServer, type WireAnswer } from "./node-answers.js";
 import { recordedIndexerFetch } from "./recorded-indexer.js";
-
-/** Headers Node's HTTP server adds by itself, outside the handler's answer. */
-const NODE_OWN_HEADERS = /^(date|connection|keep-alive)$/i;
 
 function readOnlyContext(): RpcContext {
   return {
@@ -39,30 +36,7 @@ function readOnlyContext(): RpcContext {
   };
 }
 
-interface WireAnswer {
-  status: number;
-  headers: [string, string][];
-  body: Buffer;
-}
-
-function viaHttp(port: number, method: string, body: string): Promise<WireAnswer> {
-  const bytes = Buffer.from(body, "utf8");
-  return new Promise((resolve, reject) => {
-    const req = request({ host: "127.0.0.1", port, method, path: "/", headers: { "content-type": "application/json", "content-length": bytes.length } }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (d: Buffer) => chunks.push(d));
-      res.on("end", () => {
-        const headers: [string, string][] = [];
-        for (let i = 0; i < res.rawHeaders.length; i += 2) {
-          if (!NODE_OWN_HEADERS.test(res.rawHeaders[i]!)) headers.push([res.rawHeaders[i]!, res.rawHeaders[i + 1]!]);
-        }
-        resolve({ status: res.statusCode!, headers, body: Buffer.concat(chunks) });
-      });
-    });
-    req.on("error", reject);
-    req.end(bytes);
-  });
-}
+const viaHttp = (port: number, method: string, body: string): Promise<WireAnswer> => sendToServer(port, method, body);
 
 /** The answer as it goes over the wire: a body of no bytes for an empty body. */
 const wire = (a: HttpAnswer): WireAnswer => ({ status: a.status, headers: Object.entries(a.headers), body: Buffer.from(a.body, "utf8") });

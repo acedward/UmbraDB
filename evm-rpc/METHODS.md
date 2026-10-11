@@ -587,7 +587,7 @@ while its `evm_rpc` data survived), whose transaction no longer exists at that h
 **Fix (both by-hash methods):**
 
 1. the row is positioned by the hash the indexer knows it by — `relayer:midnight:<hash>` when the
-   row carries one, otherwise its own key (`db.ts::canonicalHashFromRawRef`). The `hash` /
+   row carries one, otherwise its own key (`reader.ts::canonicalHashFromRawRef`). The `hash` /
    `transactionHash` fields still echo the identifier the caller asked about, so a wallet polling
    with its own eth-side hash gets a real, positioned receipt;
 2. a row the block query cannot place is no longer an error. The read falls through to the indexer
