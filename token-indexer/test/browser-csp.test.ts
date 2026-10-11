@@ -171,10 +171,11 @@ describe("the static build under its Content-Security-Policy in Chrome", () => {
   /** Opens the engine page and waits for the worker's boot to end. */
   async function openEngine(site: LocalServer): Promise<Page> {
     const page = await pageOf(site);
-    await page.goto(`${site.origin}/engine.html`);
-    await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
-    const boot = (await page.eval("window.umbradbEngine.client.booted()")) as { phase: string; error: string | null };
-    expect(boot, JSON.stringify(boot)).toMatchObject({ phase: "ready", error: null });
+    await page.goto(`${site.origin}/engine.html`, 30_000, async () => {
+      await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
+      const boot = (await page.eval("window.umbradbEngine.client.booted()")) as { phase: string; error: string | null };
+      expect(boot, JSON.stringify(boot)).toMatchObject({ phase: "ready", error: null });
+    });
     return page;
   }
   /** Where the page and its workers went since `from` (request records), and what they reported. */

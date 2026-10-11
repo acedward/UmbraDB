@@ -122,9 +122,9 @@ describe("the browser build's dev server", () => {
 
   it("[[browser.dev.styles]] in Chromium the dev server's explorer is styled: its style sheet loaded with its rules, the brand font loaded and the body's, the logo the 22-pixel mark, the overview's labels and values side by side and the main page's own style applied; the status page in the same font; the icon loaded", async () => {
     const page = await browser.newPage();
-    await page.goto(`${origin}/`, 60_000);
     // The dev server may reload the page once while it prepares the dependencies; wait for the styled, booted page.
-    await page.waitFor("document.querySelector('#engine-panel .kv') !== null && getComputedStyle(document.body).fontFamily.startsWith('Outfit')", 90_000, "the styled explorer and its panel");
+    await page.goto(`${origin}/`, 60_000, () =>
+      page.waitFor("document.querySelector('#engine-panel .kv') !== null && getComputedStyle(document.body).fontFamily.startsWith('Outfit')", 90_000, "the styled explorer and its panel"));
     const look = await page.eval<Record<string, unknown>>(`(async () => {
       await document.fonts.load("14px Outfit");
       const sheet = [...document.styleSheets].find((s) => (s.href ?? "").endsWith("/mip0018/ui/page.css"));
@@ -152,8 +152,8 @@ describe("the browser build's dev server", () => {
     expect(page.exceptions).toEqual([]);
 
     const system = await browser.newPage();
-    await system.goto(`${origin}/system.html`, 60_000);
-    await system.waitFor("getComputedStyle(document.body).fontFamily.startsWith('Outfit') && getComputedStyle(document.querySelector('.brand')).display === 'flex'", 90_000, "the styled status page");
+    await system.goto(`${origin}/system.html`, 60_000, () =>
+      system.waitFor("getComputedStyle(document.body).fontFamily.startsWith('Outfit') && getComputedStyle(document.querySelector('.brand')).display === 'flex'", 90_000, "the styled status page"));
     expect(system.exceptions).toEqual([]);
     await system.close();
     await page.close();

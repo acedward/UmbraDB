@@ -88,10 +88,11 @@ async function until(page: Page, what: string, ok: (s: HostStatus) => boolean, t
 
 /** Loads the explorer and waits until this tab's engine connection has a booted engine behind it. */
 async function openExplorer(page: Page, url: string): Promise<void> {
-  await page.goto(url);
-  await page.waitFor("window.umbradbEngine !== undefined && window.umbradbExplorerHost !== undefined", 30_000, "the explorer page");
-  const boot = (await page.eval("window.umbradbEngine.client.booted()")) as { phase: string; error: string | null };
-  expect(boot, JSON.stringify(boot)).toMatchObject({ phase: "ready", error: null });
+  await page.goto(url, 30_000, async () => {
+    await page.waitFor("window.umbradbEngine !== undefined && window.umbradbExplorerHost !== undefined", 30_000, "the explorer page");
+    const boot = (await page.eval("window.umbradbEngine.client.booted()")) as { phase: string; error: string | null };
+    expect(boot, JSON.stringify(boot)).toMatchObject({ phase: "ready", error: null });
+  });
 }
 
 /** Replays `range` from `from` to `to` in the worker, waits until both loops reached `to`, then stops the engine. */

@@ -168,11 +168,12 @@ describe("the system status page in Chrome (static build with its headers)", () 
   }
   /** Loads the status page in `p` and waits for its first drawn snapshot. */
   async function loadStatus(p: Page, query = ""): Promise<void> {
-    await p.goto(`${site.origin}/system.html${query}`);
-    await p.waitFor("window.umbradbEngine !== undefined && window.umbradbSystem !== undefined", 30_000, "the status page");
-    await p.eval("window.umbradbEngine.tabs.ready");
-    await p.eval("window.umbradbEngine.client.booted()");
-    await p.waitFor("window.umbradbSystem.renders >= 1", 30_000, "the first drawn snapshot");
+    await p.goto(`${site.origin}/system.html${query}`, 30_000, async () => {
+      await p.waitFor("window.umbradbEngine !== undefined && window.umbradbSystem !== undefined", 30_000, "the status page");
+      await p.eval("window.umbradbEngine.tabs.ready");
+      await p.eval("window.umbradbEngine.client.booted()");
+      await p.waitFor("window.umbradbSystem.renders >= 1", 30_000, "the first drawn snapshot");
+    });
   }
 
   async function waitFor<T>(what: string, read: () => Promise<T>, ok: (v: T) => boolean, timeoutMs = 120_000): Promise<T> {

@@ -10,10 +10,9 @@
  *   since (no jump to the new tip, no hole).
  * - `[[engine.start-tip.stop]]` — a stop while it waits for the tip ends the sync cleanly, with nothing archived; a
  *   start height that is not a height, `"tip"` or a function is refused.
- * - `[[engine.start-tip.follows]]` — the follow of spec SC-008 ("the archive and scan heights follow the finalized tip
- *   for 10 minutes"), in simulated time: the recorded IDX range with a finalized tip that rises one block every 6 s of
- *   the manual clock (Midnight's block time; the live Stagenet runs saw about one every 8.7 s, so this is the faster
- *   case), the engine with the browser's settings (20 heights per sync batch, 10 blocks per scan step) and the
+ * - `[[engine.start-tip.follows]]` — the archive and scan heights follow the finalized tip for 10 minutes, in simulated
+ *   time: the recorded IDX range with a finalized tip that rises one block every 6 s of the manual clock (Midnight's
+ *   block time; the live Stagenet runs saw about one every 8.7 s, so this is the faster case), the engine with the browser's settings (20 heights per sync batch, 10 blocks per scan step) and the
  *   engine's own waits (10 s at the tip for the sync, 2 s for the scan), for 10 simulated minutes: the archive starts
  *   at the tip and every time both loops wait, the archive is within the blocks one sync wait lets pass (2) and the
  *   scan within that of the archive; at the end both are at the tip, with every height archived once.
@@ -217,6 +216,6 @@ describe("indexer engine: start at the finalized tip", () => {
     const [blocks] = await sql<{ n: number; lo: string; hi: string }[]>`
       SELECT count(*)::int AS n, min(height)::text AS lo, max(height)::text AS hi FROM ${sql("follow_arch")}.blocks`;
     expect(blocks).toEqual({ n: end.archive - H + 1, lo: String(H), hi: String(end.archive) });
-    console.log(`SC-008 follow, simulated: ${MINUTES} min, tip ${H} → ${end.tip}, ${samples.length} samples, worst archive lag ${worst.archive} and scan lag ${worst.scan} blocks (allowed ${slack})`);
+    console.log(`following the finalized tip, simulated: ${MINUTES} min, tip ${H} → ${end.tip}, ${samples.length} samples, worst archive lag ${worst.archive} and scan lag ${worst.scan} blocks (allowed ${slack})`);
   }, 120_000);
 });

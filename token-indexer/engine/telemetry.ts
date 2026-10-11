@@ -278,7 +278,7 @@ export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): Engine
   const logRing = new Ring<LogEntry>(LOG_CAPACITY);
   let seq = 0;
   const addLog = (level: LogLevel, source: string, text: string): void => {
-    logRing.push({ seq: seq++, at: clock.now(), level, source, text: capText(redactText(text)) });
+    logRing.push({ seq: seq++, at: clock.now(), level, source, text: redactText(text) });
   };
 
   // Sync.

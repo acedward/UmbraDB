@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 440), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 444), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -1655,7 +1655,17 @@
     {
       "id": "pglite.client.unsafe-isolation",
       "file": "test/postgres/pglite-sql.test.ts",
-      "description": "a text run with unsafe never runs inside another transaction (one PGlite's transaction() holds, the client's own begin, another client's reservation): it waits for it, the transaction keeps every write, and the text then fails or succeeds on its own; a transaction of PGlite's transaction() that begins as a statement ends is never taken for one the statement left open"
+      "description": "a text run with unsafe never runs inside another transaction (one PGlite's transaction() holds, the client's own begin, another client's reservation): it waits for it, the transaction keeps every write, and the text then fails or succeeds on its own; a transaction of PGlite's transaction() started while a statement runs waits until the statement has handed the session on, so it is never taken for one the statement left open"
+    },
+    {
+      "id": "pglite.client.pglite-exclusion",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a transaction of PGlite's transaction(), and PGlite's query and exec, never run inside a client's begin or reservation: they wait until the client has handed the session on, never see its uncommitted rows, and a rollback of the client's undoes its own writes only"
+    },
+    {
+      "id": "pglite.client.blob-copy",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "pgliteBlobQuery runs a COPY with a file on a client, a transaction handle or a reserved handle, in the handle's turn; a function that is not a handle of a client, or a handle that has ended, is refused"
     },
     {
       "id": "pglite.client.transaction-guard",
@@ -1743,6 +1753,11 @@
       "description": "redaction costs time in proportion to the text: on 1 MB hostile texts the whole redaction stays far from quadratic and a text the snapshot keeps is cut first (well under 100 ms); a 1 MB endpoint error reaches the log and the snapshot cut, and the snapshot validates"
     },
     {
+      "id": "engine.telemetry.redaction-cut",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "a text longer than 4,096 characters is cut to them before redaction, saying how much was cut (4,095 and 4,096 kept, 4,097 to 4,161 cut), a cut text is not cut again, a forged cut mark does not stop the cut, and a member's secret is removed at every depth of JSON encoding a cut text can hold"
+    },
+    {
       "id": "engine.telemetry.redaction-key-forms",
       "file": "token-indexer/test/engine-telemetry.test.ts",
       "description": "a seed or mnemonic phrase loses every word under any key spelling (prefixed, suffixed, camelCase, kebab or snake case, plural, a JSON member at any depth, a full-width colon) and with any separator or list numbering; a password under a prefixed name too; a key named only words is not a secret, and text after other keys stays"
@@ -1791,6 +1806,11 @@
       "id": "browser.harness.failure-report",
       "file": "token-indexer/test/browser-harness-chrome.test.ts",
       "description": "in Chromium, the tests' driver records each dedicated worker error event with its message, file, line and column (the page's scripts see the same worker), and a page's diagnostics and the failed-test report hold it with the page's exception and the last console lines of the page and its workers"
+    },
+    {
+      "id": "browser.harness.load-retry",
+      "file": "token-indexer/test/browser-harness-chrome.test.ts",
+      "description": "in Chromium, page loads the machine's network aborted are loaded again, at most three times, with one printed line each, and dropped from what the page recorded: a stylesheet, a module import or a later fetch failed once with an error taken for the network's is loaded again once, at once; failing every time fails after three attempts; another error, a missing module, a failed step (also while the interfaces change), or an aborted worker script with no network change, is not retried; a worker's script aborted while the machine's interfaces changed is loaded again"
     },
     {
       "id": "engine.start-tip.follows",

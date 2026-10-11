@@ -20,7 +20,8 @@
  * **Loading** ({@link loadSnapshot}) puts a snapshot's rows into a store the migrations just made: the manifest's tables
  * and columns must be the store's, the rows entries arrive in the manifest's table order (each table's chunks
  * numbered from 0), each is loaded with `COPY … FROM` with every constraint and trigger of the store in force, the row
- * counts and the sequences are checked and set, all in one transaction; then the store's cursors, block hash,
+ * counts and the sequences are checked and set, all in one transaction on a reservation of the store's session; then
+ * the store's cursors, block hash,
  * migrations and PGlite version must be the manifest's, the archive must record its first height, be one chain of
  * canonical blocks from there to its height, and the scan's range must lie within the archive's, its cursor naming the
  * archive's block at its last height. Rows can only be
@@ -45,6 +46,7 @@
 import { bytesToHex } from "../../src/postgres/bytes.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { pgliteBlobQuery } from "../../src/postgres/pglite-sql.js";
 import {
   checkCompatible,
   checkData,
@@ -216,11 +218,7 @@ export async function storeLayout(sql: UmbraDBSql): Promise<StoreLayout> {
   };
 }
 
-/** The raw session of a store, for `COPY` through PGlite's `/dev/blob` (a statement's `blob` option and result). */
-interface CopySession {
-  query(query: string, params?: unknown[], options?: { blob?: Blob }): Promise<{ blob?: Blob; affectedRows?: number; rows: Array<Record<string, unknown>> }>;
-}
-const copySession = (s: Store): CopySession => s.session as unknown as CopySession;
+/** A table's rows as a `COPY` through PGlite's `/dev/blob` ({@link pgliteBlobQuery}) reads or writes them. */
 const copyStatement = (t: Pick<LayoutTable, "name" | "columns">, direction: "TO" | "FROM"): string =>
   `COPY ${qualified(t.name)} (${t.columns.map(quoteIdent).join(", ")}) ${direction} '/dev/blob' WITH (FORMAT binary)`;
 
@@ -269,7 +267,7 @@ export async function exportSnapshot(store: Store, opts: ExportOptions): Promise
       // in use (`pglite-sql.ts` fails a statement that waits on an idle reservation for too long). Nothing else is
       // awaited while the session is held (the rows are read from their blobs after the release).
       await sql`SELECT 1`;
-      const r = await copySession(store).query(copyStatement(table, "TO"));
+      const r = await pgliteBlobQuery(sql, copyStatement(table, "TO"));
       if (r.blob === undefined) throw new Error(`reading the rows of ${table.name} gave no data`);
       copies.push({ table, blob: r.blob });
     }
@@ -354,12 +352,13 @@ export async function loadSnapshot(store: Store, manifest: SnapshotManifest, dat
   checkLayout(manifest, layout);
   const position = new Map(layout.tables.map((t, i) => [t.name, i]));
   const loaded = new Map<string, number>();
-  const db = copySession(store);
   let current = -1;
   let nextChunk = 0;
   let entries = 0;
-  await db.query("BEGIN");
+  const reserved = await store.mip0018.reserve();
+  const db = reserved as unknown as UmbraDBSql;
   try {
+    await db.unsafe("BEGIN");
     await readRows(manifest, data, async (e) => {
       const at = position.get(e.table);
       if (at === undefined) throw corrupt(`the rows hold an entry of ${e.table}, which is not a table of this build`);
@@ -374,7 +373,7 @@ export async function loadSnapshot(store: Store, manifest: SnapshotManifest, dat
       const table = layout.tables[at]!;
       let n: number;
       try {
-        n = (await db.query(copyStatement(table, "FROM"), [], { blob: new Blob([e.copy as Uint8Array<ArrayBuffer>]) })).affectedRows ?? 0;
+        n = (await pgliteBlobQuery(db, copyStatement(table, "FROM"), new Blob([e.copy as Uint8Array<ArrayBuffer>]))).affectedRows;
       } catch (err) {
         throw corrupt(`the rows of ${e.table} (entry ${e.chunk}) do not load into this build's store: ${messageOf(err)}`);
       }
@@ -387,21 +386,23 @@ export async function loadSnapshot(store: Store, manifest: SnapshotManifest, dat
     for (const s of manifest.sequences) {
       const owner = layout.sequences.find((x) => x.name === s.name)!.owner;
       try {
-        await db.query(`SELECT pg_catalog.setval('${qualified(s.name).replaceAll("'", "''")}'::regclass, $1::bigint, $2::boolean)`, [s.lastValue, s.isCalled]);
+        await db.unsafe(`SELECT pg_catalog.setval('${qualified(s.name).replaceAll("'", "''")}'::regclass, $1::bigint, $2::boolean)`, [s.lastValue, s.isCalled]);
       } catch (err) {
         throw corrupt(`the sequence ${s.name} cannot be set to ${s.lastValue}: ${messageOf(err)}`);
       }
       if (owner !== null) {
-        const [m] = (await db.query(`SELECT max(${quoteIdent(owner.column)})::text AS max FROM ${qualified(owner.table)}`)).rows as Array<{ max: string | null }>;
+        const [m] = (await db.unsafe(`SELECT max(${quoteIdent(owner.column)})::text AS max FROM ${qualified(owner.table)}`)) as unknown as Array<{ max: string | null }>;
         const next = BigInt(s.lastValue) + (s.isCalled ? 1n : 0n);
         if (m?.max !== null && m?.max !== undefined && BigInt(m.max) >= next)
           throw corrupt(`the sequence ${s.name} would next give ${next}, a value ${owner.table}.${owner.column} already holds (up to ${m.max})`);
       }
     }
-    await db.query("COMMIT");
+    await db.unsafe("COMMIT");
   } catch (e) {
-    await db.query("ROLLBACK").catch(() => {});
+    await db.unsafe("ROLLBACK").catch(() => {});
     throw e;
+  } finally {
+    reserved.release();
   }
   // As the engine reads them: every table's rows, and the facts the manifest records.
   for (const t of manifest.tables) {

@@ -9,7 +9,7 @@
  *   outside this schema (a page URL, a request target, a header) can travel inside a snapshot. Times are epoch
  *   milliseconds; durations are milliseconds; heights are block heights; sizes are bytes.
  * - **No secrets:** {@link redactSnapshot} runs over every string of a snapshot before it is validated and handed out.
- *   A text longer than the snapshot keeps (`TEXT_MAX_CHARS`) is cut first, saying how much was cut, so redaction reads
+ *   A text longer than 4,096 characters (`TEXT_MAX_CHARS`) is cut to them first, saying how much was cut, so redaction reads
  *   at most a few kilobytes and every expression and scan of it is linear in the text's length. Then:
  *   URLs lose their userinfo, query and fragment, and the path segments that look like keys (16 or more letters,
  *   digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`, `key: value` and JSON
@@ -17,7 +17,7 @@
  *   signature, credentials, cookie, an API, secret, private or viewing key or a session id, or naming a seed, mnemonic
  *   or phrase, whatever its case, prefix or suffix — `DB_PASSWORD`, `walletSeed`, `WALLET_MNEMONIC`, `x-seed`) lose
  *   their whole value: a JSON member its whole string, array or object, also inside JSON text written as a JSON string
- *   once or more (`\"key\": …`, `\\\"key\\\": …`, up to six encodings); a `key=` value its quoted text (also `\"…\"`
+ *   once or more (`\"key\": …`, `\\\"key\\\": …`, at any depth a cut text can hold); a `key=` value its quoted text (also `\"…\"`
  *   inside JSON-escaped text, to the end of the string around it when it is never closed), JSON array or object, or
  *   bare word; and after a seed or mnemonic key every word of the phrase, of any case, across white space, commas,
  *   `;`, `|`, `-`, `<br>`, words quoted one by one, list numbers (`1.`, `1)`, `1-`, `#1`, `(1)`, `[1]`) and line
@@ -472,8 +472,10 @@ export function keyKind(name: string): "phrase" | "secret" | undefined {
 
 const JSON_ESCAPES: Readonly<Record<string, string>> = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 
-/** The deepest JSON string encoding read ({@link SECRET_MEMBER}): text inside a JSON string inside … six times. */
-const MAX_ENCODINGS = 6;
+/** The deepest JSON string encoding read ({@link SECRET_MEMBER}): text inside a JSON string inside … twelve times. A
+ *  key's quotes under 12 encodings are 4,095 backslashes each, more than a text the snapshot keeps ({@link
+ *  TEXT_MAX_CHARS}) can hold, so every member such a text can hold is read. */
+const MAX_ENCODINGS = 12;
 
 /** The character at `i` of `text` as seen through `level` JSON string encodings (0: the text as it is; each level
  *  decodes one: `\"` → `"`, `\\` → `\`, `\n` → a line break, …), and the index after it in `text`. */
@@ -592,6 +594,13 @@ function quotedValueEnd(text: string, i: number, quote: string): number {
   return text.length;
 }
 
+/** The backslashes before a quote at `i` (a quote escaped inside JSON-escaped text, at any depth), or 0. */
+function escapedQuoteRun(text: string, i: number): number {
+  let j = i;
+  while (text[j] === "\\") j++;
+  return text[j] === '"' ? j - i : 0;
+}
+
 /** The end of a value quoted inside JSON-escaped text at `i` (`\"…\"`, its opening quote `run` backslashes and `"`):
  *  after the same escaped quote; else where the string around it ends (a quote under fewer backslashes) or at a line
  *  break; else at the end. */
@@ -684,12 +693,20 @@ function phraseToken(text: string, i: number): { end: number; word: boolean } | 
   return NEXT_KEY.test(text) ? null : { end: at, word };
 }
 
+/** Whether `i` is where a string (a quote, after any run of backslashes) or a structure (`}` or `]`) ends. */
+function stringOrStructureEnd(text: string, i: number): boolean {
+  let j = i;
+  while (text[j] === "\\") j++;
+  const c = text[j];
+  return c === '"' || c === "'" || (j === i && (c === "}" || c === "]"));
+}
+
 /** Whether the line from `i` holds only phrase tokens (a line a phrase goes on to), to its end: a line break, the end
  *  of the text, or the end of the string or structure around it (a quote, an escaped quote, `}` or `]`). */
 function phraseLine(text: string, i: number, quoted: boolean): boolean {
   for (let tokens = 0; ; tokens++) {
     const token = phraseToken(text, i);
-    if (token === null) return tokens > 0 && /^(?:\\*["']|[}\]])/u.test(text.slice(i, i + 2 ** MAX_ENCODINGS + 1));
+    if (token === null) return tokens > 0 && stringOrStructureEnd(text, i);
     const sep = phraseSeparators(text, token.end, quoted);
     if (sep.at >= text.length || sep.lines > 0) return true;
     i = sep.at;
@@ -734,8 +751,8 @@ function redactAssignments(text: string): string {
       single = quoted = !/\s/u.test(text.slice(start + 1, end - 1));
     } else if (kind === "phrase" && c === "[" && /^\[\d{1,3}\]/u.test(text.slice(start, start + 5))) end = phraseEnd(text, start + text.slice(start, start + 5).indexOf("]") + 1, false);
     else if (c === "[" || c === "{") end = skipJsonValue(text, start, 0);
-    else if (c === "\\" && /^\\+"/u.test(text.slice(start, start + MAX_ENCODINGS * 12))) {
-      const run = /^\\+/u.exec(text.slice(start, start + MAX_ENCODINGS * 12))![0].length;
+    else if (c === "\\" && escapedQuoteRun(text, start) > 0) {
+      const run = escapedQuoteRun(text, start);
       end = escapedValueEnd(text, start, run);
       single = quoted = !/\s/u.test(text.slice(start + run + 1, Math.max(start + run + 1, end - run - 1)));
     } else {
@@ -766,8 +783,12 @@ const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
   [new RegExp(String.raw`(^|[^\w-])(${SECRET_HEADER})(\s*[=:]\s*)(?!\s|\[redacted\])[^\r\n]+`, "gimu"), (_m, pre, k, sep) => `${pre}${k}${sep}${REDACTED}`],
 ];
 
-/** The longest text the snapshot keeps (its schema's bound): a longer one is cut ({@link capText}) before it is read. */
+/** The longest text the snapshot keeps (its schema's bound): {@link TEXT_MAX_CHARS} and the mark of a cut. */
 const TEXT_LIMIT = TEXT_MAX_CHARS + 64;
+/** The mark {@link capText} ends a cut text with. */
+const CUT_MARK = /… \[\d+ more characters\]$/u;
+/** Whether `text` is already a cut text: {@link CUT_MARK} at its end, within the snapshot's bound. */
+const isCut = (text: string): boolean => text.length <= TEXT_LIMIT && CUT_MARK.test(text);
 
 /**
  * The redaction of {@link redactText} without its length cap: every expression and scan is linear in the text's
@@ -781,18 +802,19 @@ export function redactWhole(value: string): string {
 }
 
 /**
- * `text` with the secrets this module knows removed (see the module documentation); idempotent. A text longer than the
- * snapshot keeps is cut first ({@link capText}, saying how much was cut), and so is a result that redaction made longer
- * than that (then redacted again, so a value cut in two is removed whole), so what it gives always fits the snapshot.
+ * `text` with the secrets this module knows removed (see the module documentation); idempotent. A text longer than
+ * {@link TEXT_MAX_CHARS} is cut to that length first ({@link capText}, which says how much was cut), unless it is
+ * already a cut text; a result that redaction made longer than that (`[redacted]` is longer than some values) is cut
+ * the same way and redacted again (so a value cut in two is removed whole). What it gives always fits the snapshot.
  */
 export function redactText(value: string): string {
-  const out = redactWhole(value.length > TEXT_LIMIT ? capText(value) : value);
-  return out.length > TEXT_LIMIT ? redactWhole(capText(out)) : out;
+  const out = redactWhole(value.length > TEXT_MAX_CHARS && !isCut(value) ? capText(value) : value);
+  return out.length > TEXT_MAX_CHARS && !isCut(out) ? redactWhole(capText(out)) : out;
 }
 
-/** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut. */
+/** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut; a text already cut stays as it is. */
 export function capText(value: string): string {
-  if (value.length <= TEXT_MAX_CHARS) return value;
+  if (value.length <= TEXT_MAX_CHARS || isCut(value)) return value;
   return `${value.slice(0, TEXT_MAX_CHARS)}… [${value.length - TEXT_MAX_CHARS} more characters]`;
 }
 

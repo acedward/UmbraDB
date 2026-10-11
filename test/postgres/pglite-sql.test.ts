@@ -14,6 +14,7 @@ import {
   openPgliteClient,
   PgliteQuery,
   PgliteSqlError,
+  pgliteBlobQuery,
   type PgliteDatabase,
   type PgliteResult,
 } from "../../src/postgres/pglite-sql.js";
@@ -28,6 +29,30 @@ async function compiled(sql: UmbraDBSql, build: (sql: UmbraDBSql) => unknown): P
   const q = build(sql);
   if (!(q instanceof PgliteQuery)) throw new Error("not a query");
   return compileQuery(q);
+}
+
+/** A database that forwards every method the client uses to `own`, with `overrides` in place of some. */
+function forward(own: PGlite, overrides: Partial<PgliteDatabase> = {}): PgliteDatabase {
+  return {
+    query: (text, params, options) => own.query(text, params, options as never),
+    exec: (text, options) => own.exec(text, options as never),
+    _runExclusiveTransaction: (fn) => own._runExclusiveTransaction(fn),
+    runExclusive: (fn) => own.runExclusive(fn),
+    execProtocolStream: (message, options) => own.execProtocolStream(message, options),
+    _handleBlob: (blob) => own._handleBlob(blob),
+    _cleanupBlob: () => own._cleanupBlob(),
+    _getWrittenBlob: () => own._getWrittenBlob(),
+    syncToFs: () => own.syncToFs(),
+    get parsers() {
+      return own.parsers;
+    },
+    close: () => own.close(),
+    get closed() {
+      return own.closed;
+    },
+    isInTransaction: () => own.isInTransaction(),
+    ...overrides,
+  };
 }
 
 describe("PGlite client", () => {
@@ -342,7 +367,7 @@ describe("PGlite client", () => {
       expect(db.isInTransaction()).toBe(false);
     });
 
-    it("[[pglite.client.unsafe-isolation]] a text run with unsafe never runs inside another transaction — one PGlite's transaction() holds, the client's own begin or another client's reservation: it waits for it, the transaction keeps every write, and the text then fails or succeeds on its own; a transaction of PGlite's transaction() that begins as a statement ends is never taken for one the statement left open", async () => {
+    it("[[pglite.client.unsafe-isolation]] a text run with unsafe never runs inside another transaction — one PGlite's transaction() holds, the client's own begin or another client's reservation: it waits for it, the transaction keeps every write, and the text then fails or succeeds on its own; a transaction of PGlite's transaction() started while a statement runs waits until the statement has handed the session on, so it is never taken for one the statement left open", async () => {
       const own = await PGlite.create();
       try {
         const c = createPgliteClient({ pglite: own, schema: "public" });
@@ -394,48 +419,164 @@ describe("PGlite client", () => {
           r.release();
         })).toEqual(["22012", [{ n: 6 }]]);
 
-        // A statement with parameters that ends just as PGlite's transaction() begins: the client reads the session
-        // again under PGlite's locks before it rolls anything back, so that transaction is waited for, never taken for
-        // one the statement left open (the statement answers, the transaction keeps its writes).
-        let beginAfter: (() => Promise<void>) | undefined;
+        // PGlite's transaction() started while a statement with parameters runs (once its Execute is answered): it begins
+        // only after the statement's last message, the statement answers, and the transaction keeps its writes.
+        const order: string[] = [];
+        let startDuring: (() => void) | undefined;
         const racing = createPgliteClient({
-          pglite: {
-            query: async (text, params, options) => {
-              const r = await own.query(text, params, options as never);
-              const b = beginAfter;
-              beginAfter = undefined;
-              if (b !== undefined) await b();
+          pglite: forward(own, {
+            execProtocolStream: async (message, options) => {
+              if (startDuring === undefined && order.length > 0) order.push(String.fromCharCode(message[0]!));
+              const r = await own.execProtocolStream(message, options);
+              if (message[0] === "E".charCodeAt(0) && startDuring !== undefined) {
+                const start = startDuring;
+                startDuring = undefined;
+                order.push("E");
+                start();
+              }
               return r;
             },
-            exec: (text, options) => own.exec(text, options as never),
-            _runExclusiveTransaction: (fn) => own._runExclusiveTransaction(fn),
-            runExclusive: (fn) => own.runExclusive(fn),
-            execProtocolStream: (message, options) => own.execProtocolStream(message, options),
-            syncToFs: () => own.syncToFs(),
-            get parsers() {
-              return own.parsers;
-            },
-            close: () => own.close(),
-            get closed() {
-              return own.closed;
-            },
-            isInTransaction: () => own.isInTransaction(),
-          },
+          }),
           schema: "public",
         });
         await racing`SELECT 1`; // its session's array types and search_path
         let tx: Promise<unknown> | undefined;
-        beginAfter = () => new Promise<void>((opened) => {
+        startDuring = () => {
           tx = own.transaction(async (t) => {
+            order.push("transaction");
             await t.query("INSERT INTO iso VALUES (7)");
-            opened();
             await sleep(30);
             await t.query("INSERT INTO iso VALUES (8)");
           });
-        });
+        };
         expect([...(await racing`SELECT ${41}::int + 1 AS v`)]).toEqual([{ v: 42 }]);
         await tx;
+        expect(order).toEqual(["E", "S", "transaction"]);
         expect((await own.query<{ id: number }>("SELECT id FROM iso ORDER BY id")).rows.map((r) => r.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+        expect(own.isInTransaction()).toBe(false);
+      } finally {
+        await own.close();
+      }
+    });
+
+    it("[[pglite.client.pglite-exclusion]] a transaction of PGlite's transaction(), and PGlite's query and exec, never run inside a client's begin or reservation: they wait until the client has handed the session on, never see its uncommitted rows, and a rollback of the client's undoes its own writes only", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        await c.unsafe("CREATE TABLE ex (id int)");
+        const ids = async (): Promise<number[]> => (await own.query<{ id: number }>("SELECT id FROM ex ORDER BY id")).rows.map((r) => r.id);
+        /** While `hold` keeps the client's transaction open (it calls `opened` once its first write is in, then awaits
+         *  `wait`): PGlite's transaction() reads the table and writes 2, `query` writes 3, `exec` writes 4. Which of them
+         *  had ended before the holder let go, what the transaction read, and how the holder ended. */
+        const rawDuring = async (hold: (opened: () => void, wait: Promise<void>) => Promise<unknown>) => {
+          let letGo!: () => void;
+          const wait = new Promise<void>((r) => { letGo = r; });
+          let opened!: () => void;
+          const isOpen = new Promise<void>((r) => { opened = r; });
+          const held = hold(opened, wait).then(() => "ended", (e: Error) => e.message);
+          await isOpen;
+          const ended: string[] = [];
+          let seen: number[] | undefined;
+          const raw = [
+            own.transaction(async (t) => {
+              seen = (await t.query<{ id: number }>("SELECT id FROM ex ORDER BY id")).rows.map((r) => r.id);
+              await t.query("INSERT INTO ex VALUES (2)");
+            }).then(() => ended.push("transaction")),
+            own.query("INSERT INTO ex VALUES (3)").then(() => ended.push("query")),
+            own.exec("INSERT INTO ex VALUES (4)").then(() => ended.push("exec")),
+          ];
+          await sleep(50);
+          const before = [...ended];
+          letGo();
+          const outcome = await held;
+          await Promise.all(raw);
+          return { before, seen, outcome };
+        };
+
+        // The client's begin writes 1, then its callback fails: rolled back, and nothing else ran inside it.
+        expect(await rawDuring((opened, wait) => c.begin(async (tx) => {
+          await tx`INSERT INTO ex VALUES (1)`;
+          opened();
+          await wait;
+          throw new Error("the callback fails");
+        }))).toEqual({ before: [], seen: [], outcome: "the callback fails" });
+        expect(await ids()).toEqual([2, 3, 4]);
+        expect(own.isInTransaction()).toBe(false);
+
+        // A reservation's manual transaction writes 5, then commits: the others run after the commit.
+        await c`DELETE FROM ex`;
+        expect(await rawDuring(async (opened, wait) => {
+          const r = await c.reserve();
+          try {
+            await r`BEGIN`;
+            await r`INSERT INTO ex VALUES (5)`;
+            opened();
+            await wait;
+            await r`COMMIT`;
+          } finally {
+            r.release();
+          }
+        })).toEqual({ before: [], seen: [5], outcome: "ended" });
+        expect(await ids()).toEqual([2, 3, 4, 5]);
+
+        // A reservation's manual transaction rolled back: its write is gone, the others' are kept.
+        await c`DELETE FROM ex`;
+        expect(await rawDuring(async (opened, wait) => {
+          const r = await c.reserve();
+          try {
+            await r`BEGIN`;
+            await r`INSERT INTO ex VALUES (6)`;
+            opened();
+            await wait;
+            await r`ROLLBACK`;
+          } finally {
+            r.release();
+          }
+        })).toEqual({ before: [], seen: [], outcome: "ended" });
+        expect(await ids()).toEqual([2, 3, 4]);
+        expect(own.isInTransaction()).toBe(false);
+      } finally {
+        await own.close();
+      }
+    });
+
+    it("[[pglite.client.blob-copy]] pgliteBlobQuery runs a COPY with a file on a client, a transaction handle or a reserved handle, in the handle's turn; a function that is not a handle of a client, or a handle that has ended, is refused", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        await c`CREATE TABLE cp (id int, note text)`;
+        await c`INSERT INTO cp VALUES (1, 'one'), (2, 'two')`;
+        const out = await pgliteBlobQuery(c, "COPY cp TO '/dev/blob' WITH (FORMAT binary)");
+        expect(out.affectedRows).toBe(2);
+        expect(out.blob).toBeInstanceOf(Blob);
+        const file = out.blob!;
+
+        // In a transaction: the copy is part of it (rolled back with it).
+        await expect(c.begin(async (tx) => {
+          expect((await pgliteBlobQuery(tx, "COPY cp FROM '/dev/blob' WITH (FORMAT binary)", file)).affectedRows).toBe(2);
+          expect([...(await tx`SELECT count(*)::int AS n FROM cp`)]).toEqual([{ n: 4 }]);
+          throw new Error("undo");
+        })).rejects.toThrow("undo");
+        expect([...(await c`SELECT count(*)::int AS n FROM cp`)]).toEqual([{ n: 2 }]);
+
+        // On a reservation, in its turn; a top-level statement waits for the release.
+        const r = await c.reserve();
+        let waited = false;
+        const later = c`SELECT count(*)::int AS n FROM cp`.then((rows) => { waited = true; return [...rows]; });
+        expect((await pgliteBlobQuery(r, "COPY cp FROM '/dev/blob' WITH (FORMAT binary)", file)).affectedRows).toBe(2);
+        await sleep(20);
+        expect(waited).toBe(false);
+        r.release();
+        expect(await later).toEqual([{ n: 4 }]);
+        // A statement that is no copy, and one that fails: its error, as the client reports errors.
+        expect((await pgliteBlobQuery(c, "DELETE FROM cp WHERE id = 2")).affectedRows).toBe(2);
+        await expect(pgliteBlobQuery(c, "COPY no_such_table TO '/dev/blob'")).rejects.toMatchObject({ code: "42P01" });
+
+        await expect(pgliteBlobQuery((() => undefined) as unknown as UmbraDBSql, "COPY cp TO '/dev/blob'")).rejects.toMatchObject({ code: "NOT_SUPPORTED" });
+        await expect(pgliteBlobQuery(r, "COPY cp TO '/dev/blob'")).rejects.toMatchObject({ code: "TRANSACTION_ENDED" });
+        let handle: UmbraDBSql | undefined;
+        await c.begin(async (tx) => { handle = tx as unknown as UmbraDBSql; });
+        await expect(pgliteBlobQuery(handle!, "COPY cp TO '/dev/blob'")).rejects.toMatchObject({ code: "TRANSACTION_ENDED" });
         expect(own.isInTransaction()).toBe(false);
       } finally {
         await own.close();
@@ -454,23 +595,10 @@ describe("PGlite client", () => {
       try {
         const disguisedQuery = new TextEncoder().encode("Q\0\0\0\x17SELECT 'disguised'\0");
         const begin = new TextEncoder().encode("Q\0\0\0\x0aBEGIN\0");
-        const disguised: PgliteDatabase = {
-          query: (text, params, options) => own.query(text, params, options as never),
-          exec: (text, options) => own.exec(text === "SELECT 'disguised'" ? "BEGIN" : text, options as never),
-          _runExclusiveTransaction: (fn) => own._runExclusiveTransaction(fn),
-          runExclusive: (fn) => own.runExclusive(fn),
+        const disguised = forward(own, {
           execProtocolStream: (message, options) =>
             own.execProtocolStream(message.length === disguisedQuery.length && message.every((x, i) => x === disguisedQuery[i]) ? begin : message, options),
-          syncToFs: () => own.syncToFs(),
-          get parsers() {
-            return own.parsers;
-          },
-          close: () => own.close(),
-          get closed() {
-            return own.closed;
-          },
-          isInTransaction: () => own.isInTransaction(),
-        };
+        });
         const x = createPgliteClient({ pglite: disguised, schema: "public" });
         const y = createPgliteClient({ pglite: disguised, schema: "public" });
         await y`CREATE TABLE w (id int)`;
@@ -570,22 +698,32 @@ describe("PGlite client", () => {
 
   describe("options and end()", () => {
     it("[[pglite.client.array-type-retry]] a failed array-type load fails the statement and is retried by the next one", async () => {
-      let fail = true;
-      const fake = {
-        closed: false,
-        close: async () => undefined,
-        exec: async () => [],
-        query: async (text: string) => {
-          if (fail) {
-            fail = false;
-            throw new Error("array types unavailable");
-          }
-          return { rows: text.includes("pg_type") ? [{ oid: 25, typarray: 1009 }, { oid: null, typarray: null }] : [{ v: 1 }], fields: [], rowCount: 1, command: "SELECT" };
-        },
-      } as unknown as PgliteDatabase;
-      const c = createPgliteClient({ pglite: fake, schema: "pa" });
-      await expect(c`SELECT 1`).rejects.toThrow("array types unavailable");
-      expect([...(await c`SELECT 1`)]).toEqual([{ v: 1 }]);
+      const own = await PGlite.create();
+      try {
+        let fail = true;
+        const pgType = new TextEncoder().encode("pg_type");
+        const mentions = (message: Uint8Array, word: Uint8Array): boolean =>
+          message.some((_, i) => word.every((x, j) => message[i + j] === x));
+        const c = createPgliteClient({
+          pglite: forward(own, {
+            execProtocolStream: async (message, options) => {
+              if (fail && message[0] === "P".charCodeAt(0) && mentions(message, pgType)) {
+                fail = false;
+                throw new Error("array types unavailable");
+              }
+              return own.execProtocolStream(message, options);
+            },
+          }),
+          schema: "public",
+        });
+        await expect(c`SELECT 1 AS v`).rejects.toThrow("array types unavailable");
+        expect(fail).toBe(false);
+        expect([...(await c`SELECT 1 AS v`)]).toEqual([{ v: 1 }]);
+        expect([...(await c`SELECT ${["a", "b"]}::text[] AS v`)]).toEqual([{ v: ["a", "b"] }]);
+        expect(own.isInTransaction()).toBe(false);
+      } finally {
+        await own.close();
+      }
     });
 
     it("[[pglite.client.option-validation]] validates the schema and the deadlock timeout", () => {

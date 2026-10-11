@@ -146,9 +146,10 @@ export function engineDriver(page: Page, site: () => EngineSite) {
     },
     /** Loads the engine page and waits until the worker's boot has ended. */
     async open(): Promise<HostStatus> {
-      await page.goto(`${site().origin}/engine.html`);
-      await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
-      await page.eval("window.umbradbEngine.client.booted()");
+      await page.goto(`${site().origin}/engine.html`, 30_000, async () => {
+        await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine page");
+        await page.eval("window.umbradbEngine.client.booted()");
+      });
       return status();
     },
   };
