@@ -1835,7 +1835,7 @@
     {
       "id": "browser.harness.load-retry",
       "file": "token-indexer/test/browser-harness-chrome.test.ts",
-      "description": "in Chromium, page loads the machine's network aborted are loaded again, at most three times, with one printed line each, and dropped from what the page recorded: a stylesheet, a module import or a later fetch failed once with an error taken for the network's is loaded again once, at once; failing every time fails after three attempts; another error, a missing module, a failed step (also while the interfaces change), or an aborted worker script with no network change, is not retried; a worker's script aborted while the machine's interfaces changed is loaded again"
+      "description": "in Chromium, page loads the machine's network aborted are loaded again, at most three times, with one printed line each, and dropped from what the page recorded: a stylesheet, a module import or a later fetch failed once with an error taken for the network's is loaded again once, at once; failing every time fails after three attempts; another error, a missing module, a failed step (also while the interfaces change), or an aborted worker script with no network change, is not retried; a worker's script aborted while the machine's interfaces changed is loaded again; the driver's own list is net::ERR_NETWORK_CHANGED alone: with it a refused fetch, a missing module, and a stylesheet failed with any other error while the interfaces change are not retried"
     },
     {
       "id": "browser.harness.load-retry-independent",
