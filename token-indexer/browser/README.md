@@ -145,8 +145,9 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
   button:
   - *Served here* (25): the chain constants and configuration (chain ID 2400, Node's default; the client version
     `umbradb-evm-rpc/<package version>`), blocks and transactions from the network's Midnight indexer (its GraphQL, the
-    build's indexer endpoint, which the policy's `connect-src` already admits; requests to a public endpoint are spaced
-    250 ms apart like the sync's), and accounts and transactions from the module's `evm_rpc` database — a PGlite
+    build's indexer endpoint, which the policy's `connect-src` already admits; each indexer request waits for its turn
+    in a queue (on a public endpoint the turns are 250 ms apart, like the sync's requests) and starts its 20 s timeout,
+    Node's, only then; closing the module ends the waits and the requests in flight), and accounts and transactions from the module's `evm_rpc` database — a PGlite
     database in memory made by the module's migrations at its first request, empty here (the wallet monitor and the
     relayer that fill it run in Node), so those methods answer as an empty Node deployment does. `eth_call` answers
     `0x`, as `npm run evm-rpc` does.
@@ -155,8 +156,10 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
     and `eth_unsubscribe` (the WebSocket server), and the ERC20 views of `eth_call`: marked, not callable.
 
   Call sends one JSON-RPC 2.0 request (`{"jsonrpc":"2.0","id":n,"method":…,"params":…}`; empty parameters send no
-  `params`, parameters that are not JSON send nothing and say why) as `jsonrpc`; the row under the method then shows the
-  request and the answer: its HTTP status and its body, JSON indented. The answer is what Node's `npm run evm-rpc` server
+  `params`; parameters that are not JSON, longer than 65,536 characters or nested more than 64 levels deep send nothing
+  and say why) as `jsonrpc`; the row under the method then shows the request and the answer: its HTTP status and its
+  body, JSON indented, each cut at 262,144 characters (with its length) when longer. The module answers at most 8
+  requests at once: another is refused `busy` (the tab says so) rather than queued. The answer is what Node's `npm run evm-rpc` server
   answers a `POST` with the same body over the same indexer answers, byte for byte. A note on the tab says that external
   wallets cannot connect to a page: the module has no address for them, only this tab calls it.
 - **Text.** Everything is drawn with DOM nodes and text (no markup is parsed, no `style` attribute). Text that comes
@@ -223,16 +226,16 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
 | `export` | — | a snapshot file of the store (`Blob`), its suggested name, its manifest, its size and timings (see Snapshots) |
 | `import` | `snapshot`: a snapshot file (`Blob`, a picked `File`) | the imported manifest, timings and status: the store is the snapshot's, the engine is stopped (see Snapshots) |
-| `module` | `module` (`token-indexer` or `jsonrpc`), `enabled` | status: the choice saved with the settings (`settings.modules`; a module not named is on), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`). `token-indexer`: a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced. `jsonrpc`: off, `jsonrpc` is refused from the answer on and the module's database is closed once its requests in flight have ended; every worker reads the switch from the settings |
+| `module` | `module` (`token-indexer` or `jsonrpc`), `enabled` | status: the choice saved with the settings (`settings.modules`; a module not named is on), before anything is switched (a choice the browser refuses to save changes nothing: `settings-failed`). `token-indexer`: a running engine's MIP-0018 scan stops at a block boundary while the sync goes on (answered once it has stopped), or continues from its cursor; every engine the worker runs later starts with it, also on a store that `range`, `reset` or `import` replaced. `jsonrpc`: off, `jsonrpc` is refused from the answer on, the requests the module is answering end at once (`module-off`) and its database is closed; every worker reads the switch from the settings |
 | `tables` | — | each schema's tables (name, kind, the table it is a partition of, estimated rows, size) and the database's size, from the catalog |
 | `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
-| `jsonrpc` | `body`: the text of one JSON-RPC 2.0 request (or batch), at most 2,097,152 characters | `{ status, headers, body }`: what Node's `npm run evm-rpc` server answers a `POST` with that body (`../../evm-rpc/handler.ts`: 200 with the answer, 204 for notifications only, 413 over its 1 MiB cap, `-32700` for a body that is not JSON), from the JSON RPC module; refused `module-off` while the module is off |
+| `jsonrpc` | `body`: the text of one JSON-RPC 2.0 request (or batch), at most 2,097,152 characters | `{ status, headers, body }`: what Node's `npm run evm-rpc` server answers a `POST` with the UTF-8 bytes of that body (`../../evm-rpc/handler.ts`: 200 with the answer, 204 for notifications only, 413 over its 1 MiB cap, `-32700` for a body that is not JSON; a lone surrogate reads as U+FFFD, as Node decodes it), from the JSON RPC module; refused `module-off` while the module is off or when it is switched off before the answer, `busy` while it answers 8 requests |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
 `boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`
-and `module` changed nothing, `stop` stopped the engine), `module-off` (`jsonrpc` while the JSON RPC module is off),
-`internal`, `snapshot-refused` (the message starts with the reason;
-nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
+and `module` changed nothing, `stop` stopped the engine), `module-off` (`jsonrpc` while the JSON RPC module is off, or
+switched off before the answer), `busy` (`jsonrpc` while the module answers 8 requests; nothing was done), `internal`,
+`snapshot-refused` (the message starts with the reason; nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
 adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
 `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
 `failed`), `system` (one snapshot per collection while watched) and `heartbeat` (after a `watchdog` request).

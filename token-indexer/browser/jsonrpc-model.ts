@@ -103,34 +103,65 @@ export function methodRows(registered: readonly string[] = registryMethods()): M
 
 /** Limits of a call the tab sends: the characters of the parameters' text. */
 export const MAX_PARAMS_CHARS = 65_536;
+/** Limits of a call the tab sends: how deep arrays and objects may nest in the parameters. */
+export const MAX_PARAMS_DEPTH = 64;
+/** The most characters of a request or an answer the tab shows; a longer one is shown cut, with its length. */
+export const MAX_SHOWN_CHARS = 262_144;
 
 export type BuiltRequest = { ok: true; body: string; text: string } | { ok: false; error: string };
 
+/** How deep arrays and objects nest in `value` (a scalar: 0), counted without recursion. */
+export function nestingDepth(value: unknown): number {
+  let deepest = 0;
+  const stack: Array<[unknown, number]> = [[value, 1]];
+  while (stack.length > 0) {
+    const [v, depth] = stack.pop()!;
+    if (typeof v !== "object" || v === null) continue;
+    if (depth > deepest) deepest = depth;
+    for (const child of Array.isArray(v) ? v : Object.values(v)) stack.push([child, depth + 1]);
+  }
+  return deepest;
+}
+
+/** `text`, or its first {@link MAX_SHOWN_CHARS} characters and its length when it is longer. */
+function shown(text: string): string {
+  return text.length <= MAX_SHOWN_CHARS ? text : `${text.slice(0, MAX_SHOWN_CHARS)}… (cut: ${text.length.toLocaleString("en-US")} characters in all)`;
+}
+
 /**
  * The JSON-RPC 2.0 request for `method` with the edited parameters: its body (compact JSON, what the engine receives)
- * and its text (indented). Parameters that are not JSON, or longer than {@link MAX_PARAMS_CHARS}, make no request.
+ * and its text (indented, cut at {@link MAX_SHOWN_CHARS}). Parameters that are not JSON, longer than
+ * {@link MAX_PARAMS_CHARS} or nested deeper than {@link MAX_PARAMS_DEPTH} make no request; so does anything that cannot
+ * be written as JSON. Never throws.
  */
 export function buildRequest(id: number, method: string, paramsText: string): BuiltRequest {
   if (paramsText.length > MAX_PARAMS_CHARS) return { ok: false, error: `the parameters are longer than ${MAX_PARAMS_CHARS} characters` };
   const request: Record<string, unknown> = { jsonrpc: "2.0", id, method };
   if (paramsText.trim() !== "") {
+    let params: unknown;
     try {
-      request.params = JSON.parse(paramsText) as unknown;
+      params = JSON.parse(paramsText) as unknown;
     } catch (e) {
       return { ok: false, error: `the parameters are not JSON: ${e instanceof Error ? e.message : String(e)}` };
     }
+    if (nestingDepth(params) > MAX_PARAMS_DEPTH) return { ok: false, error: `the parameters nest deeper than ${MAX_PARAMS_DEPTH} levels` };
+    request.params = params;
   }
-  return { ok: true, body: JSON.stringify(request), text: json(request) };
+  try {
+    return { ok: true, body: JSON.stringify(request), text: shown(json(request)) };
+  } catch (e) {
+    return { ok: false, error: `the request could not be written as JSON: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
-/** An answer as the tab shows it: the status line and the body as text (JSON indented, anything else as it is), and
- *  whether the text is indented JSON (whose line breaks are layout, not data). */
+/** An answer as the tab shows it: the status line and the body as text (JSON indented, anything else as it is; cut at
+ *  {@link MAX_SHOWN_CHARS}), and whether the text is indented JSON (whose line breaks are layout, not data). */
 export function answerText(answer: { status: number; body: string }): { status: string; text: string; json: boolean } {
   const status = answer.status === 204 ? "HTTP 204: no answer (a notification)" : `HTTP ${answer.status}`;
   if (answer.body === "") return { status, text: "", json: false };
   try {
-    return { status, text: json(JSON.parse(answer.body)), json: true };
+    return { status, text: shown(json(JSON.parse(answer.body))), json: true };
   } catch {
-    return { status, text: answer.body, json: false };
+    return { status, text: shown(answer.body), json: false };
   }
 }

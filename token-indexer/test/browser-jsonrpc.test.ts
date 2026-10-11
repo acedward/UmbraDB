@@ -12,15 +12,30 @@
  *   browser's PGlite reads them) are what the account and transaction methods answer.
  * - `[[browser.jsonrpc.paced]]` — the module's requests to a public indexer start at least 250 ms apart, and those to
  *   any other indexer are not delayed.
+ * - `[[browser.jsonrpc.pacing-queue]]` — the module's pacing queue, on a test clock: callers admitted one at a time in
+ *   arrival order, the interval apart; a burst beyond its bound refused at once; a cancelled wait gives up its place
+ *   and the next caller moves up; closing it ends every wait.
+ * - `[[browser.jsonrpc.burst]]` — a burst of requests whose indexer calls wait far longer than the indexer timeout for
+ *   their pacing slots (8 batches of 8 at 30 ms apart, against a 200 ms timeout): every answer is Node's, every indexer
+ *   request starts with a live timeout, the starts the interval apart; a request beyond the module's 8 in flight is
+ *   refused `busy` at once, and accepted again once one is answered.
+ * - `[[browser.jsonrpc.stop-cancels]]` — closing the module while its requests wait for pacing slots ends them at once
+ *   (refused `stopped`, their indexer calls never made) and closes its database without waiting for their slots.
  * - `[[browser.jsonrpc.model]]` — the tab's rows are the registry's methods, each once (served ones with their source
  *   and example parameters, not-implemented ones with their classification), then the Node-only methods, marked and
  *   not callable; a call's request is a JSON-RPC 2.0 request with the edited parameters (none when empty, refused when
- *   not JSON or too long); an answer is shown with its status and its body indented (as it is when not JSON). * - `[[browser.host.jsonrpc]]` — the worker host answers `jsonrpc` with Node's answers while the module is on (by
+ *   not JSON or too long); an answer is shown with its status and its body indented (as it is when not JSON). * - `[[browser.jsonrpc.model-bounds]]` — parameters the tab cannot send or show are refused with a message, never an
+ *   exception: nesting deeper than the bound (also deep enough to break serialization), and parameters whose indented
+ *   text would be too long to show; an answer too long to show is shown cut, with its length.
+ * - `[[browser.host.jsonrpc]]` — the worker host answers `jsonrpc` with Node's answers while the module is on (by
  *   default), making the module's database at the first request; `module` `jsonrpc` off is saved first, then requests
  *   are refused `module-off` and the module's database is closed; on again, a new one answers; the token indexer's
  *   switch is its own; a switch the browser refuses to save changes nothing (`settings-failed`, still answered); a
  *   module that fails to start answers `internal` and the next request starts it again; requests without a string body
  *   or over the bound are `bad-request`, and reading a request never throws.
+ * - `[[browser.host.jsonrpc-bounded]]` — the worker host refuses a `jsonrpc` request beyond the module's bound `busy` (85
+ *   at once: 8 answered as Node does, the rest refused, none answered with an error of the module's own), and requests
+ *   waiting for pacing slots when the module is switched off are answered `module-off` at once.
  * - `[[browser.host.jsonrpc-restored]]` — the switch lives in the settings: a new host on them (a reload, the next
  *   worker or leader tab) refuses while it is off and answers once on; a store replaced by `range`, `reset` or
  *   `import` keeps it off.
@@ -38,8 +53,9 @@ import { BLOCK_HASH, HEIGHT, recordedIndexerFetch, TX_HASH } from "../../evm-rpc
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { METHOD_NOTES, NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
 import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
-import { answerText, buildRequest, MAX_PARAMS_CHARS, methodRows, registryMethods } from "../browser/jsonrpc-model.ts";
-import { JSONRPC_CHAIN_ID, jsonRpcClientVersion, type JsonRpcModule, type JsonRpcModuleOptions, openEvmRpcDatabase, startJsonRpcModule } from "../browser/jsonrpc-module.ts";
+import { answerText, buildRequest, MAX_PARAMS_CHARS, MAX_PARAMS_DEPTH, MAX_SHOWN_CHARS, methodRows, registryMethods } from "../browser/jsonrpc-model.ts";
+import { JSONRPC_CHAIN_ID, JSONRPC_MAX_REQUESTS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, openEvmRpcDatabase, startJsonRpcModule } from "../browser/jsonrpc-module.ts";
+import { PacingQueue, QueueFullError } from "../browser/pacing-queue.ts";
 import type { WorkerHost } from "../browser/host.ts";
 import { type ApiResult, type ExportResult, type HostStatus, JSONRPC_MAX_BODY_CHARS, parseRequest, PROTOCOL_VERSION, type Response as HostResponse, type StartConfig } from "../browser/protocol.ts";
 import { type EngineSettingsStore, memorySettingsStore } from "../browser/settings.ts";
@@ -176,6 +192,140 @@ describe("the browser engine's JSON RPC module", () => {
     }
   }, 60_000);
 
+  it("[[browser.jsonrpc.pacing-queue]] FIFO admission the interval apart on a test clock; a burst beyond the bound refused; a cancelled wait gives up its place; close ends every wait", async () => {
+    let now = 0;
+    let nextTimer = 1;
+    const timers = new Map<number, { at: number; fn: () => void }>();
+    const clock = {
+      now: () => now,
+      setTimer: (fn: () => void, ms: number): number => { const id = nextTimer++; timers.set(id, { at: now + ms, fn }); return id; },
+      clearTimer: (id: unknown): void => { timers.delete(id as number); },
+    };
+    const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+    /** Runs the timers due within `ms`, in order, letting the admitted callers run after each. */
+    const advance = async (ms: number): Promise<void> => {
+      const end = now + ms;
+      for (;;) {
+        const due = [...timers.entries()].filter(([, t]) => t.at <= end).sort((x, y) => x[1].at - y[1].at)[0];
+        if (due === undefined) break;
+        now = due[1].at;
+        timers.delete(due[0]);
+        due[1].fn();
+        await settle();
+      }
+      now = end;
+      await settle();
+    };
+
+    const q = new PacingQueue({ minIntervalMs: 250, maxWaiting: 64, clock });
+    const admittedAt = new Map<number, number>();
+    const refused: number[] = [];
+    const waits = Array.from({ length: 100 }, (_, i) => q.admit().then(() => { admittedAt.set(i, now); }, (e: unknown) => {
+      expect(e).toBeInstanceOf(QueueFullError);
+      refused.push(i);
+    }));
+    await settle();
+    // The first goes at once; 64 wait; the other 35 are refused at once.
+    expect([...admittedAt.entries()]).toEqual([[0, 0]]);
+    expect(q.waiting).toBe(64);
+    expect(refused).toEqual(Array.from({ length: 35 }, (_, i) => 65 + i));
+    await advance(64 * 250);
+    await Promise.all(waits);
+    expect([...admittedAt.keys()]).toEqual(Array.from({ length: 65 }, (_, i) => i));
+    for (const [i, at] of admittedAt) expect(at, String(i)).toBe(i * 250);
+    expect(q.waiting).toBe(0);
+
+    // A cancelled wait gives up its place: the caller after it is admitted in its slot.
+    const order: string[] = [];
+    const c = new AbortController();
+    const first = q.admit().then(() => order.push(`a@${now}`));
+    const second = q.admit(c.signal).then(() => order.push("b"), (e: unknown) => order.push(`b: ${(e as Error).message}`));
+    const third = q.admit().then(() => order.push(`c@${now}`));
+    await settle();
+    expect(q.waiting).toBe(3);
+    c.abort(new Error("cancelled"));
+    await settle();
+    expect(q.waiting).toBe(2);
+    await advance(1_000);
+    await Promise.all([first, second, third]);
+    expect(order).toEqual(["b: cancelled", `a@${64 * 250 + 250}`, `c@${64 * 250 + 500}`]);
+    // An already-cancelled signal is refused without waiting.
+    await expect(q.admit(AbortSignal.abort(new Error("gone")))).rejects.toThrow("gone");
+
+    // Closing ends every wait with the reason, and refuses later callers.
+    const pending = [q.admit(), q.admit(), q.admit()].map((p) => p.then(() => "admitted", (e: unknown) => (e as Error).message));
+    await settle();
+    q.close(new Error("stopped"));
+    expect(await Promise.all(pending)).toEqual(["admitted", "stopped", "stopped"]);
+    await expect(q.admit()).rejects.toThrow("stopped");
+    expect(timers.size).toBe(0);
+  });
+
+  it("[[browser.jsonrpc.burst]] indexer calls waiting far beyond the indexer timeout for their slots: every answer Node's, every start with a live timeout, the interval apart; beyond 8 requests in flight refused busy", async () => {
+    const starts: number[] = [];
+    let abortedSignals = 0;
+    const recorded = recordedIndexerFetch().fetch;
+    const module = await startJsonRpcModule({
+      indexerUrl: INDEXER,
+      clientVersion: CLIENT_VERSION,
+      minIntervalMs: 30,
+      indexerTimeoutMs: 200,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        starts.push(performance.now());
+        if (init?.signal?.aborted === true) {
+          abortedSignals++;
+          throw init.signal.reason;
+        }
+        return recorded(input, init);
+      }) as typeof fetch,
+    });
+    try {
+      expect(JSONRPC_MAX_REQUESTS).toBe(8);
+      const batch = (n: number): string => JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ jsonrpc: "2.0", id: n * 10 + i, method: "eth_blockNumber" })));
+      const inFlight = Array.from({ length: JSONRPC_MAX_REQUESTS }, (_, n) => module.handle(batch(n)));
+      // A ninth while eight are in flight: refused at once, never answered with an error of the module's own.
+      await expect(module.handle(batch(8))).rejects.toMatchObject({ code: "busy" });
+      await expect(module.handle(batch(8))).rejects.toBeInstanceOf(JsonRpcModuleError);
+      const answers = await Promise.all(inFlight);
+      for (const [n, answer] of answers.entries()) {
+        expect({ status: answer.status, headers: Object.entries(answer.headers), body: answer.body }).toEqual(await viaHttp(port, batch(n)));
+      }
+      // 64 indexer calls spaced 30 ms apart span far more than the 200 ms timeout; none started with a spent timeout.
+      expect(starts.length).toBe(64);
+      expect(abortedSignals).toBe(0);
+      expect(starts[63]! - starts[0]!).toBeGreaterThan(5 * 200);
+      for (let i = 1; i < starts.length; i++) expect(starts[i]! - starts[i - 1]!).toBeGreaterThanOrEqual(25);
+      // Once answered, a new request is accepted.
+      expect(JSON.parse((await module.handle(CHAIN_ID)).body)).toMatchObject({ result: "0x960" });
+    } finally {
+      await module.close();
+    }
+  }, 60_000);
+
+  it("[[browser.jsonrpc.stop-cancels]] closing the module ends the requests waiting for pacing slots at once and closes its database without waiting for their slots", async () => {
+    let fetches = 0;
+    let sql: UmbraDBSql | undefined;
+    const recorded = recordedIndexerFetch().fetch;
+    const module = await startJsonRpcModule({
+      indexerUrl: INDEXER,
+      clientVersion: CLIENT_VERSION,
+      minIntervalMs: 500,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => { fetches++; return recorded(input, init); }) as typeof fetch,
+      openDatabase: async () => (sql = await openEvmRpcDatabase()),
+    });
+    const batch = (n: number): string => JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ jsonrpc: "2.0", id: n * 10 + i, method: "eth_blockNumber" })));
+    // 6 batches of 8: 48 indexer calls, 24 s of pacing.
+    const waiting = Array.from({ length: 6 }, (_, n) => module.handle(batch(n)).then(() => "answered", (e: unknown) => (e instanceof JsonRpcModuleError ? e.code : String(e))));
+    await new Promise((r) => setTimeout(r, 100));
+    const t0 = performance.now();
+    await module.close();
+    expect(performance.now() - t0).toBeLessThan(2_000);
+    expect(await Promise.all(waiting)).toEqual(Array(6).fill("stopped"));
+    expect(fetches).toBeLessThanOrEqual(2);
+    await expect(sql!`SELECT 1`).rejects.toThrow();
+    await expect(module.handle(CHAIN_ID)).rejects.toMatchObject({ code: "stopped" });
+  }, 30_000);
+
   it("[[browser.jsonrpc.model]] the rows are the registry's methods and the Node-only ones; requests and answers as text", () => {
     expect(registryMethods()).toEqual(registry.listMethods());
     const rows = methodRows();
@@ -207,6 +357,30 @@ describe("the browser engine's JSON RPC module", () => {
     expect(answerText({ status: 200, body: '{"id":"a\\nb"}' }).text).toBe('{\n  "id": "a\\nb"\n}');
     expect(answerText({ status: 204, body: "" })).toEqual({ status: "HTTP 204: no answer (a notification)", text: "", json: false });
     expect(answerText({ status: 502, body: "not <b>json</b>\nline" })).toEqual({ status: "HTTP 502", text: "not <b>json</b>\nline", json: false });
+  });
+
+  it("[[browser.jsonrpc.model-bounds]] parameters nested too deep or too long to show are refused with a message, never an exception; a long answer is shown cut", () => {
+    // Nesting deep enough to break JSON.stringify: refused, not thrown.
+    const deep = `${"[".repeat(10_000)}${"]".repeat(10_000)}`;
+    expect(deep.length).toBeLessThan(MAX_PARAMS_CHARS);
+    expect(() => buildRequest(1, "eth_chainId", deep)).not.toThrow();
+    expect(buildRequest(1, "eth_chainId", deep)).toEqual({ ok: false, error: `the parameters nest deeper than ${MAX_PARAMS_DEPTH} levels` });
+    // At the bound it is sent; one level more is refused.
+    const at = (depth: number): string => `${"[".repeat(depth)}${"]".repeat(depth)}`;
+    expect(buildRequest(2, "eth_chainId", at(MAX_PARAMS_DEPTH))).toMatchObject({ ok: true });
+    expect(buildRequest(3, "eth_chainId", at(MAX_PARAMS_DEPTH + 1))).toMatchObject({ ok: false });
+    expect(buildRequest(4, "eth_chainId", `{"a":${at(MAX_PARAMS_DEPTH)}}`)).toMatchObject({ ok: false });
+    // Input that indentation would expand far beyond what the tab shows: the text shown is bounded.
+    const wide = `[${Array.from({ length: 2_800 }, () => "[[[[[[[[[[1]]]]]]]]]]").join(",")}]`;
+    expect(wide.length).toBeLessThan(MAX_PARAMS_CHARS);
+    const built = buildRequest(5, "eth_chainId", wide);
+    if (built.ok) expect(built.text.length).toBeLessThanOrEqual(MAX_SHOWN_CHARS + 200);
+    else expect(built.error).toMatch(/^the parameters are too long to show indented/);
+    // An answer longer than the tab shows: cut, with its length.
+    const long = JSON.stringify({ jsonrpc: "2.0", id: 1, result: "x".repeat(MAX_SHOWN_CHARS * 2) });
+    const shown = answerText({ status: 200, body: long });
+    expect(shown.text.length).toBeLessThanOrEqual(MAX_SHOWN_CHARS + 200);
+    expect(shown.text).toMatch(/… \(cut: [\d,]+ characters in all\)$/);
   });
 
   // ── The worker host ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -325,6 +499,48 @@ describe("the browser engine's JSON RPC module", () => {
     }
     // Closing the host closes the module's database.
     expect(modules.closed).toBe(2);
+  }, 120_000);
+
+  it("[[browser.host.jsonrpc-bounded]] 85 requests at once: 8 answered as Node does, the rest refused busy; requests waiting for pacing slots when the module is switched off are answered module-off at once", async () => {
+    const paced = (minIntervalMs: number): ReturnType<typeof counted> => {
+      const c = counted();
+      const start = c.start;
+      c.start = (o) => start({ ...o, minIntervalMs });
+      return c;
+    };
+    const { host } = jsonRpcHost(memorySettingsStore(), paced(20));
+    try {
+      await host.boot();
+      const body = (i: number): string => JSON.stringify({ jsonrpc: "2.0", id: i, method: "eth_blockNumber" });
+      const answers = await Promise.all(Array.from({ length: 85 }, (_, i) => jsonrpc(host, body(i))));
+      const answered = answers.filter((a) => !("refused" in a)) as ApiResult[];
+      const refused = answers.filter((a) => "refused" in a) as { refused: string; message: string }[];
+      expect(answered.length).toBe(8);
+      for (const a of answered) expect(JSON.parse(a.body)).toMatchObject({ result: "0x2a" });
+      expect(asWire(answered[0]!)).toEqual(await viaHttp(port, body(JSON.parse(answered[0]!.body).id)));
+      expect(refused.length).toBe(77);
+      for (const r of refused) expect(r).toEqual({ refused: "busy", message: "the JSON RPC module is answering 8 requests: try again once one is answered" });
+    } finally {
+      await host.close();
+    }
+
+    // Switched off while requests wait for their slots (500 ms apart): they are answered module-off at once.
+    const slow = jsonRpcHost(memorySettingsStore(), paced(500));
+    try {
+      await slow.host.boot();
+      const batch = (n: number): string => JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ jsonrpc: "2.0", id: n * 10 + i, method: "eth_blockNumber" })));
+      const waiting = Array.from({ length: 4 }, (_, n) => jsonrpc(slow.host, batch(n)));
+      await until(() => slow.modules.started === 1, "the module to start");
+      await new Promise((r) => setTimeout(r, 100));
+      const t0 = performance.now();
+      await ok(slow.host, "module", { module: "jsonrpc", enabled: false });
+      const results = await Promise.all(waiting);
+      expect(performance.now() - t0).toBeLessThan(2_000);
+      for (const r of results) expect(r).toEqual({ refused: "module-off", message: "the JSON RPC module was switched off before this request was answered" });
+      await until(() => slow.modules.closed === 1, "the module's database to close", 2_000);
+    } finally {
+      await slow.host.close();
+    }
   }, 120_000);
 
   it("[[browser.host.jsonrpc-restored]] the switch lives in the settings: a new host on them refuses while off and answers once on; range, reset and import keep it off", async () => {

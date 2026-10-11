@@ -20,8 +20,9 @@
  *   bound) is answered `bad-request`.
  * - `[[browser.jsonrpc.hostile]]` — hostile text (control, bidi, zero-width and markup characters) in edited parameters,
  *   in the parser's message about parameters that are not JSON, and in an indexer answer is drawn as text: the request
- *   and the message with visible marks, the indexer's text never passed on (the module answers `-32603`); nothing comes
- *   alive and no raw hidden character is drawn.
+ *   and the message with visible marks, the indexer's text never passed on (the module answers `-32603`); parameters
+ *   nested too deep are refused with a message; nothing comes alive, nothing throws and no raw hidden character is
+ *   drawn.
  * - `[[browser.jsonrpc.module-switch]]` — JSON RPC switched off from its checkbox: saved with the settings, its tab gone
  *   (a URL naming it shows the overview), `jsonrpc` requests refused `module-off`; a second tab shows the same and is
  *   refused through the leader; the choice holds when the leader closes (the next leader's worker) and after a reload;
@@ -360,6 +361,12 @@ describe("the JSON RPC module in the static build in Chrome (served with its hea
       expect(output.error).toMatch(/^the parameters are not JSON: /);
       expect(output.error).toContain("⟨U+202E⟩");
       expect((await p.eval<Json>("window.umbradbOverview.jsonrpc().latest")).body).toBeNull();
+
+      // Parameters nested far deeper than the tab sends (deep enough to break serialization): a message, no exception.
+      await setParams("eth_getBalance", `${"[".repeat(10_000)}${"]".repeat(10_000)}`);
+      output = await callFromTab(p, "eth_getBalance");
+      expect(output.request).toBeNull();
+      expect(output.error).toBe("the parameters nest deeper than 64 levels");
 
       // An indexer whose answers carry hostile text: the module refuses them (-32603), the text is never shown.
       indexer = (body) => {

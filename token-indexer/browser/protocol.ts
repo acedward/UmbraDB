@@ -21,7 +21,7 @@
  * | `module` | `module` (one of {@link MODULE_IDS}), `enabled` | {@link HostStatus}: the module switched on or off and saved with the settings (`token-indexer`: off stops the MIP-0018 scan at a block boundary while the sync goes on; on continues it from its cursor; `jsonrpc`: off refuses `jsonrpc` requests and closes the module's database) |
  * | `tables` | — | {@link TablesResult}: each schema's tables with their estimated rows and size (catalog statistics) |
  * | `rows` | `schema`, `table`, `limit?`, `offset?` | {@link RowsResult}: one page of a table of the store's catalog by its primary key, descending (newest first for a height-keyed table; read-only) |
- * | `jsonrpc` | `body` (the text of one JSON-RPC 2.0 request or batch, at most {@link JSONRPC_MAX_BODY_CHARS} characters) | {@link ApiResult}: what Node's `npm run evm-rpc` server answers a `POST` with that body (status, headers, body), from the JSON RPC module (`jsonrpc-module.ts`); refused `module-off` while the module is off |
+ * | `jsonrpc` | `body` (the text of one JSON-RPC 2.0 request or batch, at most {@link JSONRPC_MAX_BODY_CHARS} characters) | {@link ApiResult}: what Node's `npm run evm-rpc` server answers a `POST` with that body (status, headers, body), from the JSON RPC module (`jsonrpc-module.ts`); refused `module-off` while the module is off, `busy` while it answers 8 requests |
  *
  * Responses (worker → page): `{ v, type: "response", id, request, ok: true, result }` or
  * `{ v, type: "response", id, request, ok: false, error: { code, message } }`; `id` and `request` are `null` when the
@@ -99,8 +99,10 @@ export const ERROR_CODES = [
   /** `start`, `stop`, `module`: the browser refused to save the settings. The message says what became of the change:
    *  `start` and `module` changed nothing; `stop` stopped the engine, which starts again at the next boot. */
   "settings-failed",
-  /** `jsonrpc` while the JSON RPC module is switched off. */
+  /** `jsonrpc` while the JSON RPC module is switched off, or switched off before the request was answered. */
   "module-off",
+  /** `jsonrpc` while the JSON RPC module answers as many requests as it may (8); nothing was done. */
+  "busy",
   /** An unexpected failure inside the worker. */
   "internal",
   /** `import`: the snapshot does not match this engine or is damaged; `export`: the archive is empty. The message starts
