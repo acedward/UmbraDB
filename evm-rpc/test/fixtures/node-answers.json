@@ -1,0 +1,605 @@
+{
+  "about": "The SHA-256 of Node's evm-rpc HTTP server's answer to each case of differential-cases.ts (the status code, the headers it sets in order, a blank line, the body's bytes), over the recorded indexer, with the read-only methods and no database, as rpc-cli.ts registers them. A different answer is a change of Node's behaviour: record the file again on purpose (EVM_RPC_RECORD_ANSWERS=1 npx vitest run evm-rpc/test/node-answers.test.ts).",
+  "answers": [
+    {
+      "case": "eth_chainId []",
+      "sha256": "223237f6fc7387444bafda14a7bf74d7770dcf9e2b3a3f417b20f7d97711110f"
+    },
+    {
+      "case": "net_version []",
+      "sha256": "7b3ca4083564de17ae0d99953a4bca487c0eb7e7066cf6617fc2f851b5e3cc78"
+    },
+    {
+      "case": "web3_clientVersion []",
+      "sha256": "6fb868fa9d06a349b82090226825107f4474f7413623d184c9f85406629fc0e9"
+    },
+    {
+      "case": "net_listening []",
+      "sha256": "3776d37fadb4faf77cfe3b6f94f9309a9a71214d0c50fc21f6d9f04e074dc5f9"
+    },
+    {
+      "case": "eth_syncing []",
+      "sha256": "2b4e08265054636581430acd79f5e2f3891b99f29c3cc20d9d84cd0d52fc170d"
+    },
+    {
+      "case": "eth_accounts []",
+      "sha256": "bd9d0f906a18e275d38160398e2f53005bdb0e6348212530ef72ff3b921d2324"
+    },
+    {
+      "case": "eth_gasPrice []",
+      "sha256": "b6acd09242918fdb1ae7b2f45bb781d684d74a6349d010b273cc4630941f5c95"
+    },
+    {
+      "case": "eth_maxPriorityFeePerGas []",
+      "sha256": "f14e70254d013a2cd453cbcdae6ec5e72390969ca4efaf2f980304eb3e3e3af1"
+    },
+    {
+      "case": "eth_estimateGas [{\"to\":\"0x1212121212121212121212121212121212121212\",\"data\":\"0x\"}]",
+      "sha256": "934410bf4ceb9c23683244fe449ecf3c0d1d7b9d9d0574392f0a64739da894c4"
+    },
+    {
+      "case": "eth_estimateGas [\"not-a-transaction\",\"latest\"]",
+      "sha256": "f08a3031383e07c527f6a56ce864094020e4472a9c78fa373aa85f1025ff4dde"
+    },
+    {
+      "case": "eth_call [{\"to\":\"0x1212121212121212121212121212121212121212\",\"data\":\"0x18160ddd\"},\"latest\"]",
+      "sha256": "870a81906a23d30fa06b1cb2bc224af965d5d8ba990c172f78305a9e78f2e1a4"
+    },
+    {
+      "case": "eth_feeHistory [\"0x4\",\"latest\",[25,75]]",
+      "sha256": "15a496b12c31486ae7c8380a777be0748a5ae4fea31cd3be015b561daddb540f"
+    },
+    {
+      "case": "eth_feeHistory [\"0x3\",\"0x2a\",[]]",
+      "sha256": "5dcc97901641da9831111b880ea7eeeb2cb8b9cbc051aa32e214d9fbf5a1174b"
+    },
+    {
+      "case": "eth_feeHistory [\"0x5\",\"0x2\"]",
+      "sha256": "3acdd0e9d7cf2f5fc23123c52a0247caa9451513935c9900fdb9b7609f939e6e"
+    },
+    {
+      "case": "eth_feeHistory [\"0x0\",\"latest\",[50]]",
+      "sha256": "86752985c94672aa651544d591b3281d694047ada185cc17f24f0ea9a9605096"
+    },
+    {
+      "case": "web3_sha3 [\"0x\"]",
+      "sha256": "08a8061c87a6141406646cd1f9e5776b1579feafff4998d8aeba8f586cc7d58f"
+    },
+    {
+      "case": "web3_sha3 [\"0x68656c6c6f\"]",
+      "sha256": "35eebd11e9b47cbcac35934c44cb1a9aae57cdc4e16cf157f07815e568521daf"
+    },
+    {
+      "case": "eth_blockNumber []",
+      "sha256": "9518c43482f4099f5a8a54a8a3cbeac5480d7a0eec7b544221f9f2747fb2e680"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"latest\",false]",
+      "sha256": "10179b3f65285e9e56a6f337ee412c17b451df7d13c851c885508eb2cc0f1e66"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"latest\",true]",
+      "sha256": "78f3626205e8d7f6b97378aeacb8e505ce1575fb2714719b1a29c50542d76551"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"0x29\",true]",
+      "sha256": "f98804c6a3c29a2ef5ef65d64c23d5752f8d1261642b46eabc8e02189d2519ea"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"0x28\",false]",
+      "sha256": "3dad2a12b26453629d47e26cef1f1c72bccfdfbdcb253d795575be8e02655bb4"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"earliest\",false]",
+      "sha256": "f9785d957db14ee9038d495239eee548d4f64e119064b8301b134e425e3dbf2b"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"pending\",false]",
+      "sha256": "f0795db70e9279150a38bdbc3bc480df03238cfe9e661a7bc0eff9ce78b314ae"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"0x63\",false]",
+      "sha256": "207d4cafc1d9d285f48195d88d01255469f8d439ea687aa4b3bb621727f610dc"
+    },
+    {
+      "case": "eth_getBlockByHash [\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",false]",
+      "sha256": "9d21630bd30fd75ec0551ab82658d5db9479eb6788e4385d98b86ae4ed39a4a0"
+    },
+    {
+      "case": "eth_getBlockByHash [\"0xA1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1\",true]",
+      "sha256": "19b59b95d9f8746d30d41f447d93e1a3fb9c9559bcefe9a77a651265cfdc4cca"
+    },
+    {
+      "case": "eth_getBlockByHash [\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",false]",
+      "sha256": "efaf72f2588ee3a9df8ce86b09c8da6de90421eb25993d43295619056e894216"
+    },
+    {
+      "case": "eth_getBlockTransactionCountByHash [\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]",
+      "sha256": "a4d25c6d3b896391d7a6657090554da459287200c28d8e065add3adb8b10b892"
+    },
+    {
+      "case": "eth_getBlockTransactionCountByHash [\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]",
+      "sha256": "f040f7da98f732ff4e5255d24b3894e1068835ee3cadb5ff7f40734a6de48593"
+    },
+    {
+      "case": "eth_getBlockTransactionCountByNumber [\"latest\"]",
+      "sha256": "8aab6cd2c6503d91aa66d1c41361233bc7747e02c895288688aeac7a16667f0d"
+    },
+    {
+      "case": "eth_getBlockTransactionCountByNumber [\"0x28\"]",
+      "sha256": "618885596c690e78095e23ab0c142c665b2c35a77e4a31f6e663d4d467890078"
+    },
+    {
+      "case": "eth_getBlockTransactionCountByNumber [\"0x63\"]",
+      "sha256": "45b2b29168391a2ea3a62038425685a23b8ba9042f1464505d054aa7664d0f21"
+    },
+    {
+      "case": "eth_getBalance [\"0x1212121212121212121212121212121212121212\",\"latest\"]",
+      "sha256": "f8c3b91d33c5b211e532b749899c182b3bbf22f0f15adb1d29cfb1b1018c8a42"
+    },
+    {
+      "case": "eth_getBalance [\"0x1212121212121212121212121212121212121212\"]",
+      "sha256": "97aa4ddb103b0ba14bdfba598c8a15d0063b4c9869eb3b17f27fab534672dc7a"
+    },
+    {
+      "case": "eth_getTransactionCount [\"0x1212121212121212121212121212121212121212\",\"pending\"]",
+      "sha256": "4aef3cc241bf9695fd113e469c435fc8bd4cd3c6aedf8e8a4932e01f51b20e0b"
+    },
+    {
+      "case": "eth_getCode [\"0x1212121212121212121212121212121212121212\",\"latest\"]",
+      "sha256": "67deffcdf6979d83b3a1214dbf2c81737d2d00d514b0850218b79ac7520e2d3a"
+    },
+    {
+      "case": "eth_getTransactionByHash [\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"]",
+      "sha256": "442f4f59a36cb63bd3ba1c09678b0a6e10e55c7e610e4f0f3a34353e200b9639"
+    },
+    {
+      "case": "eth_getTransactionByHash [\"0xd1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1\"]",
+      "sha256": "5544b7f61f2e0a59deee0cbee0e56583d95ac5d8fe4a592cfc6094966e93a6d0"
+    },
+    {
+      "case": "eth_getTransactionByHash [\"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"]",
+      "sha256": "d7f8fc5ccdaa2c3b4dc2180786f82ca5aed511c516b2f86b775ba2cd8a670423"
+    },
+    {
+      "case": "eth_getTransactionByHash [\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]",
+      "sha256": "07a08342e1e5829d57233779796ce441a26ca371b9806fea0273416f6742832f"
+    },
+    {
+      "case": "eth_getTransactionReceipt [\"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"]",
+      "sha256": "a91fda30d6dd549f5693dc4687491461ba0931de1f84d043994593fe33684dba"
+    },
+    {
+      "case": "eth_getTransactionReceipt [\"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"]",
+      "sha256": "9178bfcf8072570f215228919766790a9ae783de5c012ab77f83b8325cae1841"
+    },
+    {
+      "case": "eth_getTransactionReceipt [\"0xc1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1\"]",
+      "sha256": "b5fca76c8402d564874a20fa9faf9cb28da3ceb592e45a6cf0208b4f7da3c024"
+    },
+    {
+      "case": "eth_getTransactionReceipt [\"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]",
+      "sha256": "af7deb0d3dd835c294a9e40547cd2636af8fde32be12ec742ac6242a16a278a9"
+    },
+    {
+      "case": "eth_getTransactionByBlockHashAndIndex [\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0x1\"]",
+      "sha256": "01153320915a9caec890c23712da245fd54440f25109a95466e9f8f85787b357"
+    },
+    {
+      "case": "eth_getTransactionByBlockHashAndIndex [\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0x5\"]",
+      "sha256": "e3e88ad8e846aa787af07ea46463eef1b65128a0124b05e6f9f587606de68d0a"
+    },
+    {
+      "case": "eth_getTransactionByBlockNumberAndIndex [\"latest\",\"0x0\"]",
+      "sha256": "087ba297240caedbc6522612a5496a3e259af9d2a6e4eccee0378efc738e9af3"
+    },
+    {
+      "case": "eth_getTransactionByBlockNumberAndIndex [\"0x29\",\"0x1\"]",
+      "sha256": "7a7c89c366c048c29b000b778492bc51d0765e4eba0b6c3c2e84b33517200413"
+    },
+    {
+      "case": "eth_getBlockReceipts [\"latest\"]",
+      "sha256": "a2064aad1fba71caa67ddc439797086463d24356358ec9ea5e6b42ebf0f00f6f"
+    },
+    {
+      "case": "eth_getBlockReceipts [\"0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\"]",
+      "sha256": "16c3cea7bbb08f527c5aae7258d51811036abc16e0caeb4a8857e31c70d9ef48"
+    },
+    {
+      "case": "eth_getBlockReceipts [\"0x28\"]",
+      "sha256": "b2767b27d2df271a248b51d6c575d4c453782d2e588e191ed93ed855331e62ba"
+    },
+    {
+      "case": "eth_getBlockReceipts [\"0x63\"]",
+      "sha256": "b5f3da668328ffdb93a2fb8b3b9e063e5d3aebca59570fb1aedbe249cc8e9c55"
+    },
+    {
+      "case": "eth_chainId [\"extra\"] (refused)",
+      "sha256": "5ba144c5aa1b638ba253beb29839b5c6e60a79da6ba240249b2df726983035f4"
+    },
+    {
+      "case": "eth_chainId {\"by\":\"name\"} (refused)",
+      "sha256": "1482a5cbd72e8639401a1a715a3d2ceb4292f691e491300af775ef6e7cc8af04"
+    },
+    {
+      "case": "eth_estimateGas [] (refused)",
+      "sha256": "c0913750984d13cf9e9ce95a96481c5fb5992144038b740f603a4bc0a81e29e3"
+    },
+    {
+      "case": "eth_call [] (refused)",
+      "sha256": "4bf417cacf47b67366e4796dd6d77c6894d61d0c31b1ff472b0d8bec4aee4773"
+    },
+    {
+      "case": "eth_feeHistory [\"0x2\",\"yesterday\",[]] (refused)",
+      "sha256": "20a9154e9ca31d13276ff3ac408d5779cd90e3fdae478a6efad2bc448d603ee5"
+    },
+    {
+      "case": "eth_feeHistory [\"0x401\",\"latest\",[]] (refused)",
+      "sha256": "6f465e8f878ce7cdf0b1a4a0d0c0e9cf96d5d9c1aaa54a4eb81f4ec69851f989"
+    },
+    {
+      "case": "eth_feeHistory [\"0x2\",\"latest\",[101]] (refused)",
+      "sha256": "2735782106ff48191f049fa738b275beaf3152f5d2da28e3000684807cb23647"
+    },
+    {
+      "case": "web3_sha3 [\"0x1\"] (refused)",
+      "sha256": "bc40d0393ff4e2c6b69ee88a306d9e437ccfd76132d87fd83eacaf0ec83626d4"
+    },
+    {
+      "case": "web3_sha3 [\"text\"] (refused)",
+      "sha256": "74d35179ce8b7778a91f5c23acaabf77e9b692205e309c9be7ae93367cc60841"
+    },
+    {
+      "case": "eth_blockNumber [\"latest\"] (refused)",
+      "sha256": "9dc38af131e59040f04b6ab88a505fa2db59ee53ee54f425794f2d941fa3ed90"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"0x0baa\",false] (refused)",
+      "sha256": "39b36e61cec3cd31c24294f2f62c5c875fca1ecaa02dd60bb37c7a8440b694fa"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"latest\"] (refused)",
+      "sha256": "dc85140217335e279a923135ae3900fbbd52bfb5789b0a053bcf524ee40754a3"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"latest\",\"false\"] (refused)",
+      "sha256": "107ea58126272edee7b9376b616b758e0a3013d0a9e9fb14092c83e2d3661cbb"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"0x80000000\",false] (refused)",
+      "sha256": "c2185c6ad6b84fd7dbff0c7ded2c8a01950b9fa9a0ba08888d8c881f4818cdd4"
+    },
+    {
+      "case": "eth_getBlockByNumber [\"0x3e7\",false] (refused)",
+      "sha256": "166a868875500e00dec178dce99b7a381844fd9afa36dfd3750bd84850d32a1a"
+    },
+    {
+      "case": "eth_getBlockByHash [\"0x1234\",false] (refused)",
+      "sha256": "ce6d6c13a327eecebddce75dd90d107e588ba9441c3f2c1b1b4dcca48aeca445"
+    },
+    {
+      "case": "eth_getBlockTransactionCountByHash [\"0x12\"] (refused)",
+      "sha256": "b92574463a986ce9c00b55e27bb576c692b6f19addf25e10ecf89dac0f20e06c"
+    },
+    {
+      "case": "eth_getBlockTransactionCountByNumber [\"garbage\"] (refused)",
+      "sha256": "0116572163665a1a36771fa6d2597f6e5dfd9c0fe4b704b0caa7af54ee613c18"
+    },
+    {
+      "case": "eth_getBalance [\"0x12\"] (refused)",
+      "sha256": "0ac3e74693ec777b7fb5c315254d1c2abf4830ae56a21c25b06372c74b6a37fc"
+    },
+    {
+      "case": "eth_getBalance [\"0x1212121212121212121212121212121212121212\",7] (refused)",
+      "sha256": "c383a3d321838e69ee36b6ab5a705cf5b58eb0ccdb7720b309c948bf936f3f54"
+    },
+    {
+      "case": "eth_getTransactionCount [] (refused)",
+      "sha256": "00e3eac4f8a076237f5d681213076c433c02d097554f8a69a4b75e72f698454d"
+    },
+    {
+      "case": "eth_getCode [\"0x1212121212121212121212121212121212121212\",\"latest\",\"extra\"] (refused)",
+      "sha256": "a796c0e40948451b56447f1e2603d42929b82950480bd1f8dd84dcfa55e88e8c"
+    },
+    {
+      "case": "eth_getTransactionByHash [\"0x12\"] (refused)",
+      "sha256": "9c4c1d1cdf94460ba676a2de95436cec91c106ff2580736e0407ec6ce03fa1b5"
+    },
+    {
+      "case": "eth_getTransactionByHash [\"0x9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e\"] (refused)",
+      "sha256": "b433876bc64d717ca7a9026adf8c80f270da1ec47502457cd31c492cc71939be"
+    },
+    {
+      "case": "eth_getTransactionReceipt [\"0x9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e\"] (refused)",
+      "sha256": "73638aa19f98d492dcf07cec36cfc1536ecc4099f55a84e639bb0eb051c10c0a"
+    },
+    {
+      "case": "eth_getTransactionByBlockHashAndIndex [\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0x01\"] (refused)",
+      "sha256": "d64caa5ed880a659c519d89cc680950815374dad5f2dbef5c8adaf8ef0fd1366"
+    },
+    {
+      "case": "eth_getTransactionByBlockNumberAndIndex [\"latest\",\"1\"] (refused)",
+      "sha256": "8faa9f04e378e1f7a34894c22c373f5b1512aa3d5e316fd5b6c2811af5948deb"
+    },
+    {
+      "case": "eth_getBlockReceipts [{\"blockHash\":\"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}] (refused)",
+      "sha256": "1b48e9836ba4dc4d1b3b0d8c8d0772cfc682caba155e26d2a386d89b781c3f78"
+    },
+    {
+      "case": "eth_newFilter (not implemented)",
+      "sha256": "a9f7f9d0c5be75e571c24fc16daecc35fe8e96426eb963899c13c8167c5cf4e2"
+    },
+    {
+      "case": "eth_newBlockFilter (not implemented)",
+      "sha256": "9d458cb0be9d091d5096a7923ba20e39eda8d7182691e49232f049cb5f72508b"
+    },
+    {
+      "case": "eth_newPendingTransactionFilter (not implemented)",
+      "sha256": "756760f37f28578ab0e7ab7c979a017edd1f4c29e3b3147d55ec9497a9d1e548"
+    },
+    {
+      "case": "eth_getFilterChanges (not implemented)",
+      "sha256": "b7fa553b43e8f5c84bdcfeeb983382bda8cdcccf7d03ea3057e609203539631c"
+    },
+    {
+      "case": "eth_getFilterLogs (not implemented)",
+      "sha256": "1462af7c69bd9381b6b94875761c15f78a41d067fd7a758a50435e0f6f89b459"
+    },
+    {
+      "case": "eth_uninstallFilter (not implemented)",
+      "sha256": "6321494e65bae0d75885cf5a088a24b1536996ff970a9ab436bdb97a215c5787"
+    },
+    {
+      "case": "eth_sendTransaction (not implemented)",
+      "sha256": "3637e65d63d67d693f3b3e5c140bca2537c8a56e8aae3a96a29c7bb562c58d9a"
+    },
+    {
+      "case": "eth_sign (not implemented)",
+      "sha256": "a9371c2fa669569ef8e1bcdeb3695c2e92698e2f9fcc237f335c61a9e573a810"
+    },
+    {
+      "case": "eth_signTransaction (not implemented)",
+      "sha256": "48407bf12633b8feee0cfe425413ba6a84cf565709d93457742cfa108df23823"
+    },
+    {
+      "case": "eth_coinbase (not implemented)",
+      "sha256": "34a449fc985757dca640bfd75f524a9e54ce66d4ce10f6e941aef3f9c0cf8b5d"
+    },
+    {
+      "case": "eth_getStorageAt (not implemented)",
+      "sha256": "648e49f0d9243857bb93f71fab4559c532ee311b70a89e133090a0ddb8d67183"
+    },
+    {
+      "case": "eth_getStorageValues (not implemented)",
+      "sha256": "67a70513dc8dcdac9d09c2e95c6112a359b75c3b1bb3b24884ebc5c53ac0d919"
+    },
+    {
+      "case": "eth_getProof (not implemented)",
+      "sha256": "a6c7a7c31f9cfd46c0d1f19a8fc93e536e62903655bf1a81c8c582f9cf2abbf2"
+    },
+    {
+      "case": "eth_createAccessList (not implemented)",
+      "sha256": "9fbe787beba3036f010e3e88f1fb254dce5c78a242adf946150643438079179e"
+    },
+    {
+      "case": "eth_getBlockAccessList (not implemented)",
+      "sha256": "ee744768b7510caebb43c526f3a148db8a15b29cc8fd422d8fc7edeca8aceb24"
+    },
+    {
+      "case": "eth_simulateV1 (not implemented)",
+      "sha256": "7bfcd7ff01a8524eed9c70bd00a435a564de66e730571d780b95f776d86682fc"
+    },
+    {
+      "case": "eth_fillTransaction (not implemented)",
+      "sha256": "7e662b679fb2c451792bf30936beb955749a159a0a73b4b66984de4fd5397912"
+    },
+    {
+      "case": "eth_baseFee (not implemented)",
+      "sha256": "c7bd40ad2d38b44199996c04f17172adc1e18d488db7421ace1823173cd14b41"
+    },
+    {
+      "case": "eth_blobBaseFee (not implemented)",
+      "sha256": "a14e61764074253b27c8373f42da840365bd9fb8d07332a81c23c658f31ca798"
+    },
+    {
+      "case": "eth_capabilities (not implemented)",
+      "sha256": "de5449321a9ffb46d21e596f07535364cfd5d01bcc488c59bd6028b8e19cb043"
+    },
+    {
+      "case": "eth_config (not implemented)",
+      "sha256": "e21b760030a40342e8460af65a851ae6a16a8f1523ff10bd3bcd47a79ac82087"
+    },
+    {
+      "case": "eth_fooBar (unknown)",
+      "sha256": "968ef47ac8f78008b4380482cc8eee0eba98d9ae27ab3f07f984fdbb0063d8d0"
+    },
+    {
+      "case": "debug_traceTransaction (unknown)",
+      "sha256": "0ca4770bb9899d86368d9cd588cb98c396a3aa4e3c2b8a8ad6daa81a240a0246"
+    },
+    {
+      "case": "admin_peers (unknown)",
+      "sha256": "018fa6c6a25e7ac4357d2f913c8769a018fa3e32484c5472e56556f07766e061"
+    },
+    {
+      "case": "personal_sign (unknown)",
+      "sha256": "335047f83d19254b1137bb0affbe966743fe7c45f3248961969ec1906e65e4a9"
+    },
+    {
+      "case": "(empty name) (unknown)",
+      "sha256": "743d9e726ab67ad9b4ca635fd48511062eb29d590f00724e4be6f4cae005e586"
+    },
+    {
+      "case": "no params member",
+      "sha256": "ecba00d9f7a174fbc4f3fb98da17816a993bd9340ba20a271d591786ac685386"
+    },
+    {
+      "case": "string id",
+      "sha256": "b93c024a36d2b97ce54ff320dd0a72a8adac2897cdecb6133e364c2f3b317218"
+    },
+    {
+      "case": "null id",
+      "sha256": "a950aabcd1fc8470538b0867cccb7aafdd86afa7082e51e396382a013a0098a6"
+    },
+    {
+      "case": "fractional id",
+      "sha256": "9c070145f44133eb6a5f49c733dba4ee84b9ef495e4a63f125ba15fd3fdfa981"
+    },
+    {
+      "case": "id with hidden characters",
+      "sha256": "038299186d8f173d6d29d70227ba84d4d7d94619f165945d32fee5e7f1ec5651"
+    },
+    {
+      "case": "boolean id",
+      "sha256": "5d7882e694981197f33557ecac2daea08fe02e372de459b06ab457a4faa5de49"
+    },
+    {
+      "case": "object id",
+      "sha256": "5d7882e694981197f33557ecac2daea08fe02e372de459b06ab457a4faa5de49"
+    },
+    {
+      "case": "no jsonrpc member",
+      "sha256": "24ac07c03af23e2fe2cd2fa4f38caafa49fb66a26634b89901bb4fc92ef36e46"
+    },
+    {
+      "case": "jsonrpc 1.0",
+      "sha256": "24ac07c03af23e2fe2cd2fa4f38caafa49fb66a26634b89901bb4fc92ef36e46"
+    },
+    {
+      "case": "method is a number",
+      "sha256": "24ac07c03af23e2fe2cd2fa4f38caafa49fb66a26634b89901bb4fc92ef36e46"
+    },
+    {
+      "case": "params is a string",
+      "sha256": "dd99c6f4d548a24191afbabdbaf07d672e252698debd1e19b3fe6cc056314f01"
+    },
+    {
+      "case": "params is null",
+      "sha256": "dd99c6f4d548a24191afbabdbaf07d672e252698debd1e19b3fe6cc056314f01"
+    },
+    {
+      "case": "unknown members",
+      "sha256": "223237f6fc7387444bafda14a7bf74d7770dcf9e2b3a3f417b20f7d97711110f"
+    },
+    {
+      "case": "notification",
+      "sha256": "2f181548c8457e38c52adcdac99f0b065e4c018244b9bed66f86e672c46024e6"
+    },
+    {
+      "case": "notification of an unknown method",
+      "sha256": "2f181548c8457e38c52adcdac99f0b065e4c018244b9bed66f86e672c46024e6"
+    },
+    {
+      "case": "notification with string params",
+      "sha256": "2f181548c8457e38c52adcdac99f0b065e4c018244b9bed66f86e672c46024e6"
+    },
+    {
+      "case": "batch",
+      "sha256": "4a5bbbb285aaa987cc2cb38bc5f1f7c1b2af32665bd26c901156fd099b4f0894"
+    },
+    {
+      "case": "batch of ten (more than one concurrent chunk)",
+      "sha256": "8cf88ee10511498ac286d557cb8188597dd79f47df0064f9d5c929364dab8bbe"
+    },
+    {
+      "case": "batch of notifications only",
+      "sha256": "2f181548c8457e38c52adcdac99f0b065e4c018244b9bed66f86e672c46024e6"
+    },
+    {
+      "case": "empty batch",
+      "sha256": "5d7882e694981197f33557ecac2daea08fe02e372de459b06ab457a4faa5de49"
+    },
+    {
+      "case": "batch of 100",
+      "sha256": "4fba2142c5a2762f61b35bd0960f038c68640ac23e1eec4928895908cdaf5ba0"
+    },
+    {
+      "case": "batch of 101",
+      "sha256": "cf1306db9b61a637fb471bc59a9c2aa5d97efb2461ffbbba24c0b21f692d9a15"
+    },
+    {
+      "case": "truncated JSON",
+      "sha256": "13a6ae3c0820c72f2541729f5d93796e92c82018be64308ae0961052bf2fc9ce"
+    },
+    {
+      "case": "empty body",
+      "sha256": "13a6ae3c0820c72f2541729f5d93796e92c82018be64308ae0961052bf2fc9ce"
+    },
+    {
+      "case": "not JSON",
+      "sha256": "13a6ae3c0820c72f2541729f5d93796e92c82018be64308ae0961052bf2fc9ce"
+    },
+    {
+      "case": "unterminated batch",
+      "sha256": "13a6ae3c0820c72f2541729f5d93796e92c82018be64308ae0961052bf2fc9ce"
+    },
+    {
+      "case": "a string",
+      "sha256": "5d7882e694981197f33557ecac2daea08fe02e372de459b06ab457a4faa5de49"
+    },
+    {
+      "case": "a number",
+      "sha256": "5d7882e694981197f33557ecac2daea08fe02e372de459b06ab457a4faa5de49"
+    },
+    {
+      "case": "null",
+      "sha256": "5d7882e694981197f33557ecac2daea08fe02e372de459b06ab457a4faa5de49"
+    },
+    {
+      "case": "whitespace around",
+      "sha256": "d6dea80cc4b31dc1803f695c4ddb8c7ce5e3e60b422e4409c2233caa7105d0c3"
+    },
+    {
+      "case": "an id holding a lone high surrogate",
+      "sha256": "4a67bf4a60fbb89107cd90c1af22b942d7315166f537c397c003b411bdb08d66"
+    },
+    {
+      "case": "an id holding a lone low surrogate",
+      "sha256": "385dd0f97f40dc9d3dbbef1a6db7b7c85afe2b141ff9b6685b44ba4a5620b55e"
+    },
+    {
+      "case": "an id holding two surrogates in the wrong order",
+      "sha256": "f2c888584aa67b287fef0e2f85ae00df30e0671f4bdabed371af73fa228b462e"
+    },
+    {
+      "case": "an id holding a pair and a lone surrogate",
+      "sha256": "7e43cf35c6dd7c69e92be973a664aaac5c9aabafdbc37316e6a62a4464273b88"
+    },
+    {
+      "case": "a batch whose ids hold lone surrogates",
+      "sha256": "030c5c8c3104686d0bdc0dba3c6403951265924038e129d11c3b0f14bf2b7cfe"
+    },
+    {
+      "case": "a lone surrogate after the request",
+      "sha256": "13a6ae3c0820c72f2541729f5d93796e92c82018be64308ae0961052bf2fc9ce"
+    },
+    {
+      "case": "a byte-order mark before the request",
+      "sha256": "13a6ae3c0820c72f2541729f5d93796e92c82018be64308ae0961052bf2fc9ce"
+    },
+    {
+      "case": "body of exactly 1 MiB",
+      "sha256": "223237f6fc7387444bafda14a7bf74d7770dcf9e2b3a3f417b20f7d97711110f"
+    },
+    {
+      "case": "body one byte over 1 MiB",
+      "sha256": "812ce4ee4ed25507313ad6aae06719e1b1149e894f8484ded3e8ed5ccb373bfb"
+    },
+    {
+      "case": "body over 1 MiB by its multi-byte characters",
+      "sha256": "812ce4ee4ed25507313ad6aae06719e1b1149e894f8484ded3e8ed5ccb373bfb"
+    },
+    {
+      "case": "GET request",
+      "sha256": "0f42afccfa7f9a0f920f952247397d76b14d4ee43fc8c87ac1275a86ab5a01c0"
+    },
+    {
+      "case": "PUT request",
+      "sha256": "0f42afccfa7f9a0f920f952247397d76b14d4ee43fc8c87ac1275a86ab5a01c0"
+    },
+    {
+      "case": "OPTIONS request",
+      "sha256": "2f181548c8457e38c52adcdac99f0b065e4c018244b9bed66f86e672c46024e6"
+    }
+  ]
+}

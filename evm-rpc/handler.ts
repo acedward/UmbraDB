@@ -29,7 +29,8 @@ export type JsonRpcResponse = JsonRpcSuccess | JsonRpcFailure;
 /** The largest request body read, in bytes of UTF-8. */
 export const MAX_REQUEST_BYTES = 1_048_576;
 const MAX_BATCH_ENTRIES = 100;
-const BATCH_CONCURRENCY = 8;
+/** Entries of a batch dispatched at once. */
+export const BATCH_CONCURRENCY = 8;
 const MAX_BATCH_RESPONSE_BYTES = 1_048_576;
 
 function failure(id: JsonRpcId, error: RpcError): JsonRpcFailure {
@@ -184,11 +185,34 @@ export function requestTooLarge(): RpcError {
   return new RpcError(JSON_RPC_ERRORS.INVALID_REQUEST, "Request body too large");
 }
 
-/** A body reader for a body already in memory as text: it refuses a body over {@link MAX_REQUEST_BYTES}. */
+const REPLACEMENT_CHARACTER = String.fromCharCode(0xfffd);
+
+/**
+ * `text` as Node's server reads the UTF-8 encoding of it: every lone surrogate (which UTF-8 cannot encode, so an encoder
+ * writes U+FFFD's bytes for it) is U+FFFD; everything else, a leading byte-order mark included, is unchanged.
+ */
+export function asReadFromUtf8(text: string): string {
+  let out = "";
+  let from = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0xd800 || unit > 0xdfff) continue;
+    if (unit <= 0xdbff && i + 1 < text.length && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
+      i += 1;
+      continue;
+    }
+    out += text.slice(from, i) + REPLACEMENT_CHARACTER;
+    from = i + 1;
+  }
+  return from === 0 ? text : out + text.slice(from);
+}
+
+/** A body reader for a body already in memory as text: it refuses a body over {@link MAX_REQUEST_BYTES} and reads the
+ *  text as Node's server reads its UTF-8 encoding ({@link asReadFromUtf8}). */
 export function textBody(text: string): () => Promise<string> {
   return async () => {
     if (utf8ByteLength(text) > MAX_REQUEST_BYTES) throw requestTooLarge();
-    return text;
+    return asReadFromUtf8(text);
   };
 }
 

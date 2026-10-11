@@ -126,7 +126,7 @@ export function differentialCases(): DifferentialCase[] {
   cases.push(post("string id", call("wallet-7", "eth_chainId", [])));
   cases.push(post("null id", call(null, "net_version", [])));
   cases.push(post("fractional id", call(1.5, "net_version", [])));
-  cases.push(post("id with hidden characters", call("id \u202E\u200B<b>x</b> ü\u{1f600}", "eth_chainId", [])));
+  cases.push(post("id with hidden characters", call("id \u202E\u200B<b>x</b> \u00fc\u{1f600}", "eth_chainId", [])));
   cases.push(post("boolean id", { jsonrpc: "2.0", id: true, method: "eth_chainId" }));
   cases.push(post("object id", { jsonrpc: "2.0", id: { a: 1 }, method: "eth_chainId" }));
   cases.push(post("no jsonrpc member", { id: 1, method: "eth_chainId" }));
@@ -162,12 +162,26 @@ export function differentialCases(): DifferentialCase[] {
     cases.push(post(name, body));
   }
 
+  // Text that is not well-formed UTF-16: a lone surrogate written as itself (not as a JSON escape). Node reads the bytes
+  // of its UTF-8 encoding, in which it is the replacement character U+FFFD; a byte-order mark stays a character (and
+  // makes the body not JSON).
+  const high = String.fromCharCode(0xd800);
+  const low = String.fromCharCode(0xdc00);
+  const asIs = (id: string): string => `{"jsonrpc":"2.0","id":"${id}","method":"eth_chainId"}`;
+  cases.push(post("an id holding a lone high surrogate", asIs(high)));
+  cases.push(post("an id holding a lone low surrogate", asIs(`a${low}b`)));
+  cases.push(post("an id holding two surrogates in the wrong order", asIs(`${low}${high}`)));
+  cases.push(post("an id holding a pair and a lone surrogate", asIs(`${high}${low}${high}`)));
+  cases.push(post("a batch whose ids hold lone surrogates", `[${asIs(high)},${asIs(low)}]`));
+  cases.push(post("a lone surrogate after the request", `${asIs("x")}${high}`));
+  cases.push(post("a byte-order mark before the request", `${String.fromCharCode(0xfeff)}${asIs("x")}`));
+
   // The request size cap (1 MiB): at the cap the request is read, one byte over it is refused (HTTP 413).
   const request = JSON.stringify(call(1, "eth_chainId", []));
   const atCap = request + " ".repeat(1_048_576 - request.length);
   cases.push(post("body of exactly 1 MiB", atCap));
   cases.push(post("body one byte over 1 MiB", `${atCap} `));
-  cases.push(post("body over 1 MiB by its multi-byte characters", `${request}${"ü".repeat(524_288)}`));
+  cases.push(post("body over 1 MiB by its multi-byte characters", `${request}${"\u00fc".repeat(524_288)}`));
 
   // HTTP methods other than POST.
   for (const method of ["GET", "PUT", "OPTIONS"]) cases.push({ name: `${method} request`, method, body: method === "PUT" ? request : "" });

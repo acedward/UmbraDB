@@ -10,13 +10,14 @@
  *   (status, every header it sets in its order, the body's bytes) equals the handler's answer for the same method and
  *   body, read as bytes the way the server reads them and as text the way the browser engine passes it; the cases call
  *   every registered method.
- * - `[[evm-rpc.handler.utf8-length]]` — the handler's UTF-8 length equals Node's `Buffer.byteLength` for ASCII,
- *   two-, three- and four-byte characters and lone surrogates.
+ * - `[[evm-rpc.handler.utf8-length]]` — the handler's UTF-8 length equals Node's `Buffer.byteLength`, and its reading
+ *   of text equals Node's decoding of the text's UTF-8 bytes, for ASCII, two-, three- and four-byte characters, lone
+ *   surrogates and a byte-order mark.
  */
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { handleHttpRequest, type HttpAnswer, MAX_REQUEST_BYTES, requestTooLarge, textBody, utf8ByteLength } from "../handler.js";
+import { asReadFromUtf8, handleHttpRequest, type HttpAnswer, MAX_REQUEST_BYTES, requestTooLarge, textBody, utf8ByteLength } from "../handler.js";
 import { emptyEvmRpcReader } from "../db.js";
 import { IndexerGqlClient } from "../indexer-gql.js";
 import { NOT_IMPLEMENTED_METHODS } from "../methods/not-implemented.js";
@@ -103,13 +104,19 @@ describe("the JSON-RPC handler answers as Node's HTTP server", () => {
     expect([...statuses].sort()).toEqual([200, 204, 405, 413]);
   }, 120_000);
 
-  it("[[evm-rpc.handler.utf8-length]] the UTF-8 length is Buffer.byteLength's, lone surrogates included", () => {
-    const samples = ["", "plain ascii", "üß", "€中", "\u{1f600}\u{10ffff}", "\ud800", "x\udc00y", "􏿿", "\ud83d", "\ud83d😀"];
+  it("[[evm-rpc.handler.utf8-length]] the UTF-8 length is Buffer.byteLength's, and text reads as Node decodes its UTF-8 bytes, lone surrogates and a byte-order mark included", () => {
+    const samples = ["", "plain ascii", "\u00fc\u00df", "\u20ac\u4e2d", "\u{1f600}\u{10ffff}", "\ud800", "x\udc00y", "\u{10ffff}", "\ud83d", "\ud83d\u{1f600}"];
     for (let i = 0; i < 200; i++) {
       let s = "";
       for (let j = 0; j < 12; j++) s += String.fromCharCode(Math.floor(Math.random() * 0x10000));
       samples.push(s);
     }
-    for (const s of samples) expect(utf8ByteLength(s), JSON.stringify(s)).toBe(Buffer.byteLength(s, "utf8"));
+    samples.push(`${String.fromCharCode(0xfeff)}{}`, `a${String.fromCharCode(0xdbff)}`, String.fromCharCode(0xdc00, 0xd800, 0xdc00));
+    for (const s of samples) {
+      expect(utf8ByteLength(s), JSON.stringify(s)).toBe(Buffer.byteLength(s, "utf8"));
+      expect(asReadFromUtf8(s), JSON.stringify(s)).toBe(Buffer.from(s, "utf8").toString("utf8"));
+    }
+    const plain = "no surrogates here";
+    expect(asReadFromUtf8(plain)).toBe(plain);
   });
 });
