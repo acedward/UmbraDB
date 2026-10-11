@@ -196,6 +196,8 @@ export class Page {
   readonly workers: WorkerRecord[] = [];
   /** The DevTools sessions of the page's dedicated workers, oldest first (with `{ workers: true }`). */
   readonly workerSessions: string[] = [];
+  /** Each worker session's setup (its domains enabled, its scripts evaluated), settled once done or the worker ended. */
+  private readonly workerSetups = new Map<string, Promise<void>>();
   private readonly byId = new Map<string, RequestRecord>();
   /** The page's session and, with `{ workers: true }`, its workers' sessions: whatever they report is recorded. */
   private readonly sessions = new Set<string>();
@@ -404,6 +406,8 @@ export class Page {
   async evalWorker<T = Json>(expression: string): Promise<T> {
     const session = this.workerSessions.at(-1);
     if (session === undefined) throw new Error("no worker recorded: open the page with { workers: true }");
+    // Not before the worker's own setup (the CSP listener among it) has been sent and answered.
+    await this.workerSetups.get(session);
     const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session);
     if (r.exceptionDetails !== undefined) throw new Error(`worker evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value as T;
@@ -453,16 +457,19 @@ export class Page {
         bySession.set(child, w);
       }
       if (!record) return;
-      void (async () => {
+      if (worker) {
+        this.sessions.add(child);
+        this.workerSessions.push(child);
+      }
+      const setup = (async () => {
         if (worker) {
-          this.sessions.add(child);
-          this.workerSessions.push(child);
           for (const d of ["Runtime", "Network", "Log"]) await this.conn.send(`${d}.enable`, {}, child);
           if (workerScript !== undefined) await this.beforeWorkerScript(child, workerScript);
         }
         await this.conn.send("Runtime.runIfWaitingForDebugger", {}, child);
         if (worker) await this.conn.send("Runtime.evaluate", { expression: VIOLATIONS }, child);
       })().catch(() => { /* the target closed */ });
+      if (worker) this.workerSetups.set(child, setup);
     });
     this.conn.on("Target.detachedFromTarget", (p, s) => {
       if (s !== this.sessionId) return;
