@@ -1190,7 +1190,7 @@
     {
       "id": "browser.host.start-stop-unsaved",
       "file": "token-indexer/test/browser-sync-host.test.ts",
-      "description": "a start whose settings cannot be saved starts nothing and changes nothing; one whose source cannot be reached is refused before anything is saved; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on; while writes are refused, a start of what the settings say runs"
+      "description": "a start whose settings cannot be saved starts nothing and changes nothing; one whose source cannot be reached is refused before anything is saved; one whose engine then fails to start puts the earlier settings back; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on; while writes are refused, a start of what the settings say runs"
     },
     {
       "id": "browser.host.automatic-start-gap",

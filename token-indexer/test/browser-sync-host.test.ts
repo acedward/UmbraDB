@@ -10,7 +10,8 @@
  *   resumes at its cursor through the gap (every height fetched once, the first height kept); a `stop` turns the
  *   automatic start off until the next `start`.
  * - `[[browser.host.start-stop-unsaved]]` — a `start` whose settings the browser refuses to save is refused (nothing
- *   runs, nothing is saved); a `start` whose source cannot be reached is refused before anything is saved; a `stop`
+ *   runs, nothing is saved); a `start` whose source cannot be reached is refused before anything is saved (no write); one
+ *   whose engine fails to start once its settings were saved puts the earlier settings back; a `stop`
  *   always stops the engine and, when the setting that keeps it stopped cannot be saved, answers so, the status keeping
  *   the automatic start on; and while the browser refuses writes, a start of what the settings already say (the
  *   automatic start, a restart's restore) runs, as it writes nothing.
@@ -53,6 +54,7 @@ import { pauseThresholdBytes, QUOTA_RULE, type StorageEnvironment } from "../bro
 import { memorySettingsStore } from "../browser/settings.ts";
 import { resumeOrAutoStart } from "../browser/tabs.ts";
 import { type EngineClient, startSaved } from "../browser/client.ts";
+import { openStore } from "../browser/store.ts";
 import { loadTape } from "../browser/tapes.ts";
 import { nodeStoreFiles } from "./helpers/worker-host.ts";
 
@@ -218,13 +220,28 @@ describe("browser engine host: sync", () => {
     expect(again.settings).toEqual({ config: net, autoStart: true });
   }, 120_000);
 
-  it("[[browser.host.start-stop-unsaved]] a start whose settings cannot be saved starts nothing and changes nothing; one whose source cannot be reached is refused before anything is saved; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on; while writes are refused, a start of what the settings say runs", async () => {
+  it("[[browser.host.start-stop-unsaved]] a start whose settings cannot be saved starts nothing and changes nothing; one whose source cannot be reached is refused before anything is saved; one whose engine then fails to start puts the earlier settings back; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on; while writes are refused, a start of what the settings say runs", async () => {
     const saved = memorySettingsStore();
     let failing = false;
     let tapeFails = false;
     /** Settings writes attempted (refused ones included). */
     let writes = 0;
+    /** Makes the next statement on the store's MIP-0018 handle fail (the engine's start prepares the scan's tables). */
+    let scanTablesFail = false;
     const h = newHost({
+      openStore: async (dir, o) => {
+        const store = await openStore(dir, o);
+        const mip0018 = new Proxy(store.mip0018, {
+          apply(target, self, args) {
+            if (scanTablesFail) {
+              scanTablesFail = false;
+              throw new Error("the scan's tables could not be prepared");
+            }
+            return Reflect.apply(target, self, args);
+          },
+        });
+        return new Proxy(store, { get: (t, k) => (k === "mip0018" ? mip0018 : Reflect.get(t, k)) });
+      },
       settings: {
         ...saved,
         save: async (x) => {
@@ -263,6 +280,17 @@ describe("browser engine host: sync", () => {
     tapeFails = false;
     expect((await result<HostStatus>(h, "status")).settings).toEqual(stopped);
     expect(await saved.load()).toEqual(stopped);
+
+    // The source loads and the settings are saved, then the engine fails to start: the settings before it are put back.
+    scanTablesFail = true;
+    const writesThen = writes;
+    expect(await errorOf(h, "start", { config: other })).toEqual({ code: "start-failed", message: "the scan's tables could not be prepared" });
+    expect(scanTablesFail, "the engine's start reached the store").toBe(false);
+    expect(writes - writesThen, "the new settings saved, then the earlier ones").toBe(2);
+    expect(await saved.load()).toEqual(stopped);
+    s = await result<HostStatus>(h, "status");
+    expect(s.settings).toEqual(stopped);
+    expect(s.engine).toMatchObject({ running: false, config });
 
     // A stop whose setting cannot be saved: the engine stops; the answer says it starts again at the next boot.
     expect((await result<HostStatus>(h, "start", { config })).engine).toMatchObject({ running: true, config });
