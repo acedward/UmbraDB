@@ -1,8 +1,9 @@
 /**
  * The browser build's dev server (`npm run dev:browser`: Vite with `token-indexer/browser/vite.config.ts`, started here
  * through Vite's API on 127.0.0.1 at a random free port at or above 10000, with the engine's automatic start off and
- * the chain moved to a local server that refuses everything, so nothing reaches Stagenet). The pages link the
- * explorer's shared style and icon as `../mip0018/ui/…`, outside the dev server's root; `build-explorer.ts` serves them.
+ * the chain moved to a local server that refuses everything, so nothing reaches Stagenet), with an empty dependency
+ * cache of its own, as on a new checkout. The pages link the explorer's shared style and icon as `../mip0018/ui/…`,
+ * outside the dev server's root; `build-explorer.ts` serves them.
  *
  * - `[[browser.dev.assets]]` — every stylesheet and icon the explorer page (`/`) and the status page (`/system.html`)
  *   link, and the font the explorer's style names, are served as what they are: `text/css` with the style's rules,
@@ -11,10 +12,15 @@
  * - `[[browser.dev.styles]]` — in Chromium, the main page on the dev server is styled: the explorer's style sheet is
  *   loaded with its rules, the brand font is loaded and is the body's font, the logo is the 22-pixel mark (not a page
  *   wide picture), the overview's labels and values sit side by side in its grid, and the main page's own style
- *   (`explorer.css`) applies; the status page gets the same font; the icon loads.
+ *   (`explorer.css`) applies; the status page gets the same font; the icon loads. The page is loaded once: the dev server
+ *   prepared every dependency of the pages and of the worker before it, so it does not reload it when the worker
+ *   starts.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Browser, findBrowser } from "./helpers/cdp-browser.ts";
@@ -48,6 +54,8 @@ describe("the browser build's dev server", () => {
   let origin = "";
   let chain: LocalServer;
   let browser: Browser;
+  /** The dev server's dependency cache, empty when it starts. */
+  const cacheDir = mkdtempSync(join(tmpdir(), "umbradb-dev-deps-"));
 
   beforeAll(async () => {
     if (browserExe === undefined) throw new Error("no Chromium/Chrome found: set MIP0018_UI_BROWSER or CHROME_BIN (see token-indexer/mip0018/ui/README.md)");
@@ -62,7 +70,7 @@ describe("the browser build's dev server", () => {
     try {
       for (let attempt = 0; ; attempt++) {
         const port = 10_000 + Math.floor(Math.random() * 50_000);
-        const server = await createServer({ configFile: BROWSER_CONFIG, logLevel: "silent", clearScreen: false, define: NO_AUTO_START, server: { host: "127.0.0.1", port, strictPort: true } });
+        const server = await createServer({ configFile: BROWSER_CONFIG, cacheDir, logLevel: "silent", clearScreen: false, define: NO_AUTO_START, server: { host: "127.0.0.1", port, strictPort: true } });
         try {
           await server.listen();
           dev = server;
@@ -83,6 +91,7 @@ describe("the browser build's dev server", () => {
     await browser?.close();
     await dev?.close();
     await chain?.close();
+    rmSync(cacheDir, { recursive: true, force: true });
   });
 
   it("[[browser.dev.assets]] every stylesheet and icon the explorer and the status page link, and the explorer's font, are served as text/css, an image and font/woff2, never as text/html", async () => {
@@ -122,9 +131,17 @@ describe("the browser build's dev server", () => {
 
   it("[[browser.dev.styles]] in Chromium the dev server's explorer is styled: its style sheet loaded with its rules, the brand font loaded and the body's, the logo the 22-pixel mark, the overview's labels and values side by side and the main page's own style applied; the status page in the same font; the icon loaded", async () => {
     const page = await browser.newPage();
-    // The dev server may reload the page once while it prepares the dependencies; wait for the styled, booted page.
-    await page.goto(`${origin}/`, 60_000, () =>
-      page.waitFor("document.querySelector('#engine-panel .kv') !== null && getComputedStyle(document.body).fontFamily.startsWith('Outfit')", 90_000, "the styled explorer and its panel"));
+    const documents: string[] = [];
+    page.onEvent("Page.frameNavigated", (p: { frame: { url: string; parentId?: string } }) => { if (p.frame.parentId === undefined) documents.push(p.frame.url); });
+    // The styled page, and its engine booted: the worker has imported everything it needs.
+    await page.goto(`${origin}/`, 60_000, async () => {
+      await page.waitFor("document.querySelector('#engine-panel .kv') !== null && getComputedStyle(document.body).fontFamily.startsWith('Outfit')", 90_000, "the styled explorer and its panel");
+      await page.waitFor("window.umbradbEngine !== undefined", 30_000, "the engine client");
+      await page.eval("window.umbradbEngine.client.booted()");
+    });
+    // A dependency the dev server found only now would make it reload the page.
+    await new Promise((r) => setTimeout(r, 1_000));
+    expect(documents, "the dev server did not reload the page").toEqual([`${origin}/`]);
     const look = await page.eval<Record<string, unknown>>(`(async () => {
       await document.fonts.load("14px Outfit");
       const sheet = [...document.styleSheets].find((s) => (s.href ?? "").endsWith("/mip0018/ui/page.css"));

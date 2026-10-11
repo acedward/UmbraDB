@@ -108,6 +108,9 @@ export default defineConfig({
       output: { keepNames: true, codeSplitting: { groups: [zodChunk, sharedPageChunk] } },
     },
   },
-  optimizeDeps: { exclude: ["@electric-sql/pglite"] },
+  // The dev server's dependency scan reads the pages and the worker (`new Worker(new URL(…))` is not followed from a
+  // page): a dependency only the worker imports (ledger-v9) is then prepared before the first page loads, instead of
+  // being found as the worker starts, which made the dev server reload every open page once on a cold cache.
+  optimizeDeps: { entries: ["*.html", "worker.ts"], exclude: ["@electric-sql/pglite"] },
   server: { host: "127.0.0.1" },
 });
