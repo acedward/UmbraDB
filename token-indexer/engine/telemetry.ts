@@ -344,7 +344,9 @@ export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): Engine
             syncLastEnd = e.at;
             syncLastSuccessAt = e.at;
             failedOnNetwork = false;
-            if (f.tip !== undefined) {
+            // The finalized tip never moves back: a lower answer is a node backend behind the chain (a batch bound by
+            // it is only shorter), not a chain that went back.
+            if (f.tip !== undefined && (tip === null || f.tip >= tip.height)) {
               tip = { height: f.tip, at: e.at };
               const last = tipFirstSeen[tipFirstSeen.length - 1];
               if (last === undefined || f.tip > last.height) tipFirstSeen.push({ height: f.tip, at: e.at });
@@ -454,8 +456,15 @@ export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): Engine
     },
 
     setEndpoints(e) {
-      nodeKey = endpointKey(e.node);
-      indexerKey = endpointKey(e.indexer);
+      const node = endpointKey(e.node);
+      const indexer = endpointKey(e.indexer);
+      // Another chain's tip is not this one's: the finalized tip starts again from the next batch.
+      if (node !== nodeKey || indexer !== indexerKey) {
+        tip = null;
+        tipFirstSeen.length = 0;
+      }
+      nodeKey = node;
+      indexerKey = indexer;
     },
 
     carry(carried) {

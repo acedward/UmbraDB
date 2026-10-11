@@ -254,7 +254,7 @@ required gate runs it too, on PostgreSQL with the runner's Chrome.
 | API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
 | The API on PGlite against PostgreSQL: every route and error envelope identical, a database that cannot be read answering 503 on both, the failures only PGlite has, `/v1/status`'s durability mode | `test/mip0018-api-errors-pglite.test.ts` |
 | The engine: sync, scan and API from injected parts (a `fetch` over the recorded tapes, a manual clock) | `test/engine.test.ts` |
-| The engine's start at the finalized tip: back-off while the endpoints fail (never genesis), following the tip, resuming through the gap | `test/engine-start-tip.test.ts` |
+| The engine's start at the finalized tip: back-off while the endpoints fail (never genesis), following the tip, resuming through the gap, a node endpoint with a backend far behind the chain (the start at the true tip, a reported tip that never goes back, `null` block hashes asked again) | `test/engine-start-tip.test.ts` |
 | The engine's telemetry, health rule, `system` snapshot schema and redaction | `test/engine-telemetry.test.ts` |
 | The `system` snapshot of a running engine against its sources (SQL catalog, `/v1/status`), its cost and cadence | `test/engine-system-snapshot.test.ts` |
 | The browser engine: the worker host and its protocol on an in-memory PGlite; the built worker in Chromium on OPFS, across reloads (see `browser/README.md`) | `test/browser-host.test.ts`, `test/browser-worker.test.ts` |

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { IndexerClientError, IndexerClientParseError } from "./indexer-client.js";
-import { NodeRpcError, NodeRpcParseError } from "./node-rpc-client.js";
+import { NodeRpcError, NodeRpcMissingError, NodeRpcParseError } from "./node-rpc-client.js";
 import { defaultMinIntervalMs, isPublicEndpoint, parseRetryAfterMs, RequestPacer } from "./polite-http.js";
 import { classifyEndpointError, withRetry } from "./retry.js";
 import { parseArchiveSyncArgs } from "./sync-cli.js";
 
 /** Polite public-endpoint access: unit level, no network, no Postgres. */
 describe("polite public-endpoint access", () => {
-  it("classifies only throttling, outages, transport failures and non-JSON bodies as retryable", () => {
+  it("classifies only throttling, outages, transport failures, non-JSON bodies and a node's null answer for a block it should have as retryable", () => {
     const cases: [unknown, boolean, number | undefined][] = [
       [new NodeRpcError("x", undefined, 429, 2_000), true, 429],
       [new IndexerClientError("x", undefined, 403), true, 403],
@@ -17,6 +17,7 @@ describe("polite public-endpoint access", () => {
       [new NodeRpcError("chain_getBlock: RPC error -32000: bad"), false, undefined],
       [new IndexerClientError("GraphQL error: bad query"), false, undefined],
       [new NodeRpcParseError("x", "u", "m"), true, undefined],
+      [new NodeRpcMissingError("chain_getBlockHash: u has no block for 5 (it answered null)", "u", "chain_getBlockHash"), true, undefined],
       [new IndexerClientParseError("x", "u"), true, undefined],
       [new Error("indexer has not yet synced height 5 (node has); retry later"), false, undefined],
     ];

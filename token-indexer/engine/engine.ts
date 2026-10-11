@@ -12,7 +12,8 @@
  *   (`sync.backoff`); a range it cannot honour (`SyncRangeError`) ends it; with `sync.endHeight` it ends once the cursor
  *   is there. `sync.startHeight` is the first height of a first run: a number; `"tip"`, the finalized tip both sources
  *   serve when the run begins (`min(node finalized height, indexer tip)`), read until it is known, with back-off while
- *   the endpoints fail, never genesis; or a function. The engine resolves `"tip"` or calls the function only when the
+ *   the endpoints fail, never genesis — the highest of {@link TIP_SAMPLES} answers, read again while it is more than
+ *   {@link STALE_TIP_BLOCKS} below the indexer's tip (a node backend behind the chain); or a function. The engine resolves `"tip"` or calls the function only when the
  *   archive has no cursor yet (a resumed archive continues at its cursor and never asks).
  * - **Scan loop** (`scan`): `Mip0018Scanner.scanOnce` steps of `scan.batch` blocks, one database transaction per
  *   block. `"follow"` (default) never ends by itself: at the archive's tip it waits `scan.idleMs`, and a failed step
@@ -276,6 +277,17 @@ export interface IndexerEngine {
 }
 
 /** What the engine uses for an option that is not given. */
+/** Answers of the node and the indexer read for a start at the finalized tip; the highest is taken (see `resolveTip`). */
+export const TIP_SAMPLES = 3;
+/** A node finalized height more than this below the indexer's tip, at the start, is an answer from a backend behind the
+ *  chain: 100 blocks is about 10 minutes at Midnight's 6 s blocks, far beyond the few blocks a node's finality and the
+ *  indexer normally differ by, and far below the tens of thousands a stale backend of a load-balanced endpoint was seen
+ *  to lag. */
+export const STALE_TIP_BLOCKS = 100;
+/** Readings in a row that may look stale before the start takes the last one as it is (the node's finality itself may
+ *  lag the indexer). */
+export const STALE_TIP_READINGS = 3;
+
 export const ENGINE_DEFAULTS = {
   syncMaxBlocks: 200,
   syncConcurrency: 4,
@@ -484,7 +496,11 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
 
   /**
    * `"tip"`: the finalized tip both sources serve (`ChainArchiveSyncService.finalizedTip`, each call retried as a
-   * batch's are). While that fails, the loop waits (phase `backoff`) and asks again, the wait doubling from
+   * batch's are), read {@link TIP_SAMPLES} times: the highest of the answers is taken, since a node endpoint behind a
+   * load balancer can answer from a backend far behind the chain. A reading whose highest answer is still more than
+   * {@link STALE_TIP_BLOCKS} below the indexer's tip is taken as such a stale answer and read again, after the same wait
+   * as a failure; the {@link STALE_TIP_READINGS}th reading in a row is taken as it is (the node's finality may lag the
+   * indexer). While that fails, the loop waits (phase `backoff`) and asks again, the wait doubling from
    * `sync.backoff.baseDelayMs` up to `maxDelayMs` with jitter, and reports an `error` event per failed attempt; only the
    * tip or a stop ends it, so it never falls back to genesis. A stop rejects with the abort reason. It reads the
    * network only, so it does not go through the scheduler.
@@ -496,13 +512,26 @@ export function createIndexerEngine(opts: EngineOptions): IndexerEngine {
     const backoffMaxMs = c.backoff?.maxDelayMs ?? DEFAULTS.backoffMaxMs;
     const probe = newSyncService(mod, undefined, false);
     let waitMs = backoffBaseMs;
+    let staleReadings = 0;
     for (;;) {
       if (signal.aborted) throw signal.reason;
       try {
-        const tip = await probe.finalizedTip();
+        let best = -1;
+        let indexerTip = -1;
+        for (let i = 0; i < TIP_SAMPLES; i++) {
+          if (signal.aborted) throw signal.reason;
+          const tip = await probe.finalizedTip();
+          best = Math.max(best, tip.targetTipHeight);
+          indexerTip = Math.max(indexerTip, tip.indexerTipHeight);
+        }
+        if (indexerTip - best > STALE_TIP_BLOCKS && ++staleReadings < STALE_TIP_READINGS)
+          throw new Error(
+            `the node's finalized height ${best} (the highest of ${TIP_SAMPLES} answers) is ${indexerTip - best} blocks below the indexer's tip ${indexerTip}: ` +
+            `the node answered from a backend behind the chain; asked again`,
+          );
         syncStatus.lastError = undefined;
         syncStatus.failures = 0;
-        return tip.targetTipHeight;
+        return best;
       } catch (error) {
         if (signal.aborted) throw signal.reason;
         const message = publicErrorMessage(error, endpoints);

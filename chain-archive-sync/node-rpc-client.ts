@@ -60,6 +60,16 @@ export class NodeRpcParseError extends Error {
   }
 }
 
+/** A `null` result for a block the caller knows exists (a height at or below the finalized tip, a hash the chain
+ *  returned): the endpoint answered from a backend that does not have it yet (a load-balanced endpoint with a backend
+ *  behind the chain). Retried as a parse error is (`retry.ts`): the next answer may come from another backend. */
+export class NodeRpcMissingError extends NodeRpcParseError {
+  constructor(message: string, url: string, method: string) {
+    super(message, url, method);
+    this.name = "NodeRpcMissingError";
+  }
+}
+
 /** Fix 3: raised by `getHeightOf` when the node's `header.number` field is missing or does not
  *  decode to a safe integer -- previously `parseInt(header.number, 16)` silently produced `NaN`
  *  in that case, which then made `syncOnce`'s loop-bounds check (`startHeight > NaN` is always
@@ -160,15 +170,22 @@ export class NodeRpcClient {
 
   /** `null` params ⇒ current best (not-necessarily-finalized) head's hash. */
   async getBlockHash(height?: number): Promise<string> {
-    return this.call<string>("chain_getBlockHash", height === undefined ? [] : [height]);
+    return this.present("chain_getBlockHash", height, await this.call<string | null>("chain_getBlockHash", height === undefined ? [] : [height]));
   }
 
   async getHeader(blockHash?: string): Promise<SubstrateHeader> {
-    return this.call<SubstrateHeader>("chain_getHeader", blockHash === undefined ? [] : [blockHash]);
+    return this.present("chain_getHeader", blockHash, await this.call<SubstrateHeader | null>("chain_getHeader", blockHash === undefined ? [] : [blockHash]));
   }
 
   async getBlock(blockHash?: string): Promise<SubstrateBlock> {
-    return this.call<SubstrateBlock>("chain_getBlock", blockHash === undefined ? [] : [blockHash]);
+    return this.present("chain_getBlock", blockHash, await this.call<SubstrateBlock | null>("chain_getBlock", blockHash === undefined ? [] : [blockHash]));
+  }
+
+  /** `result`, or a {@link NodeRpcMissingError} when the node answered `null` for `what`. */
+  private present<T>(method: string, what: string | number | undefined, result: T | null | undefined): T {
+    if (result === null || result === undefined)
+      throw new NodeRpcMissingError(`${method}: ${this.publicUrl} has no block for ${what ?? "its head"} (it answered null)`, this.publicUrl, method);
+    return result;
   }
 
   async getFinalizedHead(): Promise<string> {

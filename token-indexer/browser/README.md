@@ -331,9 +331,14 @@ A browser profile runs one engine per store, however many tabs are open. A page 
 ## Sync
 
 - **Start at the tip.** A new archive starts at `startHeight`, by default the finalized tip both sources serve when the
-  sync begins, `min(node finalized height, indexer tip)`, read with the same clients and retries as every batch. While
-  the endpoints fail the engine waits (each attempt's calls retried, then a wait doubling from 1 s to 60 s, with
-  jitter) and asks again; it never starts at genesis by default. `/v1/status` `startHeight` is the first indexed
+  sync begins, `min(node finalized height, indexer tip)`, read with the same clients and retries as every batch. A node
+  endpoint behind a load balancer can answer from a backend far behind the chain (on Stagenet one answered 38,000
+  blocks back), so the start reads the tip three times and takes the highest answer, and while even that is more than
+  100 blocks (about 10 minutes) below the indexer's tip it reads again after a wait; the third such reading in a row
+  is taken as it is (the node's finality may lag). While the endpoints fail the engine waits (each attempt's calls
+  retried, then a wait doubling from 1 s to 60 s, with jitter) and asks again; it never starts at genesis by default.
+  While it follows, a lower answer only shortens a batch: the finalized tip and lag the status shows never go back, and
+  a block the stale backend answers `null` for is asked again. `/v1/status` `startHeight` is the first indexed
   height: history before it is not indexed. Requests to the Stagenet endpoints are spaced 250 ms apart per endpoint and
   a throttling answer is retried after its `Retry-After`, as in the Node commands. A stop ends the sync's requests at
   once: those waiting for their turn never start, and those in flight are aborted.
