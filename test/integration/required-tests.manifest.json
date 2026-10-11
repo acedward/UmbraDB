@@ -1350,7 +1350,7 @@
     {
       "id": "browser.reopen.stack-depth",
       "file": "token-indexer/test/browser-session.test.ts",
-      "description": "with the count rule off PGlite's own defect appears (every statement fails with stack depth limit exceeded, 54001) after about 1,870 failures; the first such failure reopens the store at once and the engine continues to the same tables"
+      "description": "with the count rule off, failures of other kinds do not reopen the store, and the first statement that fails with stack depth limit exceeded (54001, raised on purpose) reopens it at once; the engine continues to the same tables, and the reopen is counted and logged with its reason"
     },
     {
       "id": "browser.system.sources",
