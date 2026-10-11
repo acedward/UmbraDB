@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 449), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 455), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -731,6 +731,11 @@
       "id": "pglite.client.deadlock",
       "file": "test/postgres/pglite-sql.test.ts",
       "description": "a statement on the outer client awaited inside a transaction fails with PGLITE_SESSION_DEADLOCK instead of hanging"
+    },
+    {
+      "id": "pglite.client.pglite-lock-deadlock",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a statement waiting for PGlite's own transaction lock — held by a transaction of PGlite's transaction() that awaits it — fails with PGLITE_SESSION_DEADLOCK after deadlockTimeoutMs instead of hanging; that transaction then fails and rolls back, and the client's next statements run"
     },
     {
       "id": "pglite.client.busy-wait",
@@ -1668,6 +1673,21 @@
       "description": "pgliteBlobQuery runs a COPY with a file on a client, a transaction handle or a reserved handle, in the handle's turn; a function that is not a handle of a client, or a handle that has ended, is refused"
     },
     {
+      "id": "pglite.client.blob-copy-failure",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a pgliteBlobQuery that fails on a transaction handle fails the transaction even when the callback caught it: begin rejects with its error and nothing of the transaction is kept; on a savepoint handle the savepoint rejects and the transaction goes on; on a client it may not start a transaction block; a COPY TO that fails part-way leaves nothing for the next one"
+    },
+    {
+      "id": "pglite.client.large-results",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a statement with parameters, and a text, whose result holds 150,000 rows answers with every row, for a SELECT and an INSERT … RETURNING alike, and the rows are stored once"
+    },
+    {
+      "id": "pglite.client.unready-database",
+      "file": "test/postgres/pglite-sql.test.ts",
+      "description": "a database made with new PGlite() and handed to the client at once: the first statements, transaction and reservation wait until it has started, then run"
+    },
+    {
       "id": "pglite.client.transaction-guard",
       "file": "test/postgres/pglite-sql.test.ts",
       "description": "refuses a top-level statement that starts a transaction block before it runs, also behind comments or after other statements; BEGIN in quoted text, identifiers, comments or a DO body is not refused"
@@ -1755,7 +1775,12 @@
     {
       "id": "engine.telemetry.redaction-cut",
       "file": "token-indexer/test/engine-telemetry.test.ts",
-      "description": "a text longer than 4,096 characters is cut to them before redaction, saying how much was cut (4,095 and 4,096 kept, 4,097 to 4,161 cut), a cut text is not cut again, a forged cut mark does not stop the cut, and a member's secret is removed at every depth of JSON encoding a cut text can hold"
+      "description": "a text longer than 4,096 characters is cut to at most them before redaction, saying how much was cut (4,095 and 4,096 kept, 4,097 to 4,161 cut); a cut text (at most 4,096 characters, then the mark) is not cut again, and a forged mark after more, also within 4,097 to 4,160 characters, does not stop the cut; and a member's secret is removed at every depth of JSON encoding a cut text can hold"
+    },
+    {
+      "id": "engine.telemetry.redaction-cut-mark",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form, and it stays within the snapshot's bound"
     },
     {
       "id": "engine.telemetry.redaction-key-forms",
@@ -1810,7 +1835,12 @@
     {
       "id": "browser.harness.load-retry",
       "file": "token-indexer/test/browser-harness-chrome.test.ts",
-      "description": "in Chromium, page loads the machine's network aborted are loaded again, at most three times, with one printed line each, and dropped from what the page recorded: a stylesheet, a module import or a later fetch failed once with an error taken for the network's is loaded again once, at once; failing every time fails after three attempts; another error, a missing module, a failed step (also while the interfaces change), or an aborted worker script with no network change, is not retried; a worker's script aborted while the machine's interfaces changed is loaded again"
+      "description": "in Chromium, page loads the machine's network aborted are loaded again, at most three times, with one printed line each, and dropped from what the page recorded: a stylesheet, a module import or a later fetch failed once with an error taken for the network's is loaded again once, at once; failing every time fails after three attempts; another error, a missing module, a failed step (also while the interfaces change), or an aborted worker script with no network change, is not retried; a worker's script aborted while the machine's interfaces changed is loaded again; the driver's own list is net::ERR_NETWORK_CHANGED alone: with it a refused fetch, a missing module, and a stylesheet failed with any other error while the interfaces change are not retried"
+    },
+    {
+      "id": "browser.harness.load-retry-independent",
+      "file": "token-indexer/test/browser-harness-chrome.test.ts",
+      "description": "an aborted load never hides a failure of the page's own: a boot that fails with an application exception, or a running worker's error, while a stylesheet is aborted is not loaded again and keeps what the attempt recorded; an exception naming the aborted load is the abort's: loaded again, the aborted attempt kept in the report and counted in the printed line; an aborted image is no reason to load again; an abandoned step gets its abort signal and stops before the page is loaded again"
     },
     {
       "id": "engine.start-tip.follows",

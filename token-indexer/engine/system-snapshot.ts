@@ -9,8 +9,10 @@
  *   outside this schema (a page URL, a request target, a header) can travel inside a snapshot. Times are epoch
  *   milliseconds; durations are milliseconds; heights are block heights; sizes are bytes.
  * - **No secrets:** {@link redactSnapshot} runs over every string of a snapshot before it is validated and handed out.
- *   A text longer than 4,096 characters (`TEXT_MAX_CHARS`) is cut to them first, saying how much was cut, so redaction reads
- *   at most a few kilobytes and every expression and scan of it is linear in the text's length. Then:
+ *   A text longer than 4,096 characters (`TEXT_MAX_CHARS`), unless it is already a cut text (at most 4,096 characters
+ *   and the mark of a cut), is cut to at most that many first, so redaction reads at most a few kilobytes and every
+ *   expression and scan of it is linear in the text's length; the mark saying how many characters were cut is added
+ *   after the redaction, which never reads it (so redacting a redacted text gives it back). Then:
  *   URLs lose their userinfo, query and fragment, and the path segments that look like keys (16 or more letters,
  *   digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`, `key: value` and JSON
  *   `"key": value` forms whose key names a secret ({@link keyKind}: a name ending in password, token, secret,
@@ -785,10 +787,19 @@ const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
 
 /** The longest text the snapshot keeps (its schema's bound): {@link TEXT_MAX_CHARS} and the mark of a cut. */
 const TEXT_LIMIT = TEXT_MAX_CHARS + 64;
-/** The mark {@link capText} ends a cut text with. */
-const CUT_MARK = /… \[\d+ more characters\]$/u;
-/** Whether `text` is already a cut text: {@link CUT_MARK} at its end, within the snapshot's bound. */
-const isCut = (text: string): boolean => text.length <= TEXT_LIMIT && CUT_MARK.test(text);
+/** The mark {@link capText} and {@link redactText} end a cut text with: how many characters of the text were cut. */
+const CUT_MARK = /… \[([1-9]\d{0,14}) more characters\]$/u;
+/**
+ * The mark ending `text` when `text` is a cut text — at most {@link TEXT_MAX_CHARS} characters, then {@link CUT_MARK},
+ * within the snapshot's bound — with where it starts and the count it states; otherwise `undefined`. A text with more
+ * than {@link TEXT_MAX_CHARS} characters before a mark is not a cut text, whatever it ends with.
+ */
+function cutMarkOf(text: string): { at: number; mark: string; more: number } | undefined {
+  if (text.length > TEXT_LIMIT) return undefined;
+  const m = CUT_MARK.exec(text);
+  if (m === null || m.index > TEXT_MAX_CHARS) return undefined;
+  return { at: m.index, mark: m[0], more: Number(m[1]) };
+}
 
 /**
  * The redaction of {@link redactText} without its length cap: every expression and scan is linear in the text's
@@ -803,18 +814,43 @@ export function redactWhole(value: string): string {
 
 /**
  * `text` with the secrets this module knows removed (see the module documentation); idempotent. A text longer than
- * {@link TEXT_MAX_CHARS} is cut to that length first ({@link capText}, which says how much was cut), unless it is
- * already a cut text; a result that redaction made longer than that (`[redacted]` is longer than some values) is cut
- * the same way and redacted again (so a value cut in two is removed whole). What it gives always fits the snapshot.
+ * {@link TEXT_MAX_CHARS} characters, unless it is already a cut text ({@link cutMarkOf}), is cut first: to that many
+ * characters, fewer when redaction would make what is kept longer than that (`[redacted]` is longer than some values),
+ * and what is kept is redacted on its own (so a value cut in two is removed whole). The mark saying how many characters
+ * of the text were cut is added after the redaction, which never reads it: a cut text keeps its mark, and only what
+ * comes before it is redacted (cut again, its count grown, if redaction makes it longer). What it gives always fits the
+ * snapshot, and holds at most {@link TEXT_MAX_CHARS} characters before a mark.
  */
 export function redactText(value: string): string {
-  const out = redactWhole(value.length > TEXT_MAX_CHARS && !isCut(value) ? capText(value) : value);
-  return out.length > TEXT_MAX_CHARS && !isCut(out) ? redactWhole(capText(out)) : out;
+  const cut = cutMarkOf(value);
+  if (cut !== undefined) {
+    const kept = redactWhole(value.slice(0, cut.at));
+    return kept.length <= TEXT_MAX_CHARS ? `${kept}${cut.mark}` : cutAndRedact(value.slice(0, cut.at), cut.more);
+  }
+  if (value.length > TEXT_MAX_CHARS) return cutAndRedact(value);
+  const out = redactWhole(value);
+  return out.length > TEXT_MAX_CHARS ? cutAndRedact(value) : out;
 }
 
-/** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut; a text already cut stays as it is. */
+/**
+ * The longest start of `text` whose redaction holds at most {@link TEXT_MAX_CHARS} characters (at most that many
+ * characters of `text`; shorter when redaction lengthens it), redacted, then the mark with how many characters of the
+ * text it leaves out (plus `earlier`, those a mark already on it counted). Each redaction reads at most
+ * {@link TEXT_MAX_CHARS} characters, a bounded number of times.
+ */
+function cutAndRedact(text: string, earlier = 0): string {
+  let keep = Math.min(text.length, TEXT_MAX_CHARS);
+  let out = redactWhole(text.slice(0, keep));
+  for (let tries = 0; out.length > TEXT_MAX_CHARS; tries++) {
+    keep = tries < 32 ? Math.min(keep - 1, Math.floor((keep * TEXT_MAX_CHARS) / out.length)) : 0;
+    out = redactWhole(text.slice(0, keep));
+  }
+  return `${out}… [${text.length - keep + earlier} more characters]`;
+}
+
+/** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut; a cut text stays as it is. */
 export function capText(value: string): string {
-  if (value.length <= TEXT_MAX_CHARS || isCut(value)) return value;
+  if (value.length <= TEXT_MAX_CHARS || cutMarkOf(value) !== undefined) return value;
   return `${value.slice(0, TEXT_MAX_CHARS)}… [${value.length - TEXT_MAX_CHARS} more characters]`;
 }
 

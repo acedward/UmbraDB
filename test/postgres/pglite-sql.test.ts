@@ -39,6 +39,7 @@ function forward(own: PGlite, overrides: Partial<PgliteDatabase> = {}): PgliteDa
     _runExclusiveTransaction: (fn) => own._runExclusiveTransaction(fn),
     runExclusive: (fn) => own.runExclusive(fn),
     execProtocolStream: (message, options) => own.execProtocolStream(message, options),
+    _checkReady: () => own._checkReady(),
     _handleBlob: (blob) => own._handleBlob(blob),
     _cleanupBlob: () => own._cleanupBlob(),
     _getWrittenBlob: () => own._getWrittenBlob(),
@@ -583,6 +584,105 @@ describe("PGlite client", () => {
       }
     });
 
+    it("[[pglite.client.blob-copy-failure]] a pgliteBlobQuery that fails on a transaction handle fails the transaction even when the callback caught it: begin rejects with its error and nothing of the transaction is kept; on a savepoint handle the savepoint rejects and the transaction goes on; on a client it may not start a transaction block; a COPY TO that fails part-way leaves nothing for the next one", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        await c`CREATE TABLE cf (id int)`;
+        const garbage = new Blob(["not a binary COPY file"]);
+        const copyIn = "COPY cf FROM '/dev/blob' WITH (FORMAT binary)";
+        const ids = async (): Promise<number[]> => [...(await c<{ id: number }[]>`SELECT id FROM cf ORDER BY id`)].map((r) => r.id);
+
+        // The callback catches the failed copy and returns: begin still rejects with the copy's error, the insert is gone.
+        let caught: string | undefined;
+        await expect(c.begin(async (tx) => {
+          await tx`INSERT INTO cf VALUES (1)`;
+          await pgliteBlobQuery(tx, copyIn, garbage).catch((e: { code?: string }) => { caught = e.code; });
+          return "success";
+        })).rejects.toMatchObject({ code: "22P04" });
+        expect(caught).toBe("22P04");
+        expect(await ids()).toEqual([]);
+        expect(own.isInTransaction()).toBe(false);
+
+        // In a savepoint: the savepoint rejects with it and is rolled back; the transaction keeps the rest.
+        let savepoint: string | undefined;
+        await c.begin(async (tx) => {
+          await tx`INSERT INTO cf VALUES (1)`;
+          await tx.savepoint(async (sp) => {
+            await sp`INSERT INTO cf VALUES (99)`;
+            await pgliteBlobQuery(sp, copyIn, garbage).catch(() => undefined);
+            return "inner";
+          }).catch((e: { code?: string }) => { savepoint = e.code; });
+          await tx`INSERT INTO cf VALUES (2)`;
+        });
+        expect(savepoint).toBe("22P04");
+        expect(await ids()).toEqual([1, 2]);
+
+        // On a client: a statement that starts a transaction block is refused, as a top-level statement is.
+        await expect(pgliteBlobQuery(c, "BEGIN")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
+        expect(own.isInTransaction()).toBe(false);
+        expect(await ids()).toEqual([1, 2]);
+
+        // A COPY … TO that fails part-way (with parameters or as a text) leaves nothing for the next one, which gives
+        // its own file only.
+        const one = "COPY (SELECT 1) TO '/dev/blob' WITH (FORMAT binary)";
+        const size = (await pgliteBlobQuery(c, one)).blob!.size;
+        const partWay = "COPY (SELECT 1 / (5000 - g) FROM generate_series(1, 10000) g) TO '/dev/blob' WITH (FORMAT binary)";
+        await expect(pgliteBlobQuery(c, partWay)).rejects.toMatchObject({ code: "22012" });
+        expect((await pgliteBlobQuery(c, one)).blob!.size).toBe(size);
+        await expect(c.unsafe(partWay)).rejects.toMatchObject({ code: "22012" });
+        expect((await pgliteBlobQuery(c, one)).blob!.size).toBe(size);
+      } finally {
+        await own.close();
+      }
+    });
+
+    it("[[pglite.client.large-results]] a statement with parameters, and a text, whose result holds 150,000 rows answers with every row, for a SELECT and an INSERT … RETURNING alike, and the rows are stored once", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        const N = 150_000;
+        await c`CREATE TABLE big (id int)`;
+        const check = (rows: ArrayLike<{ id: number }>): void => {
+          expect(rows.length).toBe(N);
+          expect([rows[0]!.id, rows[N - 1]!.id]).toEqual([1, N]);
+        };
+        // Parameters (the extended protocol): an INSERT … RETURNING, then a SELECT.
+        check(await c.unsafe(`INSERT INTO big SELECT generate_series(1, $1::int) RETURNING id`, [N]) as unknown as Array<{ id: number }>);
+        expect([...(await c`SELECT count(*)::int AS n FROM big`)]).toEqual([{ n: N }]);
+        check(await c<{ id: number }[]>`SELECT id FROM big WHERE id > ${0} ORDER BY id`);
+        // A text (the simple protocol): the same.
+        await c`TRUNCATE big`;
+        check(await c.unsafe(`INSERT INTO big SELECT generate_series(1, ${N}) RETURNING id`) as unknown as Array<{ id: number }>);
+        expect([...(await c`SELECT count(*)::int AS n FROM big`)]).toEqual([{ n: N }]);
+        check(await c.unsafe("SELECT id FROM big ORDER BY id") as unknown as Array<{ id: number }>);
+      } finally {
+        await own.close();
+      }
+    }, 120_000);
+
+    it("[[pglite.client.unready-database]] a database made with new PGlite() and handed to the client at once: the first statements, transaction and reservation wait until it has started, then run", async () => {
+      const own = new PGlite();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        const first = c.unsafe("SELECT 1 AS value");
+        const tx = c.begin(async (t) => [...(await t`SELECT 2 AS value`)]);
+        const reserved = c.reserve().then(async (r) => {
+          try {
+            return [...(await r`SELECT 3 AS value`)];
+          } finally {
+            r.release();
+          }
+        });
+        expect([...(await first)]).toEqual([{ value: 1 }]);
+        expect(await tx).toEqual([{ value: 2 }]);
+        expect(await reserved).toEqual([{ value: 3 }]);
+        expect(own.ready).toBe(true);
+      } finally {
+        await own.close();
+      }
+    });
+
     it("[[pglite.client.transaction-isolation]] the session is never handed on inside a transaction: a statement that leaves one open is rolled back and refused, and a reservation released inside one has it rolled back", async () => {
       // A client's hidden BEGIN, then another client's acknowledged write, then the first client's ROLLBACK.
       await expect(a.unsafe("/* caller A */ BEGIN")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
@@ -669,6 +769,32 @@ describe("PGlite client", () => {
       await expect(b.reserve()).rejects.toMatchObject({ code: "PGLITE_SESSION_DEADLOCK" });
       reserved.release();
       expect((await b`SELECT 3 AS v`)[0]).toEqual({ v: 3 });
+    });
+
+    it("[[pglite.client.pglite-lock-deadlock]] a statement waiting for PGlite's own transaction lock — held by a transaction of PGlite's transaction() that awaits it — fails with PGLITE_SESSION_DEADLOCK after deadlockTimeoutMs instead of hanging; that transaction then fails and rolls back, and the client's next statements run", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public", deadlockTimeoutMs: 300 });
+        await c`CREATE TABLE dl (id int)`;
+        const started = Date.now();
+        let inner: string | undefined;
+        await expect(own.transaction(async (t) => {
+          await t.query("INSERT INTO dl VALUES (1)");
+          await c`SELECT 1`.catch((e: { code?: string }) => {
+            inner = e.code;
+            throw e;
+          });
+        })).rejects.toMatchObject({ code: "PGLITE_SESSION_DEADLOCK" });
+        expect(inner).toBe("PGLITE_SESSION_DEADLOCK");
+        expect(Date.now() - started).toBeGreaterThanOrEqual(280);
+        expect(own.isInTransaction()).toBe(false);
+        expect([...(await c`SELECT count(*)::int AS n FROM dl`)]).toEqual([{ n: 0 }]);
+        // A statement that waits behind it while the lock is free again runs.
+        const later = c`SELECT 2 AS v`;
+        expect([...(await later)]).toEqual([{ v: 2 }]);
+      } finally {
+        await own.close();
+      }
     });
 
     it("[[pglite.client.busy-wait]] a statement waiting behind a transaction that keeps running statements waits as long as needed", async () => {
