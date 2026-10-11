@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 455), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 456), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -1781,6 +1781,11 @@
       "id": "engine.telemetry.redaction-cut-mark",
       "file": "token-indexer/test/engine-telemetry.test.ts",
       "description": "the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form and whatever count a mark already stated (at most 15 digits), and it stays within the snapshot's bound"
+    },
+    {
+      "id": "engine.telemetry.redaction-cut-secrets",
+      "file": "token-indexer/test/engine-telemetry.test.ts",
+      "description": "a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads, show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark"
     },
     {
       "id": "engine.telemetry.redaction-key-forms",
