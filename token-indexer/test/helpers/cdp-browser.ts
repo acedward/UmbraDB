@@ -45,17 +45,19 @@
  * - it has not ended (its page never got what it waits for): it is abandoned — its abort signal is set and every
  *   DevTools command it sends from then on fails, so it stops before the next attempt, which waits for it (at most ten
  *   seconds) — and the page is loaded again, as it is when there is no step, unless the attempt recorded a failure the
- *   aborted loads do not explain: an exception that names none of them, an error event of a worker whose script was not
- *   one of them, a load that failed with another error (`net::ERR_ABORTED`, a load cancelled, aside). Such an attempt
- *   fails like a failed step.
+ *   aborted loads do not explain: an exception, or an error-level console call or log entry (a CSP violation's report
+ *   among them), that names none of them; an error event of a worker whose script was not one of them; a load that
+ *   failed with another error (`net::ERR_ABORTED`, a load cancelled, aside); the load itself never ending (its load
+ *   event never came), unless the document was what the network aborted. Such an attempt fails like a failed step.
+ *   Each attempt runs in the same browser profile (its storage stays), so a failure only a first boot would show is
+ *   not repeated by the next attempt: it must be caught in the attempt it happened in.
  * An attempt aborted {@link LOAD_ATTEMPTS} times fails; anything with no abort (a failed step, another load error, a
  * load answered with an error status) fails as it fails. The next attempt starts once the interfaces have stayed the
  * same for three seconds (Chrome passes a change on more than once: a second notice about two seconds after the first
  * fails the requests waiting then too); what the aborted attempt recorded (its requests, console, log entries,
  * exceptions, worker errors and workers) is dropped from the page's lists, its reason and its failures kept in
  * {@link Page.loadRetries} and shown by {@link Page.diagnostics}, and the retry's printed line counts them and shows the
- * first. Each attempt runs in the same browser profile (its storage stays). A step that runs after the page is ready
- * (not in `goto`) is not covered.
+ * first. A step that runs after the page is ready (not in `goto`) is not covered.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -354,8 +356,12 @@ export class Page {
       const last = failure === undefined ? "" : `; the last attempt's error: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`;
       // A failure of the page's own is kept: the step failed (whatever made it fail: it ended), or the attempt recorded
       // what the aborted loads do not explain.
+      const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+      const documentAborted = this.navigationError !== undefined && this.environmentalErrors.some((e) => this.navigationError!.includes(e));
       const own = (): string[] => [
-        ...(failure?.step === true ? [`the step failed: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`] : []),
+        ...(failure?.step === true ? [`the step failed: ${message(failure.error)}`] : []),
+        // The load itself failed (its load event never came): the page's own, unless its document was aborted.
+        ...(failure?.step === false && !documentAborted ? [`the load failed: ${message(failure.error)}`] : []),
         ...this.unexplained(marks),
       ];
       const notAgain = (found: string[]): Error => {
@@ -453,7 +459,7 @@ export class Page {
 
   /** Failures the attempt that began at `from` recorded that its failed loads do not explain (see the module
    *  documentation), each as a line. */
-  private unexplained(from: { requests: number; exceptions: number; workerErrors: number }): string[] {
+  private unexplained(from: { requests: number; console: number; logs: number; exceptions: number; workerErrors: number }): string[] {
     const failed = this.requests.slice(from.requests).filter((r) => r.failed !== undefined);
     const urls = failed.map((r) => r.url);
     if (this.navigationError !== undefined) urls.push(this.url);
@@ -469,6 +475,12 @@ export class Page {
       ...failed.filter((r) => !environmental(r.failed!)).map((r) => `a load failed with ${r.failed}: ${r.url}`),
       ...this.exceptions.slice(from.exceptions).filter((e) => !urls.some((u) => e.includes(u))).map((e) => `exception: ${e.split("\n")[0]}`),
       ...this.workerErrors.slice(from.workerErrors).filter((e) => !urls.includes(absolute(e.worker))).map((e) => `worker error: ${errorLine(e)}`),
+      // Error-level console calls and log entries (a CSP violation's report among them), but those that name a failed
+      // load (the browser's own "Failed to load resource" for it).
+      ...this.console.slice(from.console).filter((c) => (c.type === "error" || c.type === "assert") && !urls.some((u) => c.text.includes(u)))
+        .map((c) => `${c.target === "worker" ? "[worker] " : ""}console ${c.type}: ${c.text}`),
+      ...this.logs.slice(from.logs).filter((l) => l.level === "error" && !urls.some((u) => l.url === u || l.text.includes(u)))
+        .map((l) => `${l.target === "worker" ? "[worker] " : ""}log error: ${l.text}${l.url === undefined || l.url === "" ? "" : ` (${l.url})`}`),
     ];
   }
 
