@@ -688,9 +688,10 @@ describe("system snapshot schema and redaction", () => {
     expect(r.sync.lastError!.message).toMatch(/^RPC error: token=\[redacted\]… \[\d+ more characters\]$/u);
     expect(r.logs[0]!.text.length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
     expect(() => JSON.parse(diagnosticsJson(s))).not.toThrow();
-    // Any long text: cut, saying how much, before it is read, and what is cut never reaches the snapshot.
+    // Any long text: redacted whole, then cut, saying how many characters of the redacted text were left out; what is
+    // cut never reaches the snapshot.
     const long = `ok ${"x".repeat(10_000)} token=tail-of-a-long-text`;
-    expect(redactText(long)).toBe(`ok ${"x".repeat(TEXT_MAX_CHARS - 3)}… [${long.length - TEXT_MAX_CHARS} more characters]`);
+    expect(redactText(long)).toBe(`ok ${"x".repeat(TEXT_MAX_CHARS - 3)}… [${redactWhole(long).length - TEXT_MAX_CHARS} more characters]`);
   });
 
   it("[[engine.telemetry.redaction-key-forms]] a seed or mnemonic phrase loses every word under any key spelling — prefixed, suffixed, camelCase, kebab or snake case, plural, a JSON member at any depth, a full-width colon — and with any separator or list numbering (;, |, -, <br>, words quoted one by one, 1.word, 1-word, #1, (1), [1]); a password under a prefixed name too; a key named only words is not a secret, and text after other keys stays", () => {
@@ -810,7 +811,7 @@ describe("system snapshot schema and redaction", () => {
     expect(redactText(eight)).not.toContain(secret);
   });
 
-  it("[[engine.telemetry.redaction-cut-mark]] the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form, and it stays within the snapshot's bound", () => {
+  it("[[engine.telemetry.redaction-cut-mark]] the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form and whatever count a mark already stated (at most 15 digits), and it stays within the snapshot's bound", () => {
     const forms = ["token=a ", "t=a ", "password=b;", "apiKey: c\n", '"secret":"d",', "Bearer abcdefghijklmnopq ", "https://u:p@h.invalid/?k=v#f ", "seed: a b c d e f g h i j k l\n", "cookie: z=1\n", '\\"token\\":\\"v\\",', "authorization: Basic QWxhZGRpbjpvcGVu\n"];
     let cut = 0;
     for (const form of forms) {
@@ -834,10 +835,60 @@ describe("system snapshot schema and redaction", () => {
     expect(split).not.toContain("abc");
     expect(split.endsWith(`… [${text.length - kept.length} more characters]`)).toBe(true);
     expect(redactText(split)).toBe(split);
+    // A mark's count, however large the mark already on the text stated, stays one the next pass reads as a mark: at
+    // most 15 digits.
+    for (const count of ["3", "999999999999", "999999999999999"]) {
+      for (const form of forms) {
+        const once = redactText(`${form.repeat(Math.ceil(TEXT_MAX_CHARS / form.length)).slice(0, TEXT_MAX_CHARS)}… [${count} more characters]`);
+        expect(redactText(once), `${JSON.stringify(form)} ${count}`).toBe(once);
+        expect(once, `${JSON.stringify(form)} ${count}`).toMatch(/… \[[1-9]\d{0,14} more characters\]$/u);
+      }
+    }
+    expect(redactText(`${"token=x ".repeat(512)}… [999999999999999 more characters]`)).toMatch(/… \[999999999999999 more characters\]$/u);
     // Kept parts never exceed 4,096 characters, for every form above.
     for (const form of forms) {
       const once = redactText(form.repeat(Math.ceil(9_000 / form.length)));
       expect(once.indexOf("… ["), JSON.stringify(form)).toBeLessThanOrEqual(TEXT_MAX_CHARS);
+    }
+  });
+
+  it("[[engine.telemetry.redaction-cut-secrets]] a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads, show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark", () => {
+    const forms: Array<[string, string, string, RegExp]> = [
+      ["Bearer ", "AbCdEfGh1234567890secretTOKEN", " tail", /AbCd|secretTOKEN/u],
+      ["Basic ", "QWxhZGRpbjpvcGVuc2VzYW1l", " tail", /QWxh/u],
+      ["https://alice:", "123456789", "@host.example/x tail", /alice|1234/u],
+      ["https://alice:", "s3cretpassw0rd", "@host.example/x tail", /alice|s3cr/u],
+      ["see https://h.example.test/v1/", "9aa3d95b3bc440fa88ea12eaa4456161", "/x tail", /9aa3d95b/u],
+      ["key mn_shield-esk_test1", "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq", " tail", /qqqqqq/u],
+      ["token=", "abcdefghij0123456789", " tail", /abcdefgh/u],
+      ["", ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0In0", "c2lnbmF0dXJl"].join("."), " tail", /eyJhbGciOi/u],
+    ];
+    // A long secret value first puts what reaches the 16,384th character inside the 4,096 characters kept.
+    for (const [head, limit] of [["", TEXT_MAX_CHARS], [`token=${"v".repeat(12_500)} `, 16_384]] as const) {
+      for (const [pre, secret, post, shows] of forms) {
+        for (let at = 0; at <= 20; at++) {
+          const fill = limit - head.length - pre.length - at - 1;
+          const text = `${head}${"z ".repeat(Math.ceil(fill / 2)).slice(0, fill)} ${pre}${secret}${post}${" more".repeat(50)}`;
+          const out = redactText(text);
+          const where = `${JSON.stringify(pre)} at ${at} of ${limit}`;
+          expect(out, where).not.toMatch(shows);
+          expect(redactText(out), where).toBe(out);
+          expect(out.length, where).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
+        }
+      }
+    }
+    // Short secrets at the start, each longer once redacted, then filler up to just over 4,096 characters once
+    // redacted, then a long value across the cut: the start is kept.
+    for (let k = 1; k <= 40; k++) {
+      for (let over = 1; over <= 6; over++) {
+        const head = `error from the endpoint: ${"pwd=a; ".repeat(k)}`;
+        const fill = TEXT_MAX_CHARS - 16 + over - redactWhole(head).length;
+        if (fill < 10) continue;
+        const out = redactText(`${head}${"y".repeat(fill)} token=${"v".repeat(400)} the rest of the message`);
+        expect(out.startsWith("error from the endpoint: pwd=[redacted];"), `${k} ${over}`).toBe(true);
+        expect(out.indexOf("… ["), `${k} ${over}`).toBeGreaterThan(TEXT_MAX_CHARS - 40);
+        expect(redactText(out)).toBe(out);
+      }
     }
   });
 

@@ -700,9 +700,10 @@ statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest
   credentials, JWTs, viewing keys, seed and mnemonic phrases, word by word, under any key spelling) are replaced, whole
   (a JSON member's array or object too, also inside JSON text written as a JSON string, at any depth), in
   every string of the snapshot; a log line is redacted as it is written, before an event's fields become JSON. A text
-  longer than 4,096 characters (a node's error body, for example) is cut first to at most 4,096, saying how many
-  characters were cut (unless it is already a cut text: at most 4,096 characters, then that mark), so the snapshot
-  always validates and redaction costs time in proportion to what is kept.
+  longer than 16,384 characters (a node's error body, for example) is cut to them first; the text is redacted whole,
+  then cut to at most 4,096 characters, never inside a `[redacted]`, saying how many characters were left out (unless
+  it is already a cut text: at most 4,096 characters, then that mark), so the snapshot always validates, a secret the
+  cut falls in is never shown in part, and redaction costs time in proportion to at most 16,384 characters.
 - Text from the engine (error messages, log lines, URLs) is drawn as text nodes with the explorer's hidden-character
   rules (`visible-text.ts`, the rule of `../mip0018/ui/page.js`): every control, format, private-use, unassigned or
   surrogate code point, line or paragraph separator and default-ignorable character is drawn as a visible mark

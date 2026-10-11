@@ -9,17 +9,18 @@
  *   outside this schema (a page URL, a request target, a header) can travel inside a snapshot. Times are epoch
  *   milliseconds; durations are milliseconds; heights are block heights; sizes are bytes.
  * - **No secrets:** {@link redactSnapshot} runs over every string of a snapshot before it is validated and handed out.
- *   A text longer than 4,096 characters (`TEXT_MAX_CHARS`), unless it is already a cut text (at most 4,096 characters
- *   and the mark of a cut), is cut to at most that many first, so redaction reads at most a few kilobytes and every
- *   expression and scan of it is linear in the text's length; the mark saying how many characters were cut is added
- *   after the redaction, which never reads it (so redacting a redacted text gives it back). Then:
- *   URLs lose their userinfo, query and fragment, and the path segments that look like keys (16 or more letters,
- *   digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`, `key: value` and JSON
- *   `"key": value` forms whose key names a secret ({@link keyKind}: a name ending in password, token, secret,
- *   signature, credentials, cookie, an API, secret, private or viewing key or a session id, or naming a seed, mnemonic
- *   or phrase, whatever its case, prefix or suffix — `DB_PASSWORD`, `walletSeed`, `WALLET_MNEMONIC`, `x-seed`) lose
- *   their whole value: a JSON member its whole string, array or object, also inside JSON text written as a JSON string
- *   once or more (`\"key\": …`, `\\\"key\\\": …`, at any depth a cut text can hold); a `key=` value its quoted text (also `\"…\"`
+ *   A text longer than 16,384 characters is cut to them first (at a whitespace near there if any), so redaction reads
+ *   at most that and every expression and scan of it is linear in the text's length; the text is redacted whole, each
+ *   secret seen with what follows it, and only then cut to at most 4,096 characters (`TEXT_MAX_CHARS`), never inside a
+ *   `[redacted]`, with a mark saying how many characters were left out, added after the redaction, which never reads
+ *   it (so redacting a redacted text gives it back; a cut text, at most 4,096 characters and the mark, keeps its
+ *   mark). The redaction: URLs lose their userinfo, query and fragment, and the path segments that look like keys (16
+ *   or more letters, digits, `-`, `_`, `.`, `~`, `+` or `=`, with both a letter and a digit); `key=value`,
+ *   `key: value` and JSON `"key": value` forms whose key names a secret ({@link keyKind}: a name ending in password,
+ *   token, secret, signature, credentials, cookie, an API, secret, private or viewing key or a session id, or naming a
+ *   seed, mnemonic or phrase, whatever its case, prefix or suffix — `DB_PASSWORD`, `walletSeed`, `WALLET_MNEMONIC`,
+ *   `x-seed`) lose their whole value: a JSON member its whole string, array or object, also inside JSON text written
+ *   as a JSON string once or more (`\"key\": …`, `\\\"key\\\": …`, at any depth a cut text can hold); a `key=` value its quoted text (also `\"…\"`
  *   inside JSON-escaped text, to the end of the string around it when it is never closed), JSON array or object, or
  *   bare word; and after a seed or mnemonic key every word of the phrase, of any case, across white space, commas,
  *   `;`, `|`, `-`, `<br>`, words quoted one by one, list numbers (`1.`, `1)`, `1-`, `#1`, `(1)`, `[1]`) and line
@@ -789,6 +790,8 @@ const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
 const TEXT_LIMIT = TEXT_MAX_CHARS + 64;
 /** The mark {@link capText} and {@link redactText} end a cut text with: how many characters of the text were cut. */
 const CUT_MARK = /… \[([1-9]\d{0,14}) more characters\]$/u;
+/** The largest count a mark states (15 digits, as {@link CUT_MARK} reads it): a larger one is stated as this. */
+const MAX_CUT_COUNT = 999_999_999_999_999;
 /**
  * The mark ending `text` when `text` is a cut text — at most {@link TEXT_MAX_CHARS} characters, then {@link CUT_MARK},
  * within the snapshot's bound — with where it starts and the count it states; otherwise `undefined`. A text with more
@@ -812,43 +815,67 @@ export function redactWhole(value: string): string {
   return redactAssignments(redactMembers(out));
 }
 
+/** The most of a text redaction reads: a longer text is cut to it first ({@link capRaw}). Redaction is linear, so this
+ *  stays cheap; it is four times what the snapshot keeps, so that what is kept is read with what follows it. */
+const RAW_LIMIT = 16_384;
+/** {@link capRaw} cuts at the last whitespace within this many characters before {@link RAW_LIMIT}, if any. */
+const RAW_WORD_SPAN = 1_024;
+
+/** `text` cut to at most {@link RAW_LIMIT} characters: at its last whitespace in the last {@link RAW_WORD_SPAN} before
+ *  the limit (so that no word the cut would split, a token or a URL, reaches redaction half), else at the limit. */
+function capRaw(text: string): string {
+  if (text.length <= RAW_LIMIT) return text;
+  for (let i = RAW_LIMIT - 1; i >= RAW_LIMIT - RAW_WORD_SPAN; i--) if (/\s/u.test(text[i]!)) return text.slice(0, i);
+  return text.slice(0, RAW_LIMIT);
+}
+
 /**
  * `text` with the secrets this module knows removed (see the module documentation); idempotent. A text longer than
- * {@link TEXT_MAX_CHARS} characters, unless it is already a cut text ({@link cutMarkOf}), is cut first: to that many
- * characters, fewer when redaction would make what is kept longer than that (`[redacted]` is longer than some values),
- * and what is kept is redacted on its own (so a value cut in two is removed whole). The mark saying how many characters
- * of the text were cut is added after the redaction, which never reads it: a cut text keeps its mark, and only what
- * comes before it is redacted (cut again, its count grown, if redaction makes it longer). What it gives always fits the
- * snapshot, and holds at most {@link TEXT_MAX_CHARS} characters before a mark.
+ * {@link RAW_LIMIT} characters is cut to that many first ({@link capRaw}); then the text is redacted whole — each secret
+ * seen with what follows it — and only then, when the result is longer than {@link TEXT_MAX_CHARS} characters or the
+ * text was cut, the redacted text is cut ({@link cutRedacted}) and marked with how many characters were left out. A cut
+ * text ({@link cutMarkOf}) keeps its mark, and only what comes before it is redacted (cut again, its count grown, if
+ * redaction makes it longer). What it gives always fits the snapshot, and holds at most {@link TEXT_MAX_CHARS}
+ * characters before a mark.
  */
 export function redactText(value: string): string {
   const cut = cutMarkOf(value);
   if (cut !== undefined) {
     const kept = redactWhole(value.slice(0, cut.at));
-    return kept.length <= TEXT_MAX_CHARS ? `${kept}${cut.mark}` : cutAndRedact(value.slice(0, cut.at), cut.more);
+    return kept.length <= TEXT_MAX_CHARS ? `${kept}${cut.mark}` : cutRedacted(kept, cut.more);
   }
-  if (value.length > TEXT_MAX_CHARS) return cutAndRedact(value);
-  const out = redactWhole(value);
-  return out.length > TEXT_MAX_CHARS ? cutAndRedact(value) : out;
+  const capped = capRaw(value);
+  const out = redactWhole(capped);
+  return out.length <= TEXT_MAX_CHARS && capped.length === value.length ? out : cutRedacted(out, value.length - capped.length);
 }
 
 /**
- * The longest start of `text` whose redaction holds at most {@link TEXT_MAX_CHARS} characters (at most that many
- * characters of `text`; shorter when redaction lengthens it), redacted, then the mark with how many characters of the
- * text it leaves out (plus `earlier`, those a mark already on it counted). Each redaction reads at most
- * {@link TEXT_MAX_CHARS} characters, a bounded number of times.
+ * `redacted` (a redacted text) cut to at most {@link TEXT_MAX_CHARS} characters and marked. The cut is at that length,
+ * moved back to the start of a `[redacted]` it would split; what is kept is redacted again (cutting a redacted text
+ * reveals nothing, and what it gives is what redaction leaves as it is, so the next pass keeps it); should that make it
+ * longer than {@link TEXT_MAX_CHARS} (a cut that turns text into a secret's shape), the cut moves back to the previous
+ * space, at most 64 times, then keeps nothing: a bounded search. The mark counts the characters of `redacted`
+ * after the cut plus `earlier` (those left out before it was redacted), at most {@link MAX_CUT_COUNT}, so that the next
+ * pass reads it as a mark.
  */
-function cutAndRedact(text: string, earlier = 0): string {
-  let keep = Math.min(text.length, TEXT_MAX_CHARS);
-  let out = redactWhole(text.slice(0, keep));
-  for (let tries = 0; out.length > TEXT_MAX_CHARS; tries++) {
-    keep = tries < 32 ? Math.min(keep - 1, Math.floor((keep * TEXT_MAX_CHARS) / out.length)) : 0;
-    out = redactWhole(text.slice(0, keep));
+function cutRedacted(redacted: string, earlier: number): string {
+  let at = outsideMarker(redacted, Math.min(redacted.length, TEXT_MAX_CHARS));
+  for (let tries = 0; ; tries++) {
+    const kept = redactWhole(redacted.slice(0, at));
+    if (kept.length <= TEXT_MAX_CHARS || at === 0) return `${kept}… [${Math.min(redacted.length - at + earlier, MAX_CUT_COUNT)} more characters]`;
+    at = tries < 64 ? outsideMarker(redacted, Math.max(0, redacted.lastIndexOf(" ", at - 2) + 1)) : 0;
   }
-  return `${out}… [${text.length - keep + earlier} more characters]`;
 }
 
-/** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut; a cut text stays as it is. */
+/** `at`, or the start of the `[redacted]` of `text` it falls inside. */
+function outsideMarker(text: string, at: number): number {
+  const start = text.lastIndexOf(REDACTED, at - 1);
+  return start >= 0 && start < at && at < start + REDACTED.length ? start : at;
+}
+
+/** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut; a cut text stays as it is. For a text
+ *  already redacted (a log line made of redacted fields): it does not redact, and cutting a text with a secret in it
+ *  could leave part of the secret where redaction no longer sees it. */
 export function capText(value: string): string {
   if (value.length <= TEXT_MAX_CHARS || cutMarkOf(value) !== undefined) return value;
   return `${value.slice(0, TEXT_MAX_CHARS)}… [${value.length - TEXT_MAX_CHARS} more characters]`;

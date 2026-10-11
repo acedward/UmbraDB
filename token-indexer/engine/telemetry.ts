@@ -471,7 +471,7 @@ export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): Engine
       if (carried.watchdogRestarts !== undefined) watchdogRestarts = carried.watchdogRestarts;
       if (carried.pgliteReopens !== undefined) pgliteReopens = carried.pgliteReopens;
       if (carried.lastWatchdogRestart !== undefined) {
-        lastWatchdogRestart = carried.lastWatchdogRestart === null ? null : { ...carried.lastWatchdogRestart, reason: capText(carried.lastWatchdogRestart.reason) };
+        lastWatchdogRestart = carried.lastWatchdogRestart === null ? null : { ...carried.lastWatchdogRestart, reason: redactText(carried.lastWatchdogRestart.reason) };
         if (lastWatchdogRestart !== null) addLog("warn", "engine", `watchdog restart: ${lastWatchdogRestart.reason}`);
       }
     },
@@ -482,7 +482,7 @@ export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): Engine
 
     noteWatchdogRestart(reason) {
       watchdogRestarts++;
-      lastWatchdogRestart = { at: clock.now(), reason: capText(reason) };
+      lastWatchdogRestart = { at: clock.now(), reason: redactText(reason) };
       addLog("warn", "engine", `watchdog restart: ${reason}`);
     },
 
@@ -499,7 +499,7 @@ export function createEngineTelemetry(opts: EngineTelemetryOptions = {}): Engine
     },
 
     noteFatal(message) {
-      fatal = message === null ? null : capText(message);
+      fatal = message === null ? null : redactText(message);
       if (message !== null) addLog("error", "engine", message);
     },
 
