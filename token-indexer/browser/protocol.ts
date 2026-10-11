@@ -9,10 +9,10 @@
  * |---|---|---|
  * | `status` | — | {@link HostStatus} |
  * | `api` | `method`, `target` | {@link ApiResult}: the API handler's answer (`token-indexer/mip0018/api.ts`), unchanged |
- * | `start` | `config?` ({@link StartConfig}; omitted: the saved configuration) | {@link HostStatus} |
+ * | `start` | `config?` ({@link StartConfig}; omitted: the saved configuration), `automatic?` (only if the saved settings say to start by itself when it runs) | {@link HostStatus} |
  * | `stop` | — | {@link HostStatus} |
  * | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | {@link HostStatus}: the store's data is dropped and the sync starts at the new range |
- * | `reset` | — | {@link HostStatus}: the store's data is dropped and the saved configuration starts again |
+ * | `reset` | — | {@link HostStatus}: the store's data is dropped and the saved configuration starts again (while the store holds an imported snapshot, the build's default configuration, as on a new store) |
  * | `export` | — | {@link ExportResult}: a snapshot file of the store, taken while the engine runs (`snapshot-store.ts`) |
  * | `import` | `snapshot` (a `Blob`: a snapshot file) | {@link ImportResult}: the store replaced by the snapshot; the engine is stopped, and a start continues from the snapshot's height + 1 |
  * | `digest` | — | {@link DigestResult}: the archive digest and the range-tables digest of the store, with its NULL `bytea[]` elements |
@@ -435,7 +435,8 @@ export const HostStatusSchema = z.strictObject({
     .nullable(),
   /** The stored cursors (`null` until the store is migrated; a cursor is `null` before its loop's first block). */
   cursors: z.strictObject({ sync: SyncCursorSchema.nullable(), scan: ScanCursorSchema.nullable() }).nullable(),
-  /** What `start` without a configuration, a `reset` and the automatic start run (`null` until the store is open). */
+  /** What `start` without a configuration, a `reset` (except while the store holds an imported snapshot: the build's
+   *  default then) and the automatic start run (`null` until the store is open). */
   settings: EngineSettingsSchema.nullable(),
   /** The storage figures and the quota pause: `null` until the boot is `ready` (the boot takes the first reading before
    *  it ends `ready`), then always the latest reading. */

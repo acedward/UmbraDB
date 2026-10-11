@@ -385,7 +385,8 @@ describe("browser engine snapshots", () => {
     expect(imported.status.store?.migrations).toEqual(running.store!.migrations);
     expect(imported.status.snapshots.lastImport).toMatchObject({ sha256: exported.manifest.data.sha256, bytes: exported.bytes, manifest: { height: MID } });
     expect(imported.status.settings).toEqual({ config: { startHeight: U1.from }, autoStart: false });
-    expect(await settings.load()).toEqual({ config: { startHeight: U1.from }, autoStart: false });
+    // On file also: the store holds an imported snapshot (what a reset then starts).
+    expect(await settings.load()).toEqual({ config: { startHeight: U1.from }, autoStart: false, imported: true });
     for (const k of ["readMs", "checkMs", "stageMs", "swapMs", "totalMs"] as const) expect(imported.timings[k]).toBeGreaterThanOrEqual(0);
     expect(await result<DigestResult>(b, "digest")).toEqual({ ...before, elapsedMs: expect.any(Number) });
     expect(await answers(b)).toEqual(aAnswers);

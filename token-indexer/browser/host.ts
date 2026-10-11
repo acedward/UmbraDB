@@ -81,8 +81,11 @@
  *
  * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
  * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
- * `start` with no configuration runs it; the leader tab sends one when its worker has booted (`tabs.ts`), so a new
- * store starts at the tip and a reopened one resumes, a chosen range keeping its end. What the next worker runs comes
+ * `start` with no configuration runs it; an automatic start (`automatic: true`) runs it only if the settings say to
+ * start by itself when it runs; the leader tab and a restart's restore send that once the worker has booted
+ * (`tabs.ts`, `supervisor.ts`), so a new store starts at the tip and a reopened one resumes, a chosen range keeping its
+ * end. The settings also say whether the store holds an imported snapshot (from an import until `range` or `reset`
+ * replaces it): a `reset` then starts the build's default configuration, as on a new store. What the next worker runs comes
  * from these settings alone, so a change is answered only once it is saved: a `start`, `module`, `range` or `reset` the
  * browser refuses to save changes nothing (`settings-failed`); a `stop` always stops the engine and answers
  * `settings-failed` when staying stopped could not be saved. A `start` of what the settings already say (the
@@ -376,10 +379,13 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   let modules: NonNullable<EngineSettings["modules"]> = {};
   /** The settings file: the configuration and the automatic start (`settings`), whether the store is to be replaced by a
    *  new one before they apply (`newStore`), and the modules (kept in `modules`). */
+  /** The store holds an imported snapshot (the settings file says so; see {@link reset}). */
+  let storeImported = false;
   async function loadSettings(): Promise<{ settings: EngineSettings; newStore: boolean } | undefined> {
     const loaded = await settingsStore.load();
+    storeImported = loaded?.imported === true;
     if (loaded === undefined) return undefined;
-    const { modules: m, newStore, ...rest } = loaded;
+    const { modules: m, newStore, imported: _imported, ...rest } = loaded;
     modules = m ?? {};
     return { settings: rest, newStore: newStore === true };
   }
@@ -388,12 +394,16 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   /** Whether two settings say the same (the configuration's keys in any order). */
   const sameSettings = (a: EngineSettings, b: EngineSettings): boolean => canonicalJson(a) === canonicalJson(b);
   const withModules = (s: EngineSettings, m: typeof modules = modules): EngineSettings => (Object.keys(m).length === 0 ? s : { ...s, modules: { ...m } });
-  /** Saves `next` with the modules (default: the current ones) and, with `newStore`, the mark that the store is to be
-   *  replaced by a new one first; rejects when the browser refuses the write, and without writing anything when the
-   *  settings are not what the reader takes back (the same schema), so the file on record is never one a worker would
-   *  read as none. */
-  const writeSettings = async (next: EngineSettings, o: { modules?: typeof modules; newStore?: true } = {}): Promise<void> => {
-    const file = { ...withModules(next, o.modules), ...(o.newStore === true ? { newStore: true as const } : {}) };
+  /** Saves `next` with the modules (default: the current ones), whether the store holds an imported snapshot (default:
+   *  as it does) and, with `newStore`, the mark that the store is to be replaced by a new one first; rejects when the
+   *  browser refuses the write, and without writing anything when the settings are not what the reader takes back (the
+   *  same schema), so the file on record is never one a worker would read as none. */
+  const writeSettings = async (next: EngineSettings, o: { modules?: typeof modules; newStore?: true; imported?: boolean } = {}): Promise<void> => {
+    const file = {
+      ...withModules(next, o.modules),
+      ...(o.newStore === true ? { newStore: true as const } : {}),
+      ...((o.imported ?? storeImported) ? { imported: true as const } : {}),
+    };
     const checked = SavedSettingsSchema.safeParse(file);
     if (!checked.success) throw new Error(`the settings would not be read back (${checked.error.issues[0]?.message ?? "invalid"})`);
     await settingsStore.save(file);
@@ -884,11 +894,13 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
    *  boot makes the new store, then starts `next` on it. Fails (and nothing is changed) when it cannot be saved. */
   async function saveBeforeReplacing(next: EngineSettings, what: string): Promise<void> {
     try {
-      await writeSettings(next, { newStore: true });
+      // The new store holds no snapshot.
+      await writeSettings(next, { newStore: true, imported: false });
     } catch (e) {
       throw new HostError("settings-failed", `${what} could not be saved (${messageOf(e)}): nothing was changed`);
     }
     saved = next;
+    storeImported = false;
   }
 
   /** Runs a new engine (sync + scan in follow mode) with `config`. A new archive starts at `config.startHeight`, by
@@ -1023,11 +1035,14 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   }
 
   /** A `reset` request: the store is replaced by a new one and the saved configuration starts again (a tip start
-   *  resolves the tip anew). */
+   *  resolves the tip anew), or, while the store holds an imported snapshot, the build's default configuration (by
+   *  default the finalized tip), as on a new store: the snapshot's first height is not a start the user chose, and a
+   *  range from it is a `range` away. */
   async function reset(): Promise<HostStatus> {
     const failed = await storeFailed();
     const s = failed ? undefined : await ready();
-    await saveBeforeReplacing({ config: saved?.config ?? opts.defaultStart ?? {}, autoStart: true }, "the configuration to start after the reset");
+    const config = storeImported ? (opts.defaultStart ?? {}) : (saved?.config ?? opts.defaultStart ?? {});
+    await saveBeforeReplacing({ config, autoStart: true }, "the configuration to start after the reset");
     await replaceWithNewStore(s);
     return start(undefined);
   }
@@ -1259,8 +1274,9 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight: manifest.archive.startHeight ?? manifest.archive.height };
     delete config.endHeight;
     const next = { config, autoStart: false };
-    await writeSettings(next);
+    await writeSettings(next, { imported: true });
     saved = next;
+    storeImported = true;
   }
 
   /** Records what the store's open did with a pending import: finished it (its configuration and journal are dealt

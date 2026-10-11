@@ -422,7 +422,7 @@ describe("the static build's explorer page in Chrome", () => {
     expect((await seen()).length).toBe(4);
     await click(follower, "reset");
     await click(follower, "confirm-go");
-    await waitMessage(follower, /^reset: the store's data was dropped and the saved configuration started again$/, "reset answered");
+    await waitMessage(follower, /^reset: the store's data was dropped and the engine started again$/, "reset answered");
     expect((await seen()).slice(4)).toEqual([{ type: "reset", params: {} }]);
     await until(leader, "the range again", (s) => s.cursors?.scan?.nextHeight === 715421 && s.cursors?.sync?.startHeight === 715410);
 

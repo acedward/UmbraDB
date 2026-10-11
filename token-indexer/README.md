@@ -136,7 +136,9 @@ any of them.
   reopened page continues at the stored cursor and fetches every block since, leaving no gap.
 - **Ranges and reset.** The overview starts and stops the engine, changes the range (a start height or `tip`, and an
   optional end) and resets the store. One archive has no gaps, so a range change or a reset replaces the store with a
-  new one (its files removed, the database created again); the overview offers to export a snapshot first.
+  new one (its files removed, the database created again); the overview offers to export a snapshot first. A reset
+  starts the saved configuration again, or, after a snapshot was imported, starts over at the finalized tip as a new
+  store does (a `range` from the snapshot's first height syncs its history again).
 - **Token Indexer off.** Unchecked in the Modules section, the MIP-0018 scan stops at a block boundary while the chain
   archive keeps syncing, and the Token Indexer tab is hidden; the API still answers from the stored data. Checked
   again, the scan continues from its cursor and catches up. The choice is saved with the store's settings and kept

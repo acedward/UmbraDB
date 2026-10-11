@@ -317,7 +317,7 @@ export function mountEnginePanel(opts: EnginePanelOptions): EnginePanel {
     );
   });
   resetButton.addEventListener("click", () => {
-    dropping("Resetting", () => run("reset", () => client.reset(), () => "reset: the store's data was dropped and the saved configuration started again"));
+    dropping("Resetting", () => run("reset", () => client.reset(), () => "reset: the store's data was dropped and the engine started again"));
   });
   exportButton.addEventListener("click", () => void exportSnapshot());
   importButton.addEventListener("click", () => {

@@ -266,7 +266,7 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `start` | `automatic?` (`true`: start the saved configuration only if the saved settings, when the worker runs the request, say to start by itself; else the status, nothing changed: what a restart's restore and the leader tab send), `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status: the configuration is saved (with the automatic start on), then it runs; a source that cannot be reached (a recorded range that does not load) is refused before anything is saved, settings that already say this are not written again (the automatic start runs also while the browser refuses writes), a configuration the browser refuses to save starts nothing (`settings-failed`), and an engine that fails to start puts the settings before it back |
 | `stop` | — | status; the engine no longer starts by itself until the next `start`. The engine always stops; when the browser refuses to save that it should stay stopped, the answer is `settings-failed` (the next page to open the engine starts it again) |
 | `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the new range is saved, the store is replaced by a new one, and the range starts (source and tuning from the saved configuration); a range the browser refuses to save changes nothing (`settings-failed`) |
-| `reset` | — | status: the store is replaced by a new one and the saved configuration starts again (`settings-failed`, nothing changed, when it cannot be saved) |
+| `reset` | — | status: the store is replaced by a new one and the saved configuration starts again, or, while the store holds an imported snapshot, the build's default configuration (the finalized tip), as on a new store (`settings-failed`, nothing changed, when it cannot be saved) |
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
 | `system` | `watch` (with `viewer?`) or `refresh: { database?, exactCounts? }` | `{ watching, viewers, snapshot }`: the snapshot of a refresh (`null` for a watch) |
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
@@ -333,10 +333,12 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   and an import turn that off, the next `start` on). Every worker that boots on the store starts from this file alone:
   the leader tab (`tabs.ts` `resumeOrAutoStart`, the default `resume`), the next leader after a handover and the worker
   the watchdog puts in place of a stuck one start the saved configuration when it says to start by itself
-  (`client.ts` `startSaved`: a `start` with no configuration, so the worker runs what is saved when it runs; an engine
-  another page started first counts as started; for a new store, the build's default: the tip, following it). With the build's automatic
-  start off, a leader starts it only after a previous leader whose engine ran. Followers never start anything. A reopened store continues at its cursor and fetches every
-  height since, so a closed or frozen tab leaves no hole; a chosen range keeps its end.
+  (`client.ts` `startSaved`: an automatic start, `start` with `automatic: true`, which the worker runs, with what is
+  saved, only if the saved settings still say to start by itself when it runs it; an engine another page started first
+  counts as started; for a new store, the build's default: the tip, following it). With the build's automatic start
+  off, a leader starts it only after a previous leader whose engine ran. Followers never start anything. A reopened
+  store continues at its cursor and fetches every height since, so a closed or frozen tab leaves no hole; a chosen
+  range keeps its end.
 - **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` replace the store
   with a new one before starting: in the leader's worker, which holds the store's lock, the engine stops, PGlite is
   closed with the lock kept, every file of the store's directory is removed, and the boot runs again from its store
@@ -425,7 +427,10 @@ new store to do clears that mark right after writing its journal, and from then 
 
 After an import the engine is stopped and the saved configuration continues the imported archive: its first height as
 the start, no end height, and no automatic start (as after `stop`). A `start` then continues at the height after the
-snapshot's (and the scan from its cursor).
+snapshot's (and the scan from its cursor). The settings also say that the store holds an imported snapshot, until a
+`range` or `reset` replaces it: a `reset` then starts over as on a new store, with the build's default configuration
+(the finalized tip), not at the snapshot's first height — that height came with the file, and to sync the snapshot's
+history from the network again the user sets a `range` from it.
 
 A snapshot's rows are trusted data: its SHA-256 detects damage, not who made it, and the explorer shows the rows it
 holds. A file crafted on purpose can only carry rows (never code), but its rows are shown as if indexed. Import

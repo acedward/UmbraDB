@@ -9,12 +9,16 @@
  * one before they apply (`newStore`): `range` and `reset` write their new settings with that mark in one write, before
  * they touch the store, and the boot that has made the new store saves them again without it. A worker that ends in
  * between leaves the mark, and the next boot makes the new store first, so the new settings never run on the old store.
+ * It also says whether the store holds an imported snapshot (`imported`), which decides what a `reset` starts.
  */
 import { z } from "zod";
 import { EngineSettingsSchema } from "./protocol.ts";
 
-/** The settings file: the saved settings, and whether the store is to be replaced by a new one before they apply. */
-export const SavedSettingsSchema = EngineSettingsSchema.extend({ newStore: z.literal(true).optional() });
+/** The settings file: the saved settings, whether the store is to be replaced by a new one before they apply
+ *  (`newStore`), and whether the store holds an imported snapshot (`imported`: set by an import, gone once `range` or
+ *  `reset` replaces the store; a `reset` then starts over with the build's default configuration, as a new store does,
+ *  instead of the configuration that continues the snapshot). */
+export const SavedSettingsSchema = EngineSettingsSchema.extend({ newStore: z.literal(true).optional(), imported: z.literal(true).optional() });
 export type SavedSettings = z.infer<typeof SavedSettingsSchema>;
 
 export interface EngineSettingsStore {
