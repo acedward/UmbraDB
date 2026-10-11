@@ -46,6 +46,9 @@ export const JSONRPC_CHAIN_ID = 2400n;
 
 /** The most requests the module answers at once. */
 export const JSONRPC_MAX_REQUESTS = 8;
+/** How long the worker waits for the module's start (an in-memory PGlite, its files fetched from the site, and the
+ *  migrations: about a second) before it answers the waiting calls `internal` and starts it again at the next call. */
+export const JSONRPC_START_TIMEOUT_MS = 60_000;
 /** The most indexer requests of the module waiting for their turn in the origin's queue or in flight at once. */
 export const JSONRPC_INDEXER_SLOTS = 8;
 
