@@ -1,5 +1,5 @@
 {
-  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 384), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
+  "$schema-note": "The required-test manifest of the skip-enforcement gate (design.md §1.1). 'required' lists the stable id of every test that must execute and pass in the required gate; check-required-tests.ts fails the gate, naming the id, when a required id is missing or reported skipped, todo or failed. 'deferred' lists the optional-feature ids that reconcile as skipped-pending-feature while their feature is unshipped. Each governed test embeds its id as a [[id]] token in its title (Vitest reports it in assertionResults[].title/fullName). check-required-tests.ts fails closed (a missing, unparseable or empty required set fails the gate), pins required.length to EXPECTED_REQUIRED_COUNT (currently 385), so adding or deleting a required entry without changing the constant fails the gate, and binds each required id to its 'file', so an id that passed from a different file fails; every required entry carries its 'file'.",
   "$check-mechanism-note": "The check mechanism itself is proven independently by the synthetic-payload unit tests in check-required-tests.test.ts (which use an inline manifest, not this file), so they stay green whatever this manifest holds; check-required-tests.test.ts also validates this manifest's structure (every required entry bound to an existing file, the pinned count). Do NOT delete a required id to make the check pass — that would re-open the self-skip hole this manifest closes; a required id whose test is missing fails the gate, naming it.",
   "required": [
     {
@@ -1190,7 +1190,7 @@
     {
       "id": "browser.host.start-stop-unsaved",
       "file": "token-indexer/test/browser-sync-host.test.ts",
-      "description": "a start whose settings cannot be saved starts nothing and changes nothing; a start that fails once its settings were saved puts them back; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on"
+      "description": "a start whose settings cannot be saved starts nothing and changes nothing; one whose source cannot be reached is refused before anything is saved; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on; while writes are refused, a start of what the settings say runs"
     },
     {
       "id": "browser.host.range-reset",
@@ -1680,7 +1680,7 @@
     {
       "id": "browser.watchdog.restore-module-off",
       "file": "token-indexer/test/browser-watchdog-restore.test.ts",
-      "description": "the token indexer switched off stays off on the new worker: the restart sends the configuration, with no module in it, and the saved switch keeps the scan stopped while the archive goes on; on again, the scan catches up"
+      "description": "the token indexer switched off stays off on the new worker: the restart sends a start with no configuration and no module, and the saved settings keep the scan stopped while the archive goes on; on again, the scan catches up"
     },
     {
       "id": "browser.watchdog.restore-interrupted-import",
@@ -1696,6 +1696,11 @@
       "id": "browser.watchdog.restore-after-restarts",
       "file": "token-indexer/test/browser-watchdog-restore.test.ts",
       "description": "a start whose worker saved it and got stuck before saying so, then a new worker that is stuck too: the next healthy worker runs the start (the saved settings say to start by itself); an engine the page stopped stays stopped across restarts in a row"
+    },
+    {
+      "id": "browser.watchdog.restore-page-start",
+      "file": "token-indexer/test/browser-watchdog-restore.test.ts",
+      "description": "a start the page sends while the new worker is restored counts as restored: no problem is reported, and the next restart restores the engine again"
     },
     {
       "id": "browser.tabs.handover-mid-replacement",

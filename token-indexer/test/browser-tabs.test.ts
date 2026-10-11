@@ -327,7 +327,8 @@ describe("one engine across tabs", () => {
 
     // The new leader resumed the configuration the old one was running.
     await until("the engine resumed", () => nextEngine.state.engine?.running === true);
-    expect(nextEngine.calls.filter((c) => c.type === "start")).toEqual([{ type: "start", params: { config: TAPE } }]);
+    expect(nextEngine.calls.filter((c) => c.type === "start")).toEqual([{ type: "start", params: {} }]);
+    expect(nextEngine.state.engine?.config).toEqual(TAPE);
 
     // A late answer from the old leader, for a request that has moved to the new leader, is ignored.
     nextEngine.hold = new Set(["api"]);

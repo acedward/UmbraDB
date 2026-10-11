@@ -187,10 +187,10 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 |---|---|---|
 | `status` | — | boot state, store facts (data directory, created, PostgreSQL version, `fsync`, durability, applied migrations), the last engine's configuration and loop status, the stored cursors, the saved configuration (`settings`) and the storage reading (`storage`) |
 | `api` | `method`, `target` | the API's answer `{ status, headers, body }` (`../API.md`) |
-| `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status: the configuration is saved (with the automatic start on), then it runs; a configuration the browser refuses to save starts nothing (`settings-failed`), and an engine that fails to start puts the settings before it back |
+| `start` | `config?`: `source` (`{ kind: "network", nodeUrl?, indexerUrl? }` or `{ kind: "tape", range: "idx" \| "u1", finalizedHeight?, advance? }`), `startHeight?` (a height or `"tip"`, the default), `endHeight?`, `sync?` (`maxBlocks`, `concurrency`, `minIntervalMs`, `idleMs`, `backoff`), `scan?`; omitted: the saved configuration | status: the configuration is saved (with the automatic start on), then it runs; a source that cannot be reached (a recorded range that does not load) is refused before anything is saved, settings that already say this are not written again (the automatic start runs also while the browser refuses writes), a configuration the browser refuses to save starts nothing (`settings-failed`), and an engine that fails to start puts the settings before it back |
 | `stop` | — | status; the engine no longer starts by itself until the next `start`. The engine always stops; when the browser refuses to save that it should stay stopped, the answer is `settings-failed` (the next page to open the engine starts it again) |
-| `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the new range is saved, the store is replaced by a new one, and the range starts (source and tuning from the saved configuration) |
-| `reset` | — | status: the store is replaced by a new one and the saved configuration starts again |
+| `range` | `startHeight` (a height or `"tip"`), `endHeight?` | status: the new range is saved, the store is replaced by a new one, and the range starts (source and tuning from the saved configuration); a range the browser refuses to save changes nothing (`settings-failed`) |
+| `reset` | — | status: the store is replaced by a new one and the saved configuration starts again (`settings-failed`, nothing changed, when it cannot be saved) |
 | `digest` | — | the store's archive digest (the 7 `chain_archive` tables, `chain-archive-sync/archive-digest.ts`) and the digest of every table of both schemas (`../engine/range-tables.ts`), read in one read-only transaction |
 | `system` | `watch` (with `viewer?`) or `refresh: { database?, exactCounts? }` | `{ watching, viewers, snapshot }`: the snapshot of a refresh (`null` for a watch) |
 | `watchdog` | `limitMs`, `heartbeatMs?`, `carried?` | `{ limitMs, heartbeatMs }` |
@@ -201,8 +201,8 @@ Every message carries `v` (version 1). Requests are `{ v, id, type, …parameter
 | `rows` | `schema`, `table`, `limit?` (1–100, default 25), `offset?` (0–10,000) | the columns (name, type), the order (the primary key's columns, descending; empty: physical order, last written first), the page's values (`null`, `bytes`: hex of the first 16 bytes and the length, `text`: the first 256 characters and the length) and whether more follow; a schema or table that is not the store's is refused (`bad-request`) |
 
 Error codes: `bad-request`, `unsupported-version`, `unknown-type`, `not-implemented`, `unsupported-browser`,
-`boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`
-and `module` changed nothing, `stop` stopped the engine), `internal`, `snapshot-refused` (the message starts with the reason;
+`boot-failed`, `already-running`, `start-failed`, `settings-failed` (the browser refused to save the settings: `start`,
+`module`, `range` and `reset` changed nothing, `stop` stopped the engine), `internal`, `snapshot-refused` (the message starts with the reason;
 nothing changed) and `snapshot-failed` (a checked snapshot could not be loaded; the store was opened empty); the client
 adds `bad-response`, `worker-error`, `restarted` and `closed`, and a page sharing the engine with other tabs also
 `leader-changed` and `leader-unavailable` (see Tabs). Notices: `boot` (each phase), `engine` (`running`, `stopped`,
@@ -253,7 +253,8 @@ A browser profile runs one engine per store, however many tabs are open. A page 
   and an import turn that off, the next `start` on). Every worker that boots on the store starts from this file alone:
   the leader tab (`tabs.ts` `resumeOrAutoStart`, the default `resume`), the next leader after a handover and the worker
   the watchdog puts in place of a stuck one start the saved configuration when it says to start by itself
-  (`client.ts` `startSaved`; for a new store, the build's default: the tip, following it). With the build's automatic
+  (`client.ts` `startSaved`: a `start` with no configuration, so the worker runs what is saved when it runs; an engine
+  another page started first counts as started; for a new store, the build's default: the tip, following it). With the build's automatic
   start off, a leader starts it only after a previous leader whose engine ran. Followers never start anything. A reopened store continues at its cursor and fetches every
   height since, so a closed or frozen tab leaves no hole; a chosen range keeps its end.
 - **Ranges.** One archive has no gaps and no backfill, so `range` (a new start or end) and `reset` replace the store

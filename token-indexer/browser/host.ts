@@ -70,9 +70,10 @@
  * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
  * `start` with no configuration runs it; the leader tab sends one when its worker has booted (`tabs.ts`), so a new
  * store starts at the tip and a reopened one resumes, a chosen range keeping its end. What the next worker runs comes
- * from these settings alone, so a change is answered only once it is saved: a `start` or `module` the browser refuses
- * to save changes nothing (`settings-failed`); a `stop` always stops the engine and answers `settings-failed` when
- * staying stopped could not be saved.
+ * from these settings alone, so a change is answered only once it is saved: a `start`, `module`, `range` or `reset` the
+ * browser refuses to save changes nothing (`settings-failed`); a `stop` always stops the engine and answers
+ * `settings-failed` when staying stopped could not be saved. A `start` of what the settings already say (the
+ * automatic start, a restart's restore) writes nothing, so it runs also while the browser refuses writes.
  *
  * **Storage** (`quota.ts`): the boot takes the first reading of the browser's usage and quota before `ready`, so every
  * `status` of a ready worker reports one (`storage`); before each sync batch the guard reads them again and pauses the
@@ -247,6 +248,12 @@ type StoreOpening = "open" | "reset";
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** JSON with every object's keys sorted, for comparing values that may list their keys in another order. */
+function canonicalJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x: unknown) =>
+    x !== null && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x);
+}
+
 const defaultLog = (level: LogLevel, message: string): void => {
   const line = `[umbradb engine] ${message}`;
   if (level === "error") console.error(line);
@@ -351,6 +358,8 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
   }
   /** The settings file as the store phase of the last boot read it (under the store's lock). */
   let settingsOnFile: Awaited<ReturnType<typeof loadSettings>>;
+  /** Whether two settings say the same (the configuration's keys in any order). */
+  const sameSettings = (a: EngineSettings, b: EngineSettings): boolean => canonicalJson(a) === canonicalJson(b);
   const withModules = (s: EngineSettings, m: typeof modules = modules): EngineSettings => (Object.keys(m).length === 0 ? s : { ...s, modules: { ...m } });
   /** Saves `next` with the modules (default: the current ones) and, with `newStore`, the mark that the store is to be
    *  replaced by a new one first; rejects when the browser refuses the write. */
@@ -789,26 +798,33 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     return base(kind, step);
   };
 
-  /** Saves `config` (or the saved configuration) with the automatic start on, then runs it: a start the browser refuses
-   *  to save starts nothing, and an engine that fails to start puts the settings before it back. */
+  /** Saves `config` (or the saved configuration) with the automatic start on, then runs it: a source that cannot be
+   *  reached refuses the start before anything is saved, a start the browser refuses to save starts nothing, settings
+   *  that already say this are not written again, and an engine that fails to start puts the settings before it back. */
   async function start(config: StartConfig | undefined): Promise<HostStatus> {
     const s = await ready();
     if (active !== undefined) throw new HostError("already-running", "the engine is running; stop it first");
     const effective = config ?? saved?.config ?? opts.defaultStart ?? {};
+    // The chain first: a source that cannot be reached (a recorded range that does not load) refuses the start before
+    // anything is saved.
+    const chain = await chainOf(effective);
     const before = saved;
     const next = { config: effective, autoStart: true };
-    try {
-      await writeSettings(next);
-    } catch (e) {
-      throw new HostError("settings-failed", `the configuration to start could not be saved (${messageOf(e)}): the engine was not started`);
+    // Settings that already say this (the automatic start, a restart's restore) need no write.
+    if (before === undefined || !sameSettings(before, next)) {
+      try {
+        await writeSettings(next);
+      } catch (e) {
+        throw new HostError("settings-failed", `the configuration to start could not be saved (${messageOf(e)}): the engine was not started`);
+      }
     }
     saved = next;
     try {
-      await run(s, effective);
+      await run(s, effective, true, chain);
     } catch (e) {
       if (before !== undefined) {
         try {
-          await writeSettings(before);
+          if (!sameSettings(before, next)) await writeSettings(before);
           saved = before;
         } catch (e2) {
           log("warn", `the settings before the failed start could not be saved again: ${messageOf(e2)}`);
@@ -826,15 +842,15 @@ export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
     try {
       await writeSettings(next, { newStore: true });
     } catch (e) {
-      throw new HostError("start-failed", `${what} could not be saved (${messageOf(e)}): nothing was changed`);
+      throw new HostError("settings-failed", `${what} could not be saved (${messageOf(e)}): nothing was changed`);
     }
     saved = next;
   }
 
   /** Runs a new engine (sync + scan in follow mode) with `config`. A new archive starts at `config.startHeight`, by
    *  default the finalized tip. Its events go to the telemetry; `announce: false` posts no `engine` notice (a reopen). */
-  async function run(s: Store, config: StartConfig, announce = true): Promise<void> {
-    const chain = await chainOf(config);
+  async function run(s: Store, config: StartConfig, announce = true, resolved?: Awaited<ReturnType<typeof chainOf>>): Promise<void> {
+    const chain = resolved ?? (await chainOf(config));
     system.telemetry.setEndpoints({ node: chain.nodeUrl, indexer: chain.indexerUrl });
     const runner = new AbortController();
     let engine: IndexerEngine;

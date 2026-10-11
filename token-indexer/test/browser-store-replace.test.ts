@@ -505,7 +505,7 @@ describe("replacing the browser engine's store", () => {
       failing = true;
       const r = await call(t.host, "range", { startHeight: U1.from + 10, endHeight: U1.from + 12 });
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error).toEqual({ code: "start-failed", message: "the new range could not be saved (the quota is exceeded): nothing was changed" });
+      if (!r.ok) expect(r.error).toEqual({ code: "settings-failed", message: "the new range could not be saved (the quota is exceeded): nothing was changed" });
       expect(await result<DigestResult>(t.host, "digest")).toEqual({ ...before, elapsedMs: expect.any(Number) });
       expect(await settings.load()).toEqual(saved);
       expect(openStores(t)).toEqual([t.opened[0]]);

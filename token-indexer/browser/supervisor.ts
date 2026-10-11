@@ -15,7 +15,9 @@
  *   error `restarted`. The new worker gets the carried counts (restarts including this one, with the time and reason,
  *   and PGlite reopens, which the old worker's heartbeats reported), boots, and gets back what the page had set up: the
  *   system snapshot viewers, and the engine. What runs comes from the new worker's own saved settings (`startSaved()`
- *   in `client.ts`): their configuration starts when they say the engine starts by itself. Every `start`, `stop`,
+ *   in `client.ts`): their configuration starts when they say the engine starts by itself (a `start` with no
+ *   configuration, so the worker runs what is saved when it runs; an engine the page started meanwhile counts as
+ *   restored). Every `start`, `stop`,
  *   `range`, `reset` and import changes them before it is answered, and the new worker's boot first finishes what they
  *   and the import journal say was under way (a store a `range` or `reset` was replacing, an import), so a restart in the
  *   middle of any of these runs what that request leaves: a range's new range, nothing after an import (it stops the
@@ -35,7 +37,7 @@
  *   of restarting again. A new worker whose boot fails right after a restart (for example while the old worker's OPFS
  *   handles are still being released) is replaced again after a short wait, up to `bootRetries` times.
  */
-import { createEngineClient, type EngineClient, type EngineEndpoint, EngineError, startSaved } from "./client.ts";
+import { createEngineClient, type EngineClient, type EngineEndpoint, EngineError, type SavedStart, startSaved } from "./client.ts";
 import {
   type CarriedCountsMessage,
   DEFAULT_HEARTBEAT_MS,
@@ -255,15 +257,18 @@ export function superviseWorker<W extends WorkerLike>(opts: SupervisorOptions<W>
     }
     for (const viewer of [...viewers]) await client.system({ watch: true, viewer });
     if (!engine) return;
-    // What runs is what the new worker's saved settings say (after an import: nothing).
-    let started: boolean;
+    // What runs is what the new worker's saved settings say (after an import: nothing). An engine the page started in
+    // the meantime counts as restored.
+    let found: SavedStart;
     try {
-      started = await startSaved(client, () => gen === generation && !closed);
+      found = await startSaved(client, () => gen === generation && !closed);
     } catch (e) {
-      if (gen === generation) engineMeant = false;
+      // The start failed: whether the engine is meant to run is what the worker reports now.
+      const s = await client.status().catch(() => undefined);
+      if (gen === generation && s !== undefined) engineMeant = s.engine?.running === true;
       throw e;
     }
-    if (!started && gen === generation) engineMeant = false;
+    if (gen === generation) engineMeant = found === "started" || found === "running";
   }
 
   /** Terminates the current worker and starts a new one in its place. */

@@ -10,9 +10,10 @@
  *   resumes at its cursor through the gap (every height fetched once, the first height kept); a `stop` turns the
  *   automatic start off until the next `start`.
  * - `[[browser.host.start-stop-unsaved]]` — a `start` whose settings the browser refuses to save is refused (nothing
- *   runs, nothing is saved); a `start` that fails once its settings were saved puts them back; a `stop` always stops
- *   the engine and, when the setting that keeps it stopped cannot be saved, answers so, the status keeping the
- *   automatic start on.
+ *   runs, nothing is saved); a `start` whose source cannot be reached is refused before anything is saved; a `stop`
+ *   always stops the engine and, when the setting that keeps it stopped cannot be saved, answers so, the status keeping
+ *   the automatic start on; and while the browser refuses writes, a start of what the settings already say (the
+ *   automatic start, a restart's restore) runs, as it writes nothing.
  * - `[[browser.tabs.auto-start]]` — the leader tab's default resume: the store's saved configuration when its saved
  *   settings say to start by itself, whatever the previous leader last reported (a configuration they no longer hold,
  *   or an engine they no longer start, is not run), else nothing; with the build's automatic start off, only after a
@@ -213,7 +214,7 @@ describe("browser engine host: sync", () => {
     expect(again.settings).toEqual({ config: net, autoStart: true });
   }, 120_000);
 
-  it("[[browser.host.start-stop-unsaved]] a start whose settings cannot be saved starts nothing and changes nothing; a start that fails once its settings were saved puts them back; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on", async () => {
+  it("[[browser.host.start-stop-unsaved]] a start whose settings cannot be saved starts nothing and changes nothing; one whose source cannot be reached is refused before anything is saved; a stop always stops the engine and says when the setting that keeps it stopped could not be saved, the status keeping the automatic start on; while writes are refused, a start of what the settings say runs", async () => {
     const saved = memorySettingsStore();
     let failing = false;
     let tapeFails = false;
@@ -247,7 +248,7 @@ describe("browser engine host: sync", () => {
     expect(s.settings).toEqual(stopped);
     expect(await saved.load()).toEqual(stopped);
 
-    // The engine fails to start once its settings were saved: they are put back.
+    // A source that cannot be reached: refused before anything is saved.
     tapeFails = true;
     expect((await errorOf(h, "start", { config: other })).code).toBe("start-failed");
     tapeFails = false;
@@ -262,10 +263,15 @@ describe("browser engine host: sync", () => {
       code: "settings-failed",
       message: "the engine is stopped, but turning its automatic start off could not be saved (the quota is exceeded): the next page to open the engine starts it again",
     });
-    failing = false;
     s = await result<HostStatus>(h, "status");
     expect(s.engine).toMatchObject({ running: false, config });
     expect(s.settings).toEqual({ config, autoStart: true });
+    expect(await saved.load()).toEqual({ config, autoStart: true });
+
+    // Writes still refused: a start of what the settings say (as the automatic start and a restart's restore send it,
+    // with no configuration) writes nothing, so it runs.
+    expect((await result<HostStatus>(h, "start")).engine).toMatchObject({ running: true, config });
+    failing = false;
     expect(await saved.load()).toEqual({ config, autoStart: true });
   }, 120_000);
 
@@ -522,11 +528,11 @@ describe("leader tab: automatic start", () => {
 
     const resumed = fakeClient(saved(true));
     await resumeOrAutoStart(true)({ running: true, config }, resumed.client);
-    expect(resumed.starts).toEqual([config]);
+    expect(resumed.starts).toEqual([undefined]); // a start with no configuration: the saved one
 
     const fresh = fakeClient(saved(true));
     await resumeOrAutoStart(true)(null, fresh.client);
-    expect(fresh.starts).toEqual([config]); // the saved configuration
+    expect(fresh.starts).toEqual([undefined]);
 
     const stopped = fakeClient(saved(false));
     await resumeOrAutoStart(true)(null, stopped.client);
@@ -537,7 +543,7 @@ describe("leader tab: automatic start", () => {
     await resumeOrAutoStart(false)(null, off.client);
     expect(off.starts).toEqual([]);
     await resumeOrAutoStart(false)({ running: true, config }, off.client);
-    expect(off.starts).toEqual([config]);
+    expect(off.starts).toEqual([undefined]);
 
     const busy = fakeClient({ engine: { running: true } as HostStatus["engine"], settings: { config: {}, autoStart: true } });
     await resumeOrAutoStart(true)(null, busy.client);
@@ -553,6 +559,6 @@ describe("leader tab: automatic start", () => {
     const ranged: StartConfig = { ...config, startHeight: 715412, endHeight: 715420 };
     const replaced = fakeClient({ engine: null, settings: { config: ranged, autoStart: true } });
     await resumeOrAutoStart(true)({ running: true, config }, replaced.client);
-    expect(replaced.starts).toEqual([ranged]);
+    expect(replaced.starts).toEqual([undefined]); // the worker runs `ranged`, its saved configuration
   });
 });

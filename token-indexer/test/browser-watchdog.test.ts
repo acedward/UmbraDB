@@ -315,7 +315,10 @@ describe("page watchdog", () => {
       const first = workers[1]!.received;
       expect(first[0]).toMatchObject({ type: "watchdog", carried: { watchdogRestarts: 1, pgliteReopens: 0, lastWatchdogRestart: { reason: engine.restarts()[0]!.reason } } });
       expect(first.filter((m) => m.type === "system")).toEqual([expect.objectContaining({ watch: true, viewer: "status-page" })]);
-      expect(first.find((m) => m.type === "start")).toMatchObject({ config });
+      // A start with no configuration: the new worker runs its saved one.
+      expect(first.find((m) => m.type === "start")).not.toHaveProperty("config");
+      await until(async () => (await c.status()).engine?.config !== undefined, "the restored engine");
+      expect((await c.status()).engine).toMatchObject({ running: true, config });
       await until(async () => (await c.status()).engine?.status.sync.phase === "done", "the restored engine's range");
 
       // The page stops the engine; a restart does not start it again.

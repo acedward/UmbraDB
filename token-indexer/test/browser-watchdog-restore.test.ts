@@ -19,6 +19,8 @@
  * - `[[browser.watchdog.restore-after-restarts]]` — a start the worker saved and ran without saying so (stuck right
  *   after), then a new worker stuck too: the next healthy worker runs the start, as its saved settings say; an engine
  *   the page stopped stays stopped across two restarts in a row.
+ * - `[[browser.watchdog.restore-page-start]]` — a start the page sends while the new worker is being restored counts
+ *   as restored: no problem is reported, and the next restart restores the engine again.
  * - `[[browser.tabs.handover-mid-replacement]]` — two tabs on one store, the leader's worker under the watchdog: the next
  *   leader tab starts what the store's saved settings say once its worker has booted, never what the closed leader last
  *   reported running: after an import the leader's watchdog finished (its worker had stopped answering once the journal
@@ -26,9 +28,8 @@
  *   middle of a `range`, the new range on a new store; in the middle of a `reset`, the saved configuration on a new
  *   store.
  * - `[[browser.watchdog.restore-module-off]]` — the token indexer switched off stays off on the new worker: the restart
- *   sends the engine's configuration, which carries no module, and the new worker's engine takes the switch from the
- *   saved settings, so its archive goes on while the scan stays where it stopped; switched on again, the scan catches
- *   up.
+ *   sends a start with no configuration and no module, and the new worker's engine takes both from the saved settings,
+ *   so its archive goes on while the scan stays where it stopped; switched on again, the scan catches up.
  * - `[[browser.watchdog.restore-interrupted-import]]` — a worker that stops answering once an import's journal is saved,
  *   with its engine still running (its stop never reported): the new worker's boot finishes the import, and the new
  *   worker starts nothing on the snapshot's store; the configuration that continues the snapshot stays saved, with no
@@ -194,9 +195,11 @@ interface Rig {
   journal: string;
   holds: SharedStore["holds"];
   /** Silences the current worker until the supervisor has replaced it (past even the long requests' limit), then waits
-   *  for the new worker's boot; `silentNext`: the new worker is silent from its start (it never answers), and nothing is
-   *  waited for. */
-  restart(o?: { silentNext?: boolean }): Promise<ChannelWorker>;
+   *  for the new worker's boot unless `wait` is false; `silentNext`: the new worker is silent from its start (it never
+   *  answers), and nothing is waited for. */
+  restart(o?: { silentNext?: boolean; wait?: boolean }): Promise<ChannelWorker>;
+  /** What the supervisor reported as problems while restoring a new worker. */
+  problems: string[];
   close(): Promise<void>;
 }
 
@@ -206,7 +209,9 @@ function supervised(store: SharedStore): Rig {
   let check: () => void = () => {};
   const workers: ChannelWorker[] = [];
   let silentNext = false;
+  const problems: string[] = [];
   const engine = superviseWorker<ChannelWorker>({
+    onProblem: (m) => problems.push(m),
     createWorker: () => {
       const w = channelWorker(store.host);
       w.silent = silentNext;
@@ -228,6 +233,7 @@ function supervised(store: SharedStore): Rig {
     settings: store.settings,
     journal: store.journal,
     holds: store.holds,
+    problems,
     async restart(o = {}) {
       const count = workers.length;
       workers[count - 1]!.silent = true;
@@ -239,7 +245,7 @@ function supervised(store: SharedStore): Rig {
       check();
       expect(workers).toHaveLength(count + 1);
       const next = workers[count]!;
-      if (o.silentNext !== true) await until(async () => (await engine.client.status().catch(() => undefined))?.boot.phase === "ready", "the new worker's boot", 30_000);
+      if (o.silentNext !== true && o.wait !== false) await until(async () => (await engine.client.status().catch(() => undefined))?.boot.phase === "ready", "the new worker's boot", 30_000);
       return next;
     },
     async close() {
@@ -265,7 +271,8 @@ describe("page watchdog: what a restart starts", () => {
       expect((await c.status()).engine).toMatchObject({ running: true, config: ran });
       const next = await r.restart();
       await until(() => next.received.some((m) => m.type === "start"), "the engine started on the new worker", 30_000);
-      expect(next.received.find((m) => m.type === "start")).toMatchObject({ config: ran });
+      // A start with no configuration: the worker runs what its saved settings say.
+      expect(next.received.find((m) => m.type === "start")).not.toHaveProperty("config");
       await until(async () => (await c.status()).engine?.status.sync.phase === "done", "the restored engine's range");
       const s = await c.status();
       expect(s.engine).toMatchObject({ running: true, config: ran, error: null });
@@ -289,7 +296,7 @@ describe("page watchdog: what a restart starts", () => {
       expect(ranged.engine).toMatchObject({ running: true, config: range });
       const next = await r.restart();
       await until(() => next.received.some((m) => m.type === "start"), "the engine started on the new worker", 30_000);
-      expect(next.received.find((m) => m.type === "start")).toMatchObject({ config: range });
+      expect(next.received.find((m) => m.type === "start")).not.toHaveProperty("config");
       await until(async () => (await c.status()).engine?.status.sync.phase === "done", "the range on the new worker");
       const s = await c.status();
       expect(s.engine).toMatchObject({ running: true, config: range, error: null });
@@ -361,7 +368,7 @@ describe("page watchdog: what a restart starts", () => {
     }
   }, 120_000);
 
-  it("[[browser.watchdog.restore-module-off]] the token indexer switched off stays off on the new worker: the restart sends the configuration, with no module in it, and the saved switch keeps the scan stopped while the archive goes on; on again, the scan catches up", async () => {
+  it("[[browser.watchdog.restore-module-off]] the token indexer switched off stays off on the new worker: the restart sends a start with no configuration and no module, and the saved settings keep the scan stopped while the archive goes on; on again, the scan catches up", async () => {
     // A finalized tip that rises one block every 300 ms: the archive is still growing when the worker is replaced.
     const ran: StartConfig = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 4, advance: { everyMs: 300, by: 1 } }, startHeight: U1.from, endHeight: U1.to, ...FAST };
     const r = rig(ran);
@@ -380,7 +387,8 @@ describe("page watchdog: what a restart starts", () => {
 
       const next = await r.restart();
       await until(() => next.received.some((m) => m.type === "start"), "the engine started on the new worker", 30_000);
-      expect(next.received.find((m) => m.type === "start")).toMatchObject({ config: ran });
+      // A start with no configuration: the worker runs what its saved settings say.
+      expect(next.received.find((m) => m.type === "start")).not.toHaveProperty("config");
       expect(next.received.some((m) => m.type === "module")).toBe(false);
       await until(async () => (await c.status()).cursors?.sync?.height === U1.to, "the archive on the new worker");
       const after = await c.status();
@@ -441,6 +449,10 @@ describe("page watchdog: what a restart starts", () => {
     try {
       const c = r.engine.client;
       expect((await c.booted()).phase).toBe("ready");
+      // Started and stopped once: the saved settings say not to start by itself.
+      await c.start(config);
+      await c.stop();
+      expect(await r.settings.load()).toEqual({ config, autoStart: false });
       // The start reaches the worker, which saves it and runs it, but nothing it posts arrives any more.
       r.workers[0]!.muted = true;
       const starting = c.start(config).then(() => "answered", (e: EngineError) => e.code);
@@ -451,7 +463,7 @@ describe("page watchdog: what a restart starts", () => {
       const healthy = await r.restart();
       expect(stuck.received.some((m) => m.type === "start")).toBe(false);
       await until(() => healthy.received.some((m) => m.type === "start"), "the start on the healthy worker", 30_000);
-      expect(healthy.received.find((m) => m.type === "start")).toMatchObject({ config });
+      expect(healthy.received.find((m) => m.type === "start")).not.toHaveProperty("config");
       await until(async () => (await c.status()).engine?.status.sync.phase === "done", "the range on the healthy worker");
       const s = await c.status();
       expect(s.engine).toMatchObject({ running: true, config, error: null });
@@ -478,6 +490,31 @@ describe("page watchdog: what a restart starts", () => {
       expect(s.settings).toEqual({ config, autoStart: false });
     } finally {
       await p.close();
+    }
+  }, 120_000);
+
+  it("[[browser.watchdog.restore-page-start]] a start the page sends while the new worker is restored counts as restored: no problem is reported, and the next restart restores the engine again", async () => {
+    const config: StartConfig = { ...U1_TAPE, startHeight: U1.from, endHeight: U1.from + 6, ...FAST };
+    const r = rig(config);
+    try {
+      const c = r.engine.client;
+      expect((await c.booted()).phase).toBe("ready");
+      await c.start(config);
+      // The page starts the engine itself as soon as the new worker is there (a click, a follower tab's start).
+      const next = await r.restart({ wait: false });
+      const started = await c.start(config).then(() => "started", (e: EngineError) => e.code);
+      expect(["started", "already-running"]).toContain(started);
+      await until(async () => (await c.status()).engine?.running === true, "the engine on the new worker", 30_000);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(r.problems).toEqual([]);
+      expect(next.received.some((m) => m.type === "start")).toBe(true);
+      // The next restart restores it again.
+      const last = await r.restart();
+      await until(() => last.received.some((m) => m.type === "start"), "the engine restored on the next worker", 30_000);
+      await until(async () => (await c.status()).engine?.running === true, "the engine on the last worker", 30_000);
+      expect(r.problems).toEqual([]);
+    } finally {
+      await r.close();
     }
   }, 120_000);
 
@@ -567,7 +604,7 @@ describe("page watchdog: what a restart starts", () => {
         } else {
           const expected = what === "mid-range" ? { ...later, startHeight: U1.from + 12, endHeight: U1.from + 20 } : later;
           expect(starts, what).toHaveLength(1);
-          expect(starts[0], what).toMatchObject({ config: expected });
+          expect(starts[0], what).not.toHaveProperty("config");
           const s = await fc.status();
           expect(s.store?.created, `${what}: a new store`).toBe(true);
           await until(async () => (await fc.status()).engine?.status.sync.phase === "done", `${what}: the new leader's range`);
