@@ -39,6 +39,7 @@ function forward(own: PGlite, overrides: Partial<PgliteDatabase> = {}): PgliteDa
     _runExclusiveTransaction: (fn) => own._runExclusiveTransaction(fn),
     runExclusive: (fn) => own.runExclusive(fn),
     execProtocolStream: (message, options) => own.execProtocolStream(message, options),
+    _checkReady: () => own._checkReady(),
     _handleBlob: (blob) => own._handleBlob(blob),
     _cleanupBlob: () => own._cleanupBlob(),
     _getWrittenBlob: () => own._getWrittenBlob(),
@@ -660,6 +661,28 @@ describe("PGlite client", () => {
       }
     }, 120_000);
 
+    it("[[pglite.client.unready-database]] a database made with new PGlite() and handed to the client at once: the first statements, transaction and reservation wait until it has started, then run", async () => {
+      const own = new PGlite();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public" });
+        const first = c.unsafe("SELECT 1 AS value");
+        const tx = c.begin(async (t) => [...(await t`SELECT 2 AS value`)]);
+        const reserved = c.reserve().then(async (r) => {
+          try {
+            return [...(await r`SELECT 3 AS value`)];
+          } finally {
+            r.release();
+          }
+        });
+        expect([...(await first)]).toEqual([{ value: 1 }]);
+        expect(await tx).toEqual([{ value: 2 }]);
+        expect(await reserved).toEqual([{ value: 3 }]);
+        expect(own.ready).toBe(true);
+      } finally {
+        await own.close();
+      }
+    });
+
     it("[[pglite.client.transaction-isolation]] the session is never handed on inside a transaction: a statement that leaves one open is rolled back and refused, and a reservation released inside one has it rolled back", async () => {
       // A client's hidden BEGIN, then another client's acknowledged write, then the first client's ROLLBACK.
       await expect(a.unsafe("/* caller A */ BEGIN")).rejects.toMatchObject({ code: "UNSAFE_TRANSACTION" });
@@ -746,6 +769,32 @@ describe("PGlite client", () => {
       await expect(b.reserve()).rejects.toMatchObject({ code: "PGLITE_SESSION_DEADLOCK" });
       reserved.release();
       expect((await b`SELECT 3 AS v`)[0]).toEqual({ v: 3 });
+    });
+
+    it("[[pglite.client.pglite-lock-deadlock]] a statement waiting for PGlite's own transaction lock — held by a transaction of PGlite's transaction() that awaits it — fails with PGLITE_SESSION_DEADLOCK after deadlockTimeoutMs instead of hanging; that transaction then fails and rolls back, and the client's next statements run", async () => {
+      const own = await PGlite.create();
+      try {
+        const c = createPgliteClient({ pglite: own, schema: "public", deadlockTimeoutMs: 300 });
+        await c`CREATE TABLE dl (id int)`;
+        const started = Date.now();
+        let inner: string | undefined;
+        await expect(own.transaction(async (t) => {
+          await t.query("INSERT INTO dl VALUES (1)");
+          await c`SELECT 1`.catch((e: { code?: string }) => {
+            inner = e.code;
+            throw e;
+          });
+        })).rejects.toMatchObject({ code: "PGLITE_SESSION_DEADLOCK" });
+        expect(inner).toBe("PGLITE_SESSION_DEADLOCK");
+        expect(Date.now() - started).toBeGreaterThanOrEqual(280);
+        expect(own.isInTransaction()).toBe(false);
+        expect([...(await c`SELECT count(*)::int AS n FROM dl`)]).toEqual([{ n: 0 }]);
+        // A statement that waits behind it while the lock is free again runs.
+        const later = c`SELECT 2 AS v`;
+        expect([...(await later)]).toEqual([{ v: 2 }]);
+      } finally {
+        await own.close();
+      }
     });
 
     it("[[pglite.client.busy-wait]] a statement waiting behind a transaction that keeps running statements waits as long as needed", async () => {

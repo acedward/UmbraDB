@@ -42,7 +42,8 @@
  * the session on (and a holder waits for them): neither runs inside the other's transaction, sees its uncommitted rows
  * or commits them. The same rule makes it wrong to call PGlite's `query`, `exec` or `transaction()` while the session is
  * held by the caller's own transaction or reservation, or to await a statement of these clients inside a callback of
- * PGlite's `transaction()`: each waits for the other.
+ * PGlite's `transaction()`: each waits for the other. The clients' side gives up after `deadlockTimeoutMs` with
+ * `PGLITE_SESSION_DEADLOCK`, also when a `query`, `exec` or `transaction()` of PGlite's holds its lock longer.
  * {@link pgliteBlobQuery} runs a `COPY` with a file (PGlite's `blob` option) on a client, a transaction handle or a
  * reserved handle instead.
  * Inside a `begin` callback every statement must go through the transaction handle: a statement on the outer client
@@ -110,6 +111,9 @@ export interface PgliteDatabase {
   /** Sends one frontend protocol message and gives the backend's messages; an error the backend sends is thrown
    *  (PGlite's `execProtocolStream`). Called inside {@link runExclusive} only. */
   execProtocolStream(message: Uint8Array, options?: { syncToFs?: boolean }): Promise<readonly PgliteBackendMessage[]>;
+  /** Resolves once the database has started (at once when it has), and rejects once it is closing or closed (PGlite's
+   *  `_checkReady`, which its `query`, `exec` and `transaction()` await before they take its locks). */
+  _checkReady(): Promise<void>;
   /** Sets the file a `COPY … FROM '/dev/blob'` reads (none: `undefined`) (PGlite's `_handleBlob`). */
   _handleBlob(blob?: Blob): Promise<void>;
   /** Forgets the file of {@link _handleBlob} (PGlite's `_cleanupBlob`). */
@@ -147,7 +151,8 @@ export interface PgliteClientOptions {
   /** Called before each statement (see {@link PgliteStatementHook}). */
   debug?: PgliteStatementHook;
   /** How long a statement of this client waits for the session while the transaction or reservation holding it runs
-   *  no statement, before it fails with `PGLITE_SESSION_DEADLOCK`. Default {@link DEFAULT_DEADLOCK_TIMEOUT_MS}. */
+   *  no statement, or for PGlite's own transaction lock held outside the clients, before it fails with
+   *  `PGLITE_SESSION_DEADLOCK`. Default {@link DEFAULT_DEADLOCK_TIMEOUT_MS}. */
   deadlockTimeoutMs?: number;
   /** Close the database when this client ends. Default false: the database belongs to whoever created it. */
   closeOnEnd?: boolean;
@@ -1178,22 +1183,49 @@ async function rollBackOpenTransaction(state: ClientState, holder: Holder): Prom
 }
 
 /**
- * The session for one statement, a transaction or a reservation: the clients' lock, then PGlite's transaction lock,
- * held until {@link releaseHolder}, so no transaction of PGlite's `transaction()` and no `query` or `exec` on the
- * database runs inside the holder's work, nor the holder's statements inside theirs.
+ * The session for one statement, a transaction or a reservation: the clients' lock, then — once PGlite has started, as
+ * its `query` waits for it (its start runs statements of its own under that lock) — PGlite's transaction lock, held
+ * until {@link releaseHolder}, so no transaction of PGlite's `transaction()` and no `query` or `exec` on the database
+ * runs inside the holder's work, nor the holder's statements inside theirs. PGlite's lock is waited for at most
+ * `deadlockTimeoutMs`, then the holder fails with `PGLITE_SESSION_DEADLOCK`: what holds it (a transaction of PGlite's
+ * `transaction()` that awaits a statement of these clients, a `query` or `exec` waiting behind a reservation that is
+ * never released) may never let it go.
  */
 async function acquireHolder(state: ClientState, kind: HolderKind): Promise<Holder> {
   const holder = await state.session.lock.acquire(kind, state.deadlockTimeoutMs);
+  const { db } = state.session;
   try {
-    await holder.run(() => new Promise<void>((held, failed) => {
-      state.session.db._runExclusiveTransaction(() => new Promise<void>((release) => {
-        holder.releasePglite = release;
-        held();
-      })).catch(failed);
-    }));
+    await holder.run(async () => {
+      await db._checkReady();
+      await new Promise<void>((held, failed) => {
+        let gaveUp = false;
+        const timer = setTimeout(() => {
+          gaveUp = true;
+          failed(new PgliteSqlError(
+            "PGLITE_SESSION_DEADLOCK",
+            `waited ${state.deadlockTimeoutMs} ms for PGlite's own transaction lock, held outside these clients (a transaction of ` +
+              "PGlite's transaction(), or its query or exec); one that awaits a statement of these clients can never let it go: " +
+              "do not mix PGlite's own calls with the clients' statements",
+          ));
+        }, state.deadlockTimeoutMs);
+        db._runExclusiveTransaction(() => new Promise<void>((release) => {
+          // Taken after the holder gave up: let it go at once.
+          if (gaveUp) {
+            release();
+            return;
+          }
+          clearTimeout(timer);
+          holder.releasePglite = release;
+          held();
+        })).catch((error: unknown) => {
+          clearTimeout(timer);
+          failed(error);
+        });
+      });
+    });
   } catch (error) {
     state.session.lock.release(holder);
-    throw databaseError(state, error);
+    throw error instanceof PgliteSqlError ? error : databaseError(state, error);
   }
   return holder;
 }

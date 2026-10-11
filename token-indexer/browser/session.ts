@@ -114,6 +114,7 @@ export function monitorSession(db: PgliteDatabase, opts: SessionMonitorOptions =
     runExclusive: <T>(fn: () => Promise<T>): Promise<T> => run(() => db.runExclusive(fn)),
     execProtocolStream: (message: Uint8Array, options?: { syncToFs?: boolean }): Promise<readonly PgliteBackendMessage[]> =>
       db.execProtocolStream(message, options),
+    _checkReady: (): Promise<void> => db._checkReady(),
     _handleBlob: (blob?: Blob): Promise<void> => db._handleBlob(blob),
     _cleanupBlob: (): Promise<void> => db._cleanupBlob(),
     _getWrittenBlob: (): Promise<Blob | undefined> => db._getWrittenBlob(),
