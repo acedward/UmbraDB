@@ -2270,7 +2270,7 @@
     {
       "id": "browser.host.jsonrpc-start-hung",
       "file": "token-indexer/test/browser-jsonrpc.test.ts",
-      "description": "a JSON RPC module start that does not end: the waiting calls are answered module-off when the module is switched off, internal at the start's deadline (the next call starts it again); a start that ends late has its module closed; the worker's close does not wait for it"
+      "description": "one JSON RPC module start at a time: a start that makes its database and then does not end holds one allocation over many calls and deadlines; waiting calls answered internal at its deadline or module-off when switched off, later calls refused at once; when it ends its module is closed and the next call starts the module; the worker's close does not wait for it"
     },
     {
       "id": "browser.shell.explain",

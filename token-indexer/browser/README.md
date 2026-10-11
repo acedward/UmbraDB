@@ -178,9 +178,11 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
     `npm run evm-rpc` does.
   - *database (empty here)*: accounts from the module's `evm_rpc` database — a PGlite database in memory made by the
     module's migrations at its first request, empty here (the wallet monitor and the relayer that fill it run in
-    Node), so they answer as an empty Node deployment does. Its start has a 60 s deadline: past it the waiting calls
-    are answered `internal` and the next call starts it again (a module that comes later is closed at once); switched
-    off meanwhile, the waiting calls are answered `module-off`, and the worker's close does not wait for the start.
+    Node), so they answer as an empty Node deployment does. One start runs at a time, with a 60 s deadline: past it the
+    waiting calls are answered `internal`; a start cannot be cut short, so until it ends later calls are refused at
+    once (`internal`, "an earlier start has not ended yet") rather than starting another, and its module is closed as
+    soon as it comes; then the next call starts the module. Switched off meanwhile, the waiting calls are answered
+    `module-off`, and the worker's close does not wait for the start.
   - *not implemented (-32004)*: callable; each answers `-32004` with its classification and reason.
   - *Node only*: `eth_getLogs` (the log ingest), `eth_sendRawTransaction` (the relayer), `eth_subscribe` and
     `eth_unsubscribe` (the WebSocket server), and the ERC20 views of `eth_call`: listed and described, never called.
