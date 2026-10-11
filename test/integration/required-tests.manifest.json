@@ -1780,7 +1780,7 @@
     {
       "id": "engine.telemetry.redaction-cut-mark",
       "file": "token-indexer/test/engine-telemetry.test.ts",
-      "description": "the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form, and it stays within the snapshot's bound"
+      "description": "the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form and whatever count a mark already stated (at most 15 digits), and it stays within the snapshot's bound"
     },
     {
       "id": "engine.telemetry.redaction-key-forms",

@@ -810,7 +810,7 @@ describe("system snapshot schema and redaction", () => {
     expect(redactText(eight)).not.toContain(secret);
   });
 
-  it("[[engine.telemetry.redaction-cut-mark]] the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form, and it stays within the snapshot's bound", () => {
+  it("[[engine.telemetry.redaction-cut-mark]] the mark of a cut is added after the redaction: a value the cut splits is removed and the mark kept whole, so redacting the result again gives it back with the same count, for every kind of secret form and whatever count a mark already stated (at most 15 digits), and it stays within the snapshot's bound", () => {
     const forms = ["token=a ", "t=a ", "password=b;", "apiKey: c\n", '"secret":"d",', "Bearer abcdefghijklmnopq ", "https://u:p@h.invalid/?k=v#f ", "seed: a b c d e f g h i j k l\n", "cookie: z=1\n", '\\"token\\":\\"v\\",', "authorization: Basic QWxhZGRpbjpvcGVu\n"];
     let cut = 0;
     for (const form of forms) {
@@ -834,6 +834,16 @@ describe("system snapshot schema and redaction", () => {
     expect(split).not.toContain("abc");
     expect(split.endsWith(`… [${text.length - kept.length} more characters]`)).toBe(true);
     expect(redactText(split)).toBe(split);
+    // A mark's count, however large the mark already on the text stated, stays one the next pass reads as a mark: at
+    // most 15 digits.
+    for (const count of ["3", "999999999999", "999999999999999"]) {
+      for (const form of forms) {
+        const once = redactText(`${form.repeat(Math.ceil(TEXT_MAX_CHARS / form.length)).slice(0, TEXT_MAX_CHARS)}… [${count} more characters]`);
+        expect(redactText(once), `${JSON.stringify(form)} ${count}`).toBe(once);
+        expect(once, `${JSON.stringify(form)} ${count}`).toMatch(/… \[[1-9]\d{0,14} more characters\]$/u);
+      }
+    }
+    expect(redactText(`${"token=x ".repeat(512)}… [999999999999999 more characters]`)).toMatch(/… \[999999999999999 more characters\]$/u);
     // Kept parts never exceed 4,096 characters, for every form above.
     for (const form of forms) {
       const once = redactText(form.repeat(Math.ceil(9_000 / form.length)));

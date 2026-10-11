@@ -789,6 +789,8 @@ const RULES: ReadonlyArray<[RegExp, string | ((...m: string[]) => string)]> = [
 const TEXT_LIMIT = TEXT_MAX_CHARS + 64;
 /** The mark {@link capText} and {@link redactText} end a cut text with: how many characters of the text were cut. */
 const CUT_MARK = /… \[([1-9]\d{0,14}) more characters\]$/u;
+/** The largest count a mark states (15 digits, as {@link CUT_MARK} reads it): a larger one is stated as this. */
+const MAX_CUT_COUNT = 999_999_999_999_999;
 /**
  * The mark ending `text` when `text` is a cut text — at most {@link TEXT_MAX_CHARS} characters, then {@link CUT_MARK},
  * within the snapshot's bound — with where it starts and the count it states; otherwise `undefined`. A text with more
@@ -835,8 +837,9 @@ export function redactText(value: string): string {
 /**
  * The longest start of `text` whose redaction holds at most {@link TEXT_MAX_CHARS} characters (at most that many
  * characters of `text`; shorter when redaction lengthens it), redacted, then the mark with how many characters of the
- * text it leaves out (plus `earlier`, those a mark already on it counted). Each redaction reads at most
- * {@link TEXT_MAX_CHARS} characters, a bounded number of times.
+ * text it leaves out (plus `earlier`, those a mark already on it counted; at most {@link MAX_CUT_COUNT}, so that the
+ * next pass reads the mark as one). Each redaction reads at most {@link TEXT_MAX_CHARS} characters, a bounded number
+ * of times.
  */
 function cutAndRedact(text: string, earlier = 0): string {
   let keep = Math.min(text.length, TEXT_MAX_CHARS);
@@ -845,7 +848,7 @@ function cutAndRedact(text: string, earlier = 0): string {
     keep = tries < 32 ? Math.min(keep - 1, Math.floor((keep * TEXT_MAX_CHARS) / out.length)) : 0;
     out = redactWhole(text.slice(0, keep));
   }
-  return `${out}… [${text.length - keep + earlier} more characters]`;
+  return `${out}… [${Math.min(text.length - keep + earlier, MAX_CUT_COUNT)} more characters]`;
 }
 
 /** `text` cut to {@link TEXT_MAX_CHARS}, saying how many characters were cut; a cut text stays as it is. */
