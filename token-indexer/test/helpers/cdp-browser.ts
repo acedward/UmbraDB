@@ -34,20 +34,28 @@
  * aborted by the environment when a load the page needs (the document, a script or module, a stylesheet, a fetch, a
  * worker's script — not an image, a font or the favicon) failed with {@link ENVIRONMENTAL_LOAD_ERRORS}, or when the
  * machine's interfaces ({@link networkState}) changed while it ran and the script of a worker the page created failed
- * with `net::ERR_ABORTED`. The step is not run once the abort is seen; seen while the step runs, the step is no longer
- * awaited, its abort signal is set and every DevTools command it sends from then on fails, so it stops before the next
- * attempt (which waits for it, at most ten seconds). An aborted attempt is made again only when nothing else in it
- * failed: not when the step failed before the abort was seen, nor when the attempt recorded a failure the aborted loads
- * do not explain — an exception that names none of them, an error event of a worker whose script was not one of them,
- * a load that failed with another error (`net::ERR_ABORTED`, a load cancelled, aside). Such an attempt fails, its
- * records kept, with one printed line (`not loaded again`); so does an attempt aborted {@link LOAD_ATTEMPTS} times; and
- * anything else (a failed step, another load error, a load answered with an error status) with no abort fails as it
- * fails. The next attempt starts once the interfaces have stayed the same for three seconds (Chrome passes a change on
- * more than once: a second notice about two seconds after the first fails the requests waiting then too); what the
- * aborted attempt recorded (its requests, console, log entries, exceptions, worker errors and workers) is dropped from
- * the page's lists, its reason and its failures kept in {@link Page.loadRetries} and shown by {@link Page.diagnostics},
- * and the retry's printed line counts them and shows the first. Each attempt runs in the same browser profile (its
- * storage stays). A step that runs after the page is ready (not in `goto`) is not covered.
+ * with `net::ERR_ABORTED`.
+ *
+ * The rule: the `ready` step always runs, and a step that fails is never loaded again. Once the attempt is seen
+ * aborted, the step has {@link READY_SETTLE_MS} (fifteen seconds) more to end:
+ * - it fails — it throws, or it sees the page report a failure (a boot that ended "failed"), whatever made it fail: the
+ *   attempt's own failure; the step's error is thrown, the attempt's records kept, with one printed line
+ *   (`not loaded again`);
+ * - it succeeds: the attempt stands, as it is;
+ * - it has not ended (its page never got what it waits for): it is abandoned — its abort signal is set and every
+ *   DevTools command it sends from then on fails, so it stops before the next attempt, which waits for it (at most ten
+ *   seconds) — and the page is loaded again, as it is when there is no step, unless the attempt recorded a failure the
+ *   aborted loads do not explain: an exception that names none of them, an error event of a worker whose script was not
+ *   one of them, a load that failed with another error (`net::ERR_ABORTED`, a load cancelled, aside). Such an attempt
+ *   fails like a failed step.
+ * An attempt aborted {@link LOAD_ATTEMPTS} times fails; anything with no abort (a failed step, another load error, a
+ * load answered with an error status) fails as it fails. The next attempt starts once the interfaces have stayed the
+ * same for three seconds (Chrome passes a change on more than once: a second notice about two seconds after the first
+ * fails the requests waiting then too); what the aborted attempt recorded (its requests, console, log entries,
+ * exceptions, worker errors and workers) is dropped from the page's lists, its reason and its failures kept in
+ * {@link Page.loadRetries} and shown by {@link Page.diagnostics}, and the retry's printed line counts them and shows the
+ * first. Each attempt runs in the same browser profile (its storage stays). A step that runs after the page is ready
+ * (not in `goto`) is not covered.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -135,6 +143,8 @@ export interface PageOptions {
   environmentalErrors?: readonly string[];
   /** The machine's network state, compared during each load attempt (default {@link networkState}). */
   networkState?: () => string;
+  /** How long a `ready` step may still take once its attempt is seen aborted (default {@link READY_SETTLE_MS}). */
+  readySettleMs?: number;
 }
 
 /** The load error Chrome gives the requests it fails when the machine's network changes. */
@@ -154,6 +164,9 @@ const NETWORK_SETTLE_MS = 3_000;
 const NETWORK_SETTLE_MAX_MS = 10_000;
 /** How long a load attempt that is made again waits for its abandoned step to stop. */
 const ABANDONED_STEP_MS = 10_000;
+/** How long a `ready` step may still take, once its load attempt is seen aborted, to end — succeed or fail — before it
+ *  is taken for one the abort stopped (shorter than the steps' own waits, 30 s and more). */
+export const READY_SETTLE_MS = 15_000;
 
 /** The machine's network interfaces and their addresses, as one string: what Chrome watches on Linux. */
 export function networkState(): string {
@@ -239,6 +252,7 @@ export class Page {
   private recorded: (() => void) | undefined;
   private environmentalErrors: readonly string[] = ENVIRONMENTAL_LOAD_ERRORS;
   private networkStateOf: () => string = networkState;
+  private readySettleMs = READY_SETTLE_MS;
   /** The navigation's own error (`Page.navigate`'s `errorText`) in the current load attempt. */
   private navigationError: string | undefined;
 
@@ -252,6 +266,7 @@ export class Page {
     const page = new Page(conn, sessionId, targetId);
     if (opts.environmentalErrors !== undefined) page.environmentalErrors = opts.environmentalErrors;
     if (opts.networkState !== undefined) page.networkStateOf = opts.networkState;
+    if (opts.readySettleMs !== undefined) page.readySettleMs = opts.readySettleMs;
     const mine = (l: (p: Json, worker: boolean) => void): Listener => (p, s) => { if (s !== undefined && page.sessions.has(s)) l(p, s !== sessionId); };
     const tag = (worker: boolean): { target?: "worker" } => (worker ? { target: "worker" } : {});
     conn.on("Network.requestWillBeSent", mine((p, w) => {
@@ -299,9 +314,9 @@ export class Page {
 
   /**
    * Loads a URL, waits for its load event, then runs `ready` (the page's own readiness: its engine booted, a view
-   * drawn); an attempt the machine's network aborted is made again (see the module documentation), at most
-   * {@link LOAD_ATTEMPTS} times. `ready` gets the attempt's abort signal: once the attempt is abandoned it is set, and
-   * every DevTools command the step sends from then on fails.
+   * drawn); an attempt the machine's network aborted is made again only when `ready` could not end (see the module
+   * documentation), at most {@link LOAD_ATTEMPTS} times. `ready` gets the attempt's abort signal: once the attempt is
+   * abandoned it is set, and every DevTools command the step sends from then on fails.
    */
   async goto(url: string, timeoutMs = 30_000, ready?: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
     for (let attempt = 1; ; attempt++) {
@@ -316,30 +331,31 @@ export class Page {
       } catch (error) {
         failure = { error, step: false };
       }
-      // The step runs only on a page not already seen aborted; once the abort is seen it is no longer awaited, and its
-      // signal tells it to stop (its DevTools commands fail from then on).
+      // The step always runs. Once the attempt is seen aborted it has readySettleMs more to end; if it has not, it is
+      // the abort's (its page never got what it waits for): no longer awaited, and its signal tells it to stop (its
+      // DevTools commands fail from then on).
       const stepper = new AbortController();
       let step: Promise<unknown> | undefined;
-      if (failure === undefined && ready !== undefined && this.abortedBy(marks, network.changed()) === undefined) {
+      let stuck = false;
+      if (failure === undefined && ready !== undefined) {
         step = STEPS.run([...(STEPS.getStore() ?? []), stepper.signal], () => ready(stepper.signal));
-        try {
-          await this.unlessAborted(step, marks, network);
-        } catch (error) {
-          failure = { error, step: true };
-        }
+        const ended = await this.settled(step, marks, network);
+        if (ended.kind === "failed") failure = { error: ended.error, step: true };
+        stuck = ended.kind === "stuck";
       }
       network.stop();
       const reason = this.abortedBy(marks, network.changed());
-      if (reason === undefined) {
+      if (reason === undefined || (step !== undefined && !stuck && failure === undefined)) {
+        // Not aborted, or aborted but the step succeeded: the attempt stands, as it is.
         if (failure !== undefined) throw failure.error;
         return;
       }
       stepper.abort();
       const last = failure === undefined ? "" : `; the last attempt's error: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`;
-      // A failure of the page's own is kept: the step failed before the abort was seen, or the attempt recorded what
-      // the aborted loads do not explain.
+      // A failure of the page's own is kept: the step failed (whatever made it fail: it ended), or the attempt recorded
+      // what the aborted loads do not explain.
       const own = (): string[] => [
-        ...(failure?.step === true ? [`the step failed first: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`] : []),
+        ...(failure?.step === true ? [`the step failed: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`] : []),
         ...this.unexplained(marks),
       ];
       const notAgain = (found: string[]): Error => {
@@ -467,27 +483,30 @@ export class Page {
     ];
   }
 
-  /** `step`'s outcome, or nothing as soon as the attempt is seen aborted by the environment — checked at each event
-   *  that can show it, so a step that fails because of the abort is not taken for one that failed first (`step` then
-   *  runs on, unawaited, against a page about to be loaded again). */
-  private unlessAborted(step: Promise<unknown>, from: { requests: number; workerErrors: number }, network: { changed(): boolean }): Promise<void> {
+  /** How `step` ended: it succeeded, it failed, or — the attempt seen aborted (checked at each event that can show it,
+   *  and every 100 ms) — it had not ended {@link readySettleMs} later (`step` then runs on, unawaited). */
+  private settled(step: Promise<unknown>, from: { requests: number; workerErrors: number }, network: { changed(): boolean }): Promise<{ kind: "done" } | { kind: "failed"; error: unknown } | { kind: "stuck" }> {
     step.catch(() => { /* awaited below, or abandoned */ });
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const finish = (end: () => void): void => {
-        if (settled) return;
-        settled = true;
+    type Ended = { kind: "done" } | { kind: "failed"; error: unknown } | { kind: "stuck" };
+    return new Promise<Ended>((resolve) => {
+      let over = false;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const finish = (ended: Ended): void => {
+        if (over) return;
+        over = true;
         clearInterval(timer);
+        clearTimeout(deadline);
         this.recorded = undefined;
-        end();
+        resolve(ended);
       };
       const check = (): void => {
-        if (this.abortedBy(from, network.changed()) !== undefined) finish(resolve);
+        if (deadline === undefined && this.abortedBy(from, network.changed()) !== undefined)
+          deadline = setTimeout(() => finish({ kind: "stuck" }), this.readySettleMs);
       };
       // A change of the interfaces alone comes with no event: read it again every 100 ms.
       const timer = setInterval(check, 100);
       this.recorded = check;
-      step.then(() => finish(resolve), (error: unknown) => finish(() => reject(error)));
+      step.then(() => finish({ kind: "done" }), (error: unknown) => finish({ kind: "failed", error }));
       check();
     });
   }
