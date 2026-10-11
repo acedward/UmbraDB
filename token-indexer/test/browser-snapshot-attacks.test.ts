@@ -15,8 +15,8 @@
  *   afterwards are the chain's.
  * - `[[browser.snapshot.start-height]]` — the first height an archive records is the start an import saves: a snapshot
  *   whose archive records no first height, or says it starts below its lowest block (at genesis) or above it, or is
- *   not one chain of canonical blocks from there to its height (a forged block at height 0; a block whose parent is
- *   not the block before it), or whose scan starts below its first block or reaches past its last one, or whose scan
+ *   not one chain of canonical blocks from there to its height (a forged block at height 0; forged blocks sharing one
+ *   hash, each its own parent; a block whose parent is not the block before it), or whose scan starts below its first block or reaches past its last one, or whose scan
  *   cursor names another last block than the archive's at its height, is refused and
  *   nothing changes; an honest one is imported with its first block as the saved start.
  * - `[[browser.snapshot.expansion]]` — rows that unpack to many times the size of the file (blobs of a random kilobyte
@@ -319,6 +319,15 @@ describe("snapshots made to carry more than rows", () => {
     const forged = await call(victim.host, "import", { snapshot: await exportWith(0, U1.from) });
     expect(forged, "a forged block at height 0").toMatchObject({ ok: false, error: { code: "snapshot-refused", message: `corrupt: the snapshot's archive is not one chain of canonical blocks from its first height 0 to ${U1.from + 3}: 5 blocks at 5 heights up to ${U1.from + 3}, where ${U1.from + 4} are due` } });
     await sql`DELETE FROM chain_archive.blocks WHERE height = 0`;
+    // Forged blocks that share one hash, each its own parent (the parent of the first real block), below it.
+    const [first] = await sql<{ parent_hash: Uint8Array }[]>`SELECT parent_hash FROM chain_archive.blocks WHERE height = ${U1.from} AND is_canonical`;
+    for (let h = U1.from - 4; h < U1.from; h++)
+      await sql`INSERT INTO chain_archive.blocks (net, block_hash, height, parent_hash, state_root, extrinsics_root, header_blob_hash, is_canonical, status, finalized)
+        SELECT net, ${first!.parent_hash}, ${h}, ${first!.parent_hash}, state_root, extrinsics_root, header_blob_hash, true, 'canonical', true
+        FROM chain_archive.blocks WHERE height = ${U1.from} AND is_canonical`;
+    const shared = await call(victim.host, "import", { snapshot: await exportWith(U1.from - 4, U1.from) });
+    expect(shared, "forged blocks sharing one hash").toMatchObject({ ok: false, error: { code: "snapshot-refused", message: `corrupt: the snapshot's archive is not one chain of canonical blocks from its first height ${U1.from - 4} to ${U1.from + 3}: its 8 blocks have 5 different hashes` } });
+    await sql`DELETE FROM chain_archive.blocks WHERE height < ${U1.from}`;
     // A block whose parent is not the block before it.
     const [kept] = await sql<{ parent_hash: Uint8Array }[]>`SELECT parent_hash FROM chain_archive.blocks WHERE height = ${U1.from + 2} AND is_canonical`;
     await sql`UPDATE chain_archive.blocks SET parent_hash = decode(repeat('00', 32), 'hex') WHERE height = ${U1.from + 2} AND is_canonical`;

@@ -423,7 +423,8 @@ export async function loadSnapshot(store: Store, manifest: SnapshotManifest, dat
 /**
  * Refuses (`corrupt`) an archive that does not record its first height or records another than its lowest canonical
  * block (this build's sync records it with its first block), one that is not one chain of canonical blocks from there
- * to its height (a height missing or twice, a block above it, a block whose parent is not the block before it), and a
+ * to its height (a height missing or twice, a block above it, two blocks with one hash, a block whose parent is not the
+ * block before it), and a
  * scan whose range leaves the archive's (from below its first block, or a next height past the one after its last) or
  * whose cursor names another last block than the archive's canonical one at its height: an import saves the first height as the start of the configuration that continues it (and every `reset`
  * afterwards starts there), the API reports the scan's range, and the scan continues from its cursor's block, so all of
@@ -437,15 +438,16 @@ async function checkArchiveStart(sql: UmbraDBSql, manifest: SnapshotManifest, ne
   const start = manifest.archive.startHeight;
   if (start === null) throw new SnapshotRefusal("corrupt", `the snapshot's archive does not record its first height (its lowest block is ${lowest})`);
   if (lowest !== start) throw new SnapshotRefusal("corrupt", `the snapshot's archive starts at its lowest block, ${lowest}, but its manifest says ${start}`);
-  // One chain from there to the archive's height: every height once among the canonical blocks, none above, and each
-  // block's parent the canonical block before it.
+  // One chain from there to the archive's height: every height once among the canonical blocks, none above, every
+  // block's hash its own, and each block's parent the canonical block before it.
   const notChain = (d: string) => new SnapshotRefusal("corrupt", `the snapshot's archive is not one chain of canonical blocks from its first height ${start} to ${manifest.archive.height}: ${d}`);
-  const [c] = await sql<{ n: string; heights: string; high: string | null }[]>`
-    SELECT count(*)::text AS n, count(DISTINCT height)::text AS heights, max(height)::text AS high
+  const [c] = await sql<{ n: string; heights: string; hashes: string; high: string | null }[]>`
+    SELECT count(*)::text AS n, count(DISTINCT height)::text AS heights, count(DISTINCT block_hash)::text AS hashes, max(height)::text AS high
     FROM ${sql(ARCHIVE_SCHEMA)}.blocks WHERE net = ${network} AND is_canonical`;
   const due = manifest.archive.height - start + 1;
   if (Number(c!.n) !== due || Number(c!.heights) !== due || Number(c!.high) !== manifest.archive.height)
     throw notChain(`${c!.n} blocks at ${c!.heights} heights up to ${c!.high}, where ${due} are due`);
+  if (Number(c!.hashes) !== due) throw notChain(`its ${due} blocks have ${c!.hashes} different hashes`);
   const [u] = await sql<{ n: string; first: string | null }[]>`
     SELECT count(*)::text AS n, min(b.height)::text AS first FROM ${sql(ARCHIVE_SCHEMA)}.blocks b
     WHERE b.net = ${network} AND b.is_canonical AND b.height > ${start} AND NOT EXISTS (
