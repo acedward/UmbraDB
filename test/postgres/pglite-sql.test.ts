@@ -786,7 +786,9 @@ describe("PGlite client", () => {
           });
         })).rejects.toMatchObject({ code: "PGLITE_SESSION_DEADLOCK" });
         expect(inner).toBe("PGLITE_SESSION_DEADLOCK");
-        expect(Date.now() - started).toBeGreaterThanOrEqual(280);
+        const waited = Date.now() - started;
+        expect(waited).toBeGreaterThanOrEqual(280);
+        expect(waited).toBeLessThan(5 * 300);
         expect(own.isInTransaction()).toBe(false);
         expect([...(await c`SELECT count(*)::int AS n FROM dl`)]).toEqual([{ n: 0 }]);
         // A statement that waits behind it while the lock is free again runs.
