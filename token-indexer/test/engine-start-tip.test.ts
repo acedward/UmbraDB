@@ -284,13 +284,18 @@ describe("indexer engine: start at the finalized tip", () => {
 
     // Following: the tip rises; the reported finalized tip never goes back while stale answers keep coming.
     const tips: number[] = [];
+    const sampleTip = (): void => {
+      const t = telemetry.counters().sync.tip?.height;
+      if (t !== undefined) tips.push(t);
+    };
     let following = true;
     const watch = (async () => {
       while (following) {
-        const t = telemetry.counters().sync.tip?.height;
-        if (t !== undefined) tips.push(t);
+        sampleTip();
         await new Promise((r) => setTimeout(r, 2));
       }
+      // The last sample, taken once the reported tip is known to have reached the chain's tip.
+      sampleTip();
     })();
     for (let h = TIP + 1; h <= U1.to; h += 3) {
       c.setFinalizedHeight(Math.min(h, U1.to));
@@ -298,7 +303,7 @@ describe("indexer engine: start at the finalized tip", () => {
     }
     c.setFinalizedHeight(U1.to);
     await until(async () => (await e.syncCursor())?.height === U1.to, "the archive at the tip");
-    // The batch's event (with the tip it read) comes once its blocks are written.
+    // The batch's event (with the tip it read) comes once its blocks are written: wait (bounded) until it is reported.
     await until(() => telemetry.counters().sync.tip?.height === U1.to, "the reported tip at the chain's tip");
     following = false;
     await watch;
