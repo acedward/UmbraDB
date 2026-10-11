@@ -354,7 +354,12 @@ counts as empty bytes; the range has none) equal the recorded live sync of that 
 the same bytes, on any platform (the whole `dist-browser/` is reproducible): the file is remade with one time as its
 `createdAt`, its tar entries' times and every write time in its rows (the `timestamp` columns, which the digests do not
 read) — `SOURCE_DATE_EPOCH` when set, else the commit's time, else the time the range was recorded — and its rows' gzip
-header without the fields the platform writes (time, extra flags, operating system). A page loads it with
+header without the fields the platform writes (time, extra flags, operating system). The commit shown on the status page
+and written into the manifest is `UMBRADB_APP_COMMIT` when set, else the checkout's `HEAD`, else none, and the build
+prints both and where each came from (`snapshot time … (from …); build commit … (from …)`). A build outside a git
+checkout (a source archive, some CI checkouts) has no commit and takes the recorded range's time, so its bytes differ
+from a checkout's: for a reproducible build anywhere, set both, for example
+`SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) UMBRADB_APP_COMMIT=$(git rev-parse HEAD) npm run build:browser`. A page loads it with
 `window.umbradbEngine.snapshots.published("idx")` (checked against the index) and imports it; with it the explorer
 answers for 714485–715183 with no network. `npm run dev:browser` publishes none.
 

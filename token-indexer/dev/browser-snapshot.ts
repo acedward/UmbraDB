@@ -21,7 +21,9 @@
  *
  *   node --import tsx token-indexer/dev/browser-snapshot.ts [--out dist-browser]
  *
- * The build's commit in the manifest is `UMBRADB_APP_COMMIT`, else `git rev-parse HEAD`, else none.
+ * The build's commit in the manifest is `UMBRADB_APP_COMMIT`, else `git rev-parse HEAD`, else none. The script prints
+ * the time and the commit it used and where each came from: two builds of one source write the same bytes when both
+ * agree (set `SOURCE_DATE_EPOCH` and `UMBRADB_APP_COMMIT` for a build outside a git checkout).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -100,24 +102,29 @@ const fileFetch = (async (input: string | URL | Request) => {
 const PG_EPOCH_MS = Date.UTC(2000, 0, 1);
 
 /**
- * The time of a published snapshot, epoch milliseconds in whole seconds: `SOURCE_DATE_EPOCH` (seconds, the
- * reproducible-builds convention) when set, else the committer time of the checkout's `HEAD`, else the time the
- * recorded ranges were captured (`recordedAt` of the fixtures' manifest).
+ * The time of a published snapshot, epoch milliseconds in whole seconds, and where it comes from: `SOURCE_DATE_EPOCH`
+ * (seconds, the reproducible-builds convention) when set, else the committer time of the checkout's `HEAD`, else the
+ * time the recorded ranges were captured (`recordedAt` of the fixtures' manifest).
  */
-export function publishedTime(): number {
-  const env = process.env.SOURCE_DATE_EPOCH;
-  if (env !== undefined && env !== "") {
-    if (!/^\d{1,12}$/.test(env)) throw new Error(`SOURCE_DATE_EPOCH must be whole seconds, got ${JSON.stringify(env)}`);
-    return Number(env) * 1000;
+export function publishedTimeOf(env: NodeJS.ProcessEnv = process.env): { at: number; from: "SOURCE_DATE_EPOCH" | "the commit's time" | "the recorded range's time" } {
+  const given = env.SOURCE_DATE_EPOCH;
+  if (given !== undefined && given !== "") {
+    if (!/^\d{1,12}$/.test(given)) throw new Error(`SOURCE_DATE_EPOCH must be whole seconds, got ${JSON.stringify(given)}`);
+    return { at: Number(given) * 1000, from: "SOURCE_DATE_EPOCH" };
   }
   try {
     const seconds = execFileSync("git", ["log", "-1", "--format=%ct"], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    if (/^\d+$/.test(seconds)) return Number(seconds) * 1000;
+    if (/^\d+$/.test(seconds)) return { at: Number(seconds) * 1000, from: "the commit's time" };
   } catch {
     // not a git checkout
   }
   const { recordedAt } = JSON.parse(readFileSync(join(ROOT, "test/integration/fixtures/stagenet-archive/manifest.json"), "utf8")) as { recordedAt: string };
-  return Math.floor(Date.parse(recordedAt) / 1000) * 1000;
+  return { at: Math.floor(Date.parse(recordedAt) / 1000) * 1000, from: "the recorded range's time" };
+}
+
+/** The time of a published snapshot ({@link publishedTimeOf}). */
+export function publishedTime(): number {
+  return publishedTimeOf().at;
 }
 
 /** For each table of a snapshot that has wall-clock columns, their positions in the manifest's column list; the column
@@ -213,14 +220,22 @@ function fixedGzipHeader(gzip: Uint8Array): Uint8Array {
   return out;
 }
 
-function appCommit(): string | null {
-  const env = process.env.UMBRADB_APP_COMMIT;
-  if (env !== undefined && env !== "") return env;
+/** The build's commit in the manifest, and where it comes from: `UMBRADB_APP_COMMIT`, else `git rev-parse HEAD`, else
+ *  none. */
+export function appCommitOf(env: NodeJS.ProcessEnv = process.env): { commit: string | null; from: "UMBRADB_APP_COMMIT" | "git" | "none" } {
+  const given = env.UMBRADB_APP_COMMIT;
+  if (given !== undefined && given !== "") return { commit: given, from: "UMBRADB_APP_COMMIT" };
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (sha !== "") return { commit: sha, from: "git" };
   } catch {
-    return null;
+    // not a git checkout
   }
+  return { commit: null, from: "none" };
+}
+
+function appCommit(): string | null {
+  return appCommitOf().commit;
 }
 
 /** The archive digest, the range-tables digest and the NULL `bytea[]` elements of a snapshot file's store (its rows
@@ -317,6 +332,10 @@ export async function writePublishedSnapshots(out: string, range: PublishedRange
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({ options: { out: { type: "string", default: join(ROOT, "dist-browser") } } });
   const t0 = performance.now();
+  // What the snapshot's bytes depend on besides the range and the build: printed so two builds can be compared.
+  const time = publishedTimeOf();
+  const commit = appCommitOf();
+  console.log(`snapshot time ${new Date(time.at).toISOString()} (from ${time.from}); build commit ${commit.commit ?? "none"} (from ${commit.from})`);
   const index = await writePublishedSnapshots(resolve(values.out!));
   for (const s of index.snapshots)
     console.log(`snapshots/${s.file}: ${s.bytes} bytes, sha256 ${s.sha256}; ${s.manifest.network} ${s.manifest.archive.startHeight}–${s.manifest.archive.height}; archive ${s.digests.archive}, tables ${s.digests.tables}, NULL bytea[] elements ${Object.values(s.digests.nullElements).reduce((n, x) => n + x.count, 0)} (${Math.round(performance.now() - t0)} ms)`);

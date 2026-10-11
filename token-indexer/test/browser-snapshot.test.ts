@@ -74,7 +74,7 @@ import {
 import { exportSnapshot, loadSnapshot, openFinishingImport, prepareImport, readStoreFacts } from "../browser/snapshot-store.ts";
 import { migrateStore, openStore } from "../browser/store.ts";
 import { loadTape } from "../browser/tapes.ts";
-import { makePublishedSnapshot, publishedTime, recordedRange, snapshotAt, snapshotDifferences, snapshotDigests, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
+import { appCommitOf, makePublishedSnapshot, publishedTime, publishedTimeOf, recordedRange, snapshotAt, snapshotDifferences, snapshotDigests, writePublishedSnapshots } from "../dev/browser-snapshot.ts";
 import { compareNullElements, noNullElements } from "../engine/range-tables.ts";
 import { nodeStoreFiles } from "./helpers/worker-host.ts";
 
@@ -626,6 +626,12 @@ describe("browser engine snapshots", () => {
     expect(Buffer.from(a).equals(Buffer.from(b)), "remade at one time, they are one file").toBe(true);
     expect(await snapshotAt(a, at)).toEqual(a);
     await expect(snapshotAt(first, at + 1)).rejects.toThrow(RangeError);
+    // Where the build's time and commit come from (the build prints both).
+    expect(publishedTimeOf({ SOURCE_DATE_EPOCH: "1767323045" })).toEqual({ at: 1_767_323_045_000, from: "SOURCE_DATE_EPOCH" });
+    expect(() => publishedTimeOf({ SOURCE_DATE_EPOCH: "soon" })).toThrow(/whole seconds/u);
+    expect(["the commit's time", "the recorded range's time"]).toContain(publishedTimeOf({}).from);
+    expect(appCommitOf({ UMBRADB_APP_COMMIT: "c0ffee" })).toEqual({ commit: "c0ffee", from: "UMBRADB_APP_COMMIT" });
+    expect(["git", "none"]).toContain(appCommitOf({}).from);
 
     const { manifest, data } = decodeSnapshotFile(a);
     expect(manifest.createdAt).toBe("2026-01-02T03:04:05.000Z");
