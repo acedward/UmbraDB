@@ -80,21 +80,24 @@ and come back at the last full block.
 | **Total without the tapes and the snapshot** (43 files) | **28,584,323** | **10,815,589** | **8,335,840** |
 | The recorded tapes (IDX 1,010,756; U1 48,947; already gzip; fetched only for a replay) | 1,059,703 | 1,055,371 | 1,051,290 |
 | Total with the tapes | 29,644,026 | 11,870,960 | 9,387,130 |
-| The published snapshot (`snapshots/`: IDX, 2,134,016 — its manifest and the rows of every table, already gzip — and its index, 15,059; fetched only when imported; built at commit `1e1da8e`) | 2,149,075 | 2,122,005 | 2,109,076 |
-| **Total with the tapes and the snapshot** (the snapshot at `1e1da8e`, the other files at `b753c70`) | **31,793,101** | **13,992,965** | **11,496,206** |
+| The published snapshot (`snapshots/`: IDX, 2,123,776 — its manifest and the rows of every table, already gzip — and its index, 15,269; fetched only when imported; built at commit `84bdc7b`) | 2,139,045 | 2,111,820 | 2,099,760 |
+| **Total with the tapes and the snapshot** (the snapshot at `84bdc7b`, the other files at `b753c70`) | **31,783,071** | **13,982,780** | **11,486,890** |
 
 A first visit downloads about the total without the tapes and the snapshot (the explorer does not load the other two
 pages' few kilobytes): about 8.3 MB brotli or 10.8 MB gzip, which at 50 Mbit/s adds about 1.3 s or 1.7 s (10 Mbit/s:
 6.7 s or 8.7 s; size ÷ bandwidth, computed, not measured) before the cold start above. The build took 5.2 s, the
 snapshot generator included.
 
-The published snapshot (`../dev/browser-snapshot.ts`, measured at commit `1e1da8e` with `measure-browser.ts sizes`, the
-same compression, load 7.8) is the snapshot file an export writes: a tar of its manifest (11,221 bytes: the tables,
-their columns and row counts) and the gzip of the rows of every table of both schemas (2,120,357 bytes), 2,134,016 bytes
-for the 699 blocks, so a host's compression gains almost nothing on it; `snapshots/index.json` lists it with its
-manifest. At that commit the whole `npm run build:browser` took 6.2 s (load 6.8), 5.5 s of it the snapshot generator,
-which replays the range in Node, exports, loads the file's rows into a new store and checks its digests against the
-recorded live sync.
+The published snapshot (`../dev/browser-snapshot.ts`, measured at commit `84bdc7b` with `npm run build:browser` then
+`measure-browser.ts sizes`, the same compression, load 4.8, in the dev container: a build tree without git, so the
+build printed `snapshot time 2026-10-03T02:45:57.000Z (from the recorded range's time); build commit none`) is the
+snapshot file an export writes, remade with that one time and a fixed gzip header: a tar of its manifest (11,221
+bytes: the tables, their columns and row counts) and the gzip of the rows of every table of both schemas (2,110,001
+bytes), 2,123,776 bytes for the 699 blocks, so a host's compression gains almost nothing on it; `snapshots/index.json`
+lists it with its manifest and digests. Any build of that commit with the same time and commit writes the same bytes
+(SHA-256 `66536c31…`; set `SOURCE_DATE_EPOCH` and `UMBRADB_APP_COMMIT`, see the README). The whole `npm run
+build:browser` took 7 s, 5.7 s of it the snapshot generator, which replays the range in Node, exports, remakes the
+file, loads its rows into a new store and checks its digests against the recorded live sync.
 
 ## Live sync (paced)
 
