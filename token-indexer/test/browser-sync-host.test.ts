@@ -336,7 +336,9 @@ describe("browser engine host: sync", () => {
       storeBytes: async () => 42_000_000,
     };
     const h = newHost({ storage: env, quota: { checkEveryMs: 0, recheckMs: 50, storeEveryMs: 0 } });
-    const config = { source: { kind: "tape", range: "u1" }, startHeight: U1.from, sync: { maxBlocks: 2, idleMs: 100 }, scan: { idleMs: 100 } };
+    // A finalized tip that starts 4 blocks in and rises one block every 200 ms: the range cannot be finished before the
+    // pause, however fast this machine syncs the blocks it has.
+    const config = { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 4, advance: { everyMs: 200, by: 1 } }, startHeight: U1.from, sync: { maxBlocks: 2, idleMs: 100 }, scan: { idleMs: 100 } };
     await result(h, "start", { config });
     await until(h, "a few blocks", (s) => (s.cursors?.sync?.height ?? 0) >= U1.from + 3);
     expect((await result<HostStatus>(h, "status")).storage).toMatchObject({ usageBytes: 100_000_000, quotaBytes: quota, pauseAtBytes: pauseAt, paused: false, pausedReason: null, persisted: false });
