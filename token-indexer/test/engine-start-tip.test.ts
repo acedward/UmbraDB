@@ -15,7 +15,9 @@
  *   times, takes the highest answer, and reads again while even that is far below the indexer's tip (an `error` event
  *   says so), so the archive starts at the true finalized tip, never at the stale height; while it follows, the
  *   finalized tip the telemetry reports never goes back; block hashes the stale backend answers `null` for are asked
- *   again; every height is archived once.
+ *   again; every height is archived once. With an indexer 588 blocks ahead of the node's finality, a first reading of
+ *   honest answers and then two readings of stale ones: the highest answer of all the readings is the start, never a
+ *   stale height.
  * - `[[engine.start-tip.follows]]` — the archive and scan heights follow the finalized tip for 10 minutes, in simulated
  *   time: the recorded IDX range with a finalized tip that rises one block every 6 s of the manual clock (Midnight's
  *   block time; the live Stagenet runs saw about one every 8.7 s, so this is the faster case), the engine with the browser's settings (20 heights per sync batch, 10 blocks per scan step) and the
@@ -63,9 +65,9 @@ function switchedChain(finalizedHeight: number) {
  * The fake chain behind a load-balanced node endpoint, one of whose backends is 38,000 blocks behind the chain: the
  * n-th finalized head it answers (from 1) comes from that backend when `stale(n)` says so (its head's header has the
  * stale height), and every third block hash it answers comes from it too (it has no block at those heights: null). The
- * indexer is current. Records the requests.
+ * indexer's tip is `indexerAhead` blocks above the node's finalized height (0: the same). Records the requests.
  */
-function staleBackendChain(finalizedHeight: number, stale: (n: number) => boolean) {
+function staleBackendChain(finalizedHeight: number, stale: (n: number) => boolean, indexerAhead = 0) {
   const c = fakeChainFetch(loadRangeTape("u1"), { finalizedHeight });
   const STALE_HASH = `0x${"5a".repeat(32)}`;
   const state = { heads: 0, hashes: 0, requests: [] as Array<{ op: string; height: number | null }> };
@@ -81,6 +83,9 @@ function staleBackendChain(finalizedHeight: number, stale: (n: number) => boolea
       return answer(body.id, { parentHash: STALE_HASH, number: `0x${h.toString(16)}`, stateRoot: STALE_HASH, extrinsicsRoot: STALE_HASH, digest: { logs: [] } });
     }
     if (op === "chain_getBlockHash" && ++state.hashes % 3 === 0) return answer(body.id, null);
+    const query = (body as { query?: unknown }).query;
+    if (indexerAhead > 0 && op === "graphql" && height === null && typeof query === "string" && /^\{\s*block\s*\{\s*height\s*\}\s*\}$/.test(query.trim()))
+      return new Response(JSON.stringify({ data: { block: { height: c.finalizedHeight() + indexerAhead } } }), { headers: { "content-type": "application/json" } });
     return c.fetch(input, init);
   };
   return { c, state, fetchImpl };
@@ -312,5 +317,37 @@ describe("indexer engine: start at the finalized tip", () => {
     const [blocks] = await sql<{ n: number; lo: string; hi: string }[]>`
       SELECT count(*)::int AS n, min(height)::text AS lo, max(height)::text AS hi FROM ${sql("stale_arch")}.blocks`;
     expect(blocks).toEqual({ n: U1.to - TIP + 1, lo: String(TIP), hi: String(U1.to) });
+  }, 120_000);
+
+  it("[[engine.start-tip.stale-node]] an indexer 588 blocks ahead of the node's finality, a first reading of honest answers, then two readings from the backend 38,000 blocks behind: the start keeps the highest answer of every reading, so the archive starts at the node's finalized height, never at the stale one", async () => {
+    const sql = database.client("lag_mip");
+    clients.push(sql);
+    const TIP = 715412;
+    const AHEAD = 588;
+    // Answers 1-3 honest (588 below the indexer: read again), 4-9 stale; the third reading is taken as it is.
+    const { c, state, fetchImpl } = staleBackendChain(TIP, (n) => n > TIP_SAMPLES && n <= 3 * TIP_SAMPLES, AHEAD);
+    const clock = new ManualClock();
+    const events: EngineEvent[] = [];
+    const e = engine(sql, "lag_mip", "lag_arch", {
+      fetch: fetchImpl, clock, random: () => 0.5, onEvent: (x) => events.push(x),
+      sync: { nodeUrl: c.nodeUrl, indexerUrl: c.indexerUrl, startHeight: "tip", maxBlocks: 3, idleMs: 1_000, backoff: { baseDelayMs: 1_000, maxDelayMs: 4_000, maxAttempts: 8, jitter: false } },
+      scan: { batch: 5, idleMs: 1_000 },
+    });
+    const undrive = clock.drive();
+    await e.start();
+    await until(() => events.some((x) => x.source === "sync" && x.event === "start"), "the sync's start");
+    const start = events.find((x) => x.source === "sync" && x.event === "start")!;
+    const errors = events.slice(0, events.indexOf(start)).filter((x) => x.source === "sync" && x.event === "error").map((x) => String(x.fields.message));
+    expect(errors).toEqual([
+      `the node's finalized height ${TIP} (the highest of ${TIP_SAMPLES} answers) is ${AHEAD} blocks below the indexer's tip ${TIP + AHEAD}: the node answered from a backend behind the chain; asked again`,
+      `the node's finalized height ${TIP} (the highest of ${2 * TIP_SAMPLES} answers) is ${AHEAD} blocks below the indexer's tip ${TIP + AHEAD}: the node answered from a backend behind the chain; asked again`,
+    ]);
+    expect(state.heads).toBeGreaterThanOrEqual(3 * TIP_SAMPLES);
+    expect(start.fields).toMatchObject({ from: TIP, cursor: null });
+    await until(async () => ((await e.syncCursor())?.height ?? 0) === TIP, "the archive at the node's finalized height");
+    await e.stop();
+    undrive();
+    const asked = state.requests.filter((r) => r.op === "chain_getBlockHash").map((r) => r.height!);
+    expect(Math.min(...asked)).toBe(TIP);
   }, 120_000);
 });

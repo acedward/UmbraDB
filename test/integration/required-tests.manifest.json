@@ -1855,7 +1855,7 @@
     {
       "id": "engine.start-tip.stale-node",
       "file": "token-indexer/test/engine-start-tip.test.ts",
-      "description": "a node endpoint with a backend 38,000 blocks behind (one answer in three; every answer of the first reading): the archive starts at the true finalized tip, never at the stale height; while it follows, the finalized tip it reports never goes back, and block hashes the stale backend cannot give are asked again, every height archived once"
+      "description": "a node endpoint with a backend 38,000 blocks behind (one answer in three; every answer of the first reading): the archive starts at the true finalized tip, never at the stale height; while it follows, the finalized tip it reports never goes back, and block hashes the stale backend cannot give are asked again, every height archived once; with an indexer 588 blocks ahead of the node's finality, a reading of honest answers and then two of stale ones: the start is the highest answer of every reading, never the stale height"
     },
     {
       "id": "browser.host.storage-reading",
