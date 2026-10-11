@@ -163,7 +163,8 @@ RPC** and **Database** — and a link to the system status page (`system.html`).
     endpoint the worker as a whole starts one request there every 250 ms, whichever part sends it, unless a `start`
     sets `sync.minIntervalMs`: that explicit spacing is the sync's own, outside the queue), and starts its 20 s
     timeout, Node's, only then; at most 8 of the module's indexer requests wait in the queue or are in flight at once
-    (the others wait in the module), so a burst of calls never fills the queue ahead of the sync; a `429` to the module
+    (in flight until the answer's body is read; the others wait in the module), so a burst of calls never fills the
+    queue ahead of the sync; a `429` to the module
     holds the queue for its `Retry-After` (1 s without one, 60 s at most) and is answered `-32603`, as Node answers it;
     a caller that stops leaves its place at once: the sync's waits end with its run (a stop, a range, a reset, an
     import), the module's when it is switched off or closed, with the requests in flight). A method that

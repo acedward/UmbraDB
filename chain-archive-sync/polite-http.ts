@@ -70,10 +70,27 @@ export function unlessAborted(wait: Promise<void>, signal: AbortSignal | undefin
   });
 }
 
+/** Sleeps `ms`; a signal that ends clears the timer at once (so it never keeps a process up) and ends the sleep. */
+function sleepUnlessAborted(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted === true) return resolve();
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /**
  * Spaces request starts at least `minIntervalMs` apart, across every concurrent caller of one
  * client (each call reserves the next free slot synchronously, then waits for it). `0` disables it.
- * A caller's signal ends its wait at once (its slot stays reserved, so the spacing never shrinks).
+ * A caller's signal ends its wait at once and clears its timer (its slot stays reserved, so the spacing never
+ * shrinks).
  */
 export class RequestPacer implements Pacer {
   private nextSlot = 0;
@@ -81,7 +98,8 @@ export class RequestPacer implements Pacer {
   constructor(
     readonly minIntervalMs: number,
     private readonly now: () => number = () => Date.now(),
-    private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+    /** Sleeps `ms`, ending early (its timer cleared) when `signal` ends. */
+    private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void> = sleepUnlessAborted,
   ) {
     if (!Number.isFinite(minIntervalMs) || minIntervalMs < 0) {
       throw new RangeError(`minIntervalMs must be a non-negative number, got ${minIntervalMs}`);
@@ -94,6 +112,6 @@ export class RequestPacer implements Pacer {
     const t = this.now();
     const slot = Math.max(t, this.nextSlot);
     this.nextSlot = slot + this.minIntervalMs;
-    if (slot > t) await unlessAborted(this.sleep(slot - t), signal);
+    if (slot > t) await unlessAborted(this.sleep(slot - t, signal), signal);
   }
 }

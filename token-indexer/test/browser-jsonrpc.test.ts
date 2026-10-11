@@ -17,13 +17,17 @@
  *   and the next caller moves up; closing it ends every wait.
  * - `[[browser.pacing.hold]]` — the pacing queue on a test clock: a hold lasts at most 60 s whatever an endpoint asks;
  *   a wait its caller cancels during a hold (the archive sync's `Pacer.wait` with its run's signal) leaves at once and
- *   never starts; the other callers start when the hold ends; an already-ended signal is refused at once.
+ *   never starts; the other callers start when the hold ends; an already-ended signal is refused at once; the last
+ *   waiter cancelled leaves no timer behind.
  * - `[[browser.jsonrpc.burst]]` — a burst of requests whose indexer calls wait far longer than the indexer timeout for
  *   their pacing slots (8 batches of 8 at 30 ms apart, against a 200 ms timeout): every answer is Node's, every indexer
  *   request starts with a live timeout, the starts the interval apart; a request beyond the module's 8 in flight is
  *   refused `busy` at once, and accepted again once one is answered.
  * - `[[browser.jsonrpc.stop-cancels]]` — closing the module while its requests wait for pacing slots ends them at once
  *   (refused `stopped`, their indexer calls never made) and closes its database without waiting for their slots.
+ * - `[[browser.jsonrpc.slots-bodies]]` — an indexer request of the module keeps its slot until its answer's body is
+ *   read: 8 batches of 8 calls whose answers' bodies come slowly have at most 8 bodies open at once, and every call is
+ *   answered as Node answers it; a body never read (the module closed) gives its slot back.
  * - `[[browser.jsonrpc.model]]` — the tab's rows are the registry's methods, each once (served ones with their source,
  *   summary, parameter kinds and example, not-implemented ones with their classification), and the Node-only methods,
  *   marked and not callable, grouped by where their answer comes from in this browser (indexer, configuration and
@@ -89,7 +93,7 @@ import { MethodRegistry } from "../../evm-rpc/registry.js";
 import { createRpcServer } from "../../evm-rpc/server.js";
 import { differentialCases } from "../../evm-rpc/test/differential-cases.js";
 import { handlerAnswer, loadRecording, sendToServer } from "../../evm-rpc/test/node-answers.js";
-import { BLOCK_HASH, HEIGHT, recordedIndexerFetch, TX_HASH } from "../../evm-rpc/test/recorded-indexer.js";
+import { BLOCK_HASH, HEIGHT, recordedIndexerAnswer, recordedIndexerFetch, TX_HASH } from "../../evm-rpc/test/recorded-indexer.js";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { METHOD_NOTES, NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
 import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
@@ -129,7 +133,7 @@ import {
   withHistory,
 } from "../browser/jsonrpc-model.ts";
 import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
-import { JSONRPC_CHAIN_ID, JSONRPC_MAX_REQUESTS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, openEvmRpcDatabase, startJsonRpcModule } from "../browser/jsonrpc-module.ts";
+import { JSONRPC_CHAIN_ID, JSONRPC_INDEXER_SLOTS, JSONRPC_MAX_REQUESTS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, openEvmRpcDatabase, startJsonRpcModule } from "../browser/jsonrpc-module.ts";
 import { MAX_HOLD_MS, PacingQueue, type PacingClock, QueueFullError } from "../browser/pacing-queue.ts";
 import type { WorkerHost } from "../browser/host.ts";
 import { type ApiResult, type ExportResult, type HostStatus, JSONRPC_MAX_BODY_CHARS, type JsonRpcStateResult, JsonRpcStateResultSchema, parseRequest, PROTOCOL_VERSION, type Response as HostResponse, type StartConfig } from "../browser/protocol.ts";
@@ -358,6 +362,18 @@ describe("the browser engine's JSON RPC module", () => {
     expect(q.state().heldForMs).toBe(60_000);
     // A caller whose signal has already ended is refused without waiting.
     await expect(q.wait(AbortSignal.abort(new Error("gone")))).rejects.toThrow("gone");
+    // The last waiter cancelled: no timer is left behind (a Node process is not kept up by it); a later caller still
+    // waits for the hold.
+    const alone = new AbortController();
+    const lone = q.wait(alone.signal).catch((e: unknown) => (e as Error).message);
+    await settle();
+    expect(t.timers.size).toBe(1);
+    alone.abort(new Error("stopped"));
+    expect(await lone).toBe("stopped");
+    expect(t.timers.size).toBe(0);
+    const later = q.wait().then(() => t.now);
+    await advance(60_000);
+    expect(await later).toBe(120_000);
     q.close(new Error("closed"));
   });
 
@@ -425,6 +441,71 @@ describe("the browser engine's JSON RPC module", () => {
     await expect(sql!`SELECT 1`).rejects.toThrow();
     await expect(module.handle(CHAIN_ID)).rejects.toMatchObject({ code: "stopped" });
   }, 30_000);
+
+  it("[[browser.jsonrpc.slots-bodies]] an indexer request keeps its slot until its answer's body is read: with answers whose bodies come slowly, at most 8 are read at once; every call answered as Node", async () => {
+    let open = 0;
+    let most = 0;
+    let started = 0;
+    const pending: Array<() => void> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const answer = recordedIndexerAnswer(await new Request(input, init).text());
+      started++;
+      open++;
+      most = Math.max(most, open);
+      // The headers at once; the body only when the test lets it come.
+      let finished = false;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        open--;
+      };
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          pending.push(() => {
+            controller.enqueue(new TextEncoder().encode(answer.body));
+            controller.close();
+            finish();
+          });
+          init?.signal?.addEventListener("abort", () => {
+            finish();
+            controller.error(init.signal!.reason);
+          }, { once: true });
+        },
+        cancel: () => finish(),
+      });
+      return new Response(body, { status: answer.status, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const module = await startJsonRpcModule({ indexerUrl: INDEXER, clientVersion: CLIENT_VERSION, fetch: fetchImpl });
+    try {
+      const batch = (n: number): string => JSON.stringify(Array.from({ length: 8 }, (_, i) => ({ jsonrpc: "2.0", id: n * 8 + i, method: "eth_blockNumber" })));
+      const answers = Promise.all(Array.from({ length: JSONRPC_MAX_REQUESTS }, (_, n) => module.handle(batch(n))));
+      let settled = false;
+      answers.then(() => { settled = true; }, () => { settled = true; });
+      // Let the bodies come one by one, slowly, until every call is answered.
+      for (const end = Date.now() + 20_000; !settled; ) {
+        if (Date.now() > end) throw new Error(`timed out: ${started} requests started, ${open} bodies open`);
+        await new Promise((r) => setTimeout(r, 5));
+        expect(open).toBeLessThanOrEqual(JSONRPC_INDEXER_SLOTS);
+        pending.shift()?.();
+      }
+      expect(most).toBe(JSONRPC_INDEXER_SLOTS);
+      expect(started).toBe(JSONRPC_MAX_REQUESTS * 8);
+      for (const [n, a] of (await answers).entries()) {
+        expect({ status: a.status, headers: Object.entries(a.headers), body: a.body }, `batch ${n}`).toEqual(await viaHttp(port, batch(n)));
+      }
+      // A body never read (the request's failure, the module's close) gives its slot back too.
+      const hung = module.handle(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_blockNumber" })).then(() => "answered", (e: unknown) => (e as Error).message);
+      for (const end = Date.now() + 5_000; open === 0; ) {
+        if (Date.now() > end) throw new Error("the request never started");
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      await module.close();
+      expect(await hung).toBe("the JSON RPC module is stopped");
+      expect(open).toBe(0);
+    } finally {
+      await module.close();
+    }
+  }, 60_000);
 
   it("[[browser.jsonrpc.model]] the rows are the registry's methods and the Node-only ones, grouped by where their answer comes from; requests and answers as text", () => {
     expect(registryMethods()).toEqual(registry.listMethods());

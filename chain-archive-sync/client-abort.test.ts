@@ -6,8 +6,13 @@
  *   that would hold it for ten minutes) passes the signal to the pacer and ends at once when the signal ends, its
  *   request never made; a request in flight ends at once, long before its timeout; a call after the stop makes no
  *   request; a client's own pacer (`RequestPacer`) stops waiting when the signal ends.
+ * - `[[archive.pacer.timers]]` — a `RequestPacer` wait ended by its signal leaves no timer behind (its slot stays
+ *   reserved: the next wait is still spaced), so a Node process whose sync stops exits at once: a child process that
+ *   reserves a slot a minute ahead and stops ends within seconds.
  */
-import { describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it, vi } from "vitest";
 import { IndexerClient } from "./indexer-client.js";
 import { NodeRpcClient } from "./node-rpc-client.js";
 import { type Pacer, RequestPacer } from "./polite-http.js";
@@ -92,4 +97,45 @@ describe("the node and indexer clients' stop signal", () => {
     expect(performance.now() - t2).toBeLessThan(200);
     await expect(own.wait(AbortSignal.abort(new Error("gone")))).rejects.toThrow("gone");
   });
+
+  it("[[archive.pacer.timers]] a pacer wait ended by its signal leaves no timer behind and keeps its slot reserved; a process that stops its waits exits at once", async () => {
+    vi.useFakeTimers();
+    try {
+      const pacer = new RequestPacer(60_000);
+      await pacer.wait();
+      expect(vi.getTimerCount()).toBe(0);
+      const stop = new AbortController();
+      const waiting = pacer.wait(stop.signal).then(() => "admitted", (e: unknown) => (e as Error).message);
+      expect(vi.getTimerCount()).toBe(1);
+      stop.abort(new Error("stopped"));
+      expect(await waiting).toBe("stopped");
+      expect(vi.getTimerCount()).toBe(0);
+      // The cancelled wait's slot stays reserved: the next wait is a slot later still.
+      const t0 = Date.now();
+      let admittedAt = 0;
+      const next = pacer.wait().then(() => { admittedAt = Date.now(); });
+      await vi.advanceTimersByTimeAsync(120_000);
+      await next;
+      expect(admittedAt - t0).toBe(120_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // A real process: a slot reserved a minute ahead, its wait stopped, and nothing else to do: it exits at once.
+    const module = fileURLToPath(new URL("./polite-http.ts", import.meta.url));
+    const script = `const { RequestPacer } = await import(${JSON.stringify(module)});
+const pacer = new RequestPacer(60_000);
+await pacer.wait();
+const stop = new AbortController();
+const waiting = pacer.wait(stop.signal).catch((e) => e.message);
+stop.abort(new Error("stopped"));
+console.log(await waiting);`;
+    const t1 = performance.now();
+    const out = await new Promise<string>((resolve, reject) => {
+      execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { timeout: 30_000 }, (error, stdout) => (error === null ? resolve(stdout) : reject(error)));
+    });
+    expect(out.trim()).toBe("stopped");
+    expect(performance.now() - t1).toBeLessThan(15_000);
+  }, 60_000);
 });
