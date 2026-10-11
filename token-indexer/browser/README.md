@@ -257,7 +257,10 @@ The worker boots as soon as it loads, in phases posted as `boot` notices and rep
   - a store another PGlite version wrote is **refused unopened**: the boot ends `failed` with `storeProblem: "version"`
     and "reset it (its data is dropped and synced again) or load a snapshot made by this build";
   - an identity file that cannot be read (or is not an identity) is reported the same way (`storeProblem:
-    "unopenable"`): which PGlite wrote the store is unknown, so it is not opened;
+    "unopenable"`): which PGlite wrote the store is unknown, so it is not opened; an empty one is not that, but a file
+    whose first write never completed (it is created empty before its content, which its writable stream commits only
+    when it closes: a page navigated away while its first boot marked the store "creating" leaves it so), read as
+    missing;
   - a store marked "creating" that does not open is one whose **creation was interrupted** (a worker that ends while
     PGlite creates a store leaves files PGlite cannot open again: it then needs more pool files than a reopened store
     gets): its files are removed and the store is created again, with a warning (nothing was stored yet);

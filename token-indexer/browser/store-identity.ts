@@ -15,8 +15,11 @@
  *   PGlite cannot open it: a worker that ended while PGlite created the database leaves files PGlite cannot open, and
  *   nothing was stored yet. Any other store that fails to open is reported, and the user decides.
  *
- * A file that is missing reads as absent; a file that cannot be read, is not JSON or is not an identity reads as
- * unreadable (reported, never taken as absent). Tests and `memory://` stores keep it in memory.
+ * A file that is missing reads as absent, and so does an empty one: the file is created empty before its first content,
+ * which a writable stream commits only when it closes, so a worker that ended during the first write (a page navigated
+ * away while its first boot marked the store "creating") leaves it empty, with nothing ever written. A file that cannot
+ * be read, is not JSON or is not an identity reads as unreadable (reported, never taken as absent). Tests and
+ * `memory://` stores keep it in memory.
  */
 import { z } from "zod";
 
@@ -101,6 +104,7 @@ export function opfsStoreIdentity(dataDir: string, storage: { getDirectory?: () 
         if (isNotFound(e)) return { kind: "absent" };
         return { kind: "unreadable", error: messageOf(e) };
       }
+      if (text === "") return { kind: "absent" };
       try {
         return identityStateOf(JSON.parse(text));
       } catch {

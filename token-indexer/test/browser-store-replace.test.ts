@@ -424,7 +424,7 @@ describe("replacing the browser engine's store", () => {
     expect((await call(l.host, "reset")).ok).toBe(false);
   }, 300_000);
 
-  it("[[browser.host.store-identity-states]] a boot that cannot save the identity fails; an unreadable identity is reported and its store neither opened nor removed; a store with files but no identity is reported; one marked creating is created again; a new store is marked creating first; the OPFS file's states", async () => {
+  it("[[browser.host.store-identity-states]] a boot that cannot save the identity fails; an unreadable identity is reported and its store neither opened nor removed; a store with files but no identity is reported; one marked creating is created again; a new store is marked creating first; the OPFS file's states, an empty file read as absent (its first write never completed) and the store then created", async () => {
     const events: string[] = [];
     const recording = (base: StoreIdentityFile, over: Partial<StoreIdentityFile> = {}): StoreIdentityFile => ({
       ...base,
@@ -501,11 +501,32 @@ describe("replacing the browser engine's store", () => {
     });
     const read = (content: string | Error | undefined) => opfsStoreIdentity("opfs-ahp://umbradb-stagenet", fake(content)).read();
     expect(await read(undefined)).toEqual({ kind: "absent" });
+    expect(await read("")).toEqual({ kind: "absent" });
     expect(await read("{")).toEqual({ kind: "unreadable", error: "the file is not JSON" });
     expect(await read(JSON.stringify({ format: 1, pglite: 5 }))).toEqual({ kind: "unreadable", error: "the file is not a store identity" });
     expect(await read(Object.assign(new Error("could not read"), { name: "NotReadableError" }))).toEqual({ kind: "unreadable", error: "could not read" });
     expect(await read(JSON.stringify({ format: 1, creating: true }))).toEqual({ kind: "creating" });
     expect(await read(JSON.stringify({ format: 1, pglite: "0.5.8", postgres: "18.3" }))).toEqual({ kind: "identity", identity: { format: 1, pglite: "0.5.8", postgres: "18.3" } });
+
+    // An identity file left empty (a worker that ended during its first write; a writable stream commits its content
+    // only when it closes): nothing was ever written, the boot creates the store and saves the identity.
+    {
+      let content = "";
+      const opfs = {
+        getDirectory: async () => ({
+          getFileHandle: async () => ({
+            getFile: async () => ({ text: async () => content }),
+            createWritable: async () => {
+              let next = "";
+              return { write: async (x: string) => { next += x; }, close: async () => { content = next; } };
+            },
+          }),
+        }) as unknown as FileSystemDirectoryHandle,
+      };
+      const t = host({ storeIdentity: opfsStoreIdentity("opfs-ahp://umbradb-stagenet", opfs) });
+      expect(await t.host.boot()).toMatchObject({ phase: "ready", storeProblem: null });
+      expect(JSON.parse(content)).toMatchObject({ format: 1, pglite: expect.any(String), postgres: expect.any(String) });
+    }
   }, 300_000);
 
   it("[[browser.host.range-saved-first]] range saves the new range before it replaces the store: a failed save changes nothing, and a worker that ends during the replacement leaves the new range saved for the next boot", async () => {
