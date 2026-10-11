@@ -685,7 +685,8 @@ describe("system snapshot schema and redaction", () => {
     s.sync.lastError = { message: huge, at: 1 };
     s.logs = [{ seq: 0, at: 1, level: "error", source: "sync", text: huge }];
     const r = redactSnapshot(s);
-    expect(r.sync.lastError!.message).toMatch(/^RPC error: token=\[redacted\]… \[\d+ more characters\]$/u);
+    // No whitespace or quote in the backslashes: the text is cut before the last one there is, after "RPC error:".
+    expect(r.sync.lastError!.message).toMatch(/^RPC error:… \[\d+ more characters\]$/u);
     expect(r.logs[0]!.text.length).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
     expect(() => JSON.parse(diagnosticsJson(s))).not.toThrow();
     // Any long text: redacted whole, then cut, saying how many characters of the redacted text were left out; what is
@@ -852,7 +853,7 @@ describe("system snapshot schema and redaction", () => {
     }
   });
 
-  it("[[engine.telemetry.redaction-cut-secrets]] a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads, show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark", () => {
+  it("[[engine.telemetry.redaction-cut-secrets]] a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads (also with no whitespace near it), show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark", () => {
     const forms: Array<[string, string, string, RegExp]> = [
       ["Bearer ", "AbCdEfGh1234567890secretTOKEN", " tail", /AbCd|secretTOKEN/u],
       ["Basic ", "QWxhZGRpbjpvcGVuc2VzYW1l", " tail", /QWxh/u],
@@ -875,6 +876,25 @@ describe("system snapshot schema and redaction", () => {
           expect(redactText(out), where).toBe(out);
           expect(out.length, where).toBeLessThanOrEqual(TEXT_MAX_CHARS + 64);
         }
+      }
+    }
+    // No whitespace near the 16,384th character: the text is never cut inside a token before it is read, whatever
+    // redaction does to what comes first (here a long value it shortens to `[redacted]`).
+    const value = ["abcdefghij", "0123456789"].join("");
+    const glued: Array<[string, RegExp]> = [
+      [";https://aliceSecret@host.example/x", /alice/u],
+      [";https://alice:s3cretpassw0rd@host.example/x", /alice|s3cr/u],
+      [";Bearer AbCdEfGh1234567890secretTOKEN", /AbCd|secretTOKEN/u],
+      [`;token=${value}`, /abcdefgh/u],
+      [`;{"token":"${value}"}`, /abcdefgh/u],
+      [`;apiKey:${value}`, /abcdefgh/u],
+    ];
+    for (const [tail, shows] of glued) {
+      for (let at = 0; at <= 40; at += 4) {
+        const text = `token=${"v".repeat(15_000)};${"z".repeat(1_363 - tail.length + 36 + at)}${tail}`;
+        const out = redactText(text);
+        expect(out, `${tail} ${at}`).not.toMatch(shows);
+        expect(redactText(out), `${tail} ${at}`).toBe(out);
       }
     }
     // Short secrets at the start, each longer once redacted, then filler up to just over 4,096 characters once

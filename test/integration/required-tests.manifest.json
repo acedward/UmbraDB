@@ -1785,7 +1785,7 @@
     {
       "id": "engine.telemetry.redaction-cut-secrets",
       "file": "token-indexer/test/engine-telemetry.test.ts",
-      "description": "a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads, show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark"
+      "description": "a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads (also with no whitespace near it), show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark"
     },
     {
       "id": "engine.telemetry.redaction-key-forms",

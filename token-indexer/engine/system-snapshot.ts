@@ -9,8 +9,9 @@
  *   outside this schema (a page URL, a request target, a header) can travel inside a snapshot. Times are epoch
  *   milliseconds; durations are milliseconds; heights are block heights; sizes are bytes.
  * - **No secrets:** {@link redactSnapshot} runs over every string of a snapshot before it is validated and handed out.
- *   A text longer than 16,384 characters is cut to them first (at a whitespace near there if any), so redaction reads
- *   at most that and every expression and scan of it is linear in the text's length; the text is redacted whole, each
+ *   A text longer than 16,384 characters is cut to at most them first, before a whitespace or a double quote (nothing
+ *   of it when it has none), so that no token is cut in two before it is read, and redaction reads at most that and
+ *   every expression and scan of it is linear in the text's length; the text is redacted whole, each
  *   secret seen with what follows it, and only then cut to at most 4,096 characters (`TEXT_MAX_CHARS`), never inside a
  *   `[redacted]`, with a mark saying how many characters were left out, added after the redaction, which never reads
  *   it (so redacting a redacted text gives it back; a cut text, at most 4,096 characters and the mark, keeps its
@@ -818,15 +819,17 @@ export function redactWhole(value: string): string {
 /** The most of a text redaction reads: a longer text is cut to it first ({@link capRaw}). Redaction is linear, so this
  *  stays cheap; it is four times what the snapshot keeps, so that what is kept is read with what follows it. */
 const RAW_LIMIT = 16_384;
-/** {@link capRaw} cuts at the last whitespace within this many characters before {@link RAW_LIMIT}, if any. */
-const RAW_WORD_SPAN = 1_024;
+/** Where {@link capRaw} may cut: before a whitespace or a double quote. No secret this module recognises by its shape
+ *  (a URL, a credential after `Bearer` or `Basic`, a JWT, a key) holds one, and a value after a secret's key that the
+ *  cut ends early is still removed (to the end of the text). */
+const SAFE_CUT = /[\s"]/u;
 
-/** `text` cut to at most {@link RAW_LIMIT} characters: at its last whitespace in the last {@link RAW_WORD_SPAN} before
- *  the limit (so that no word the cut would split, a token or a URL, reaches redaction half), else at the limit. */
+/** `text` cut to at most {@link RAW_LIMIT} characters, before its last {@link SAFE_CUT} character within them; nothing
+ *  of it when there is none (so no token is ever cut in two before redaction reads it). */
 function capRaw(text: string): string {
   if (text.length <= RAW_LIMIT) return text;
-  for (let i = RAW_LIMIT - 1; i >= RAW_LIMIT - RAW_WORD_SPAN; i--) if (/\s/u.test(text[i]!)) return text.slice(0, i);
-  return text.slice(0, RAW_LIMIT);
+  for (let i = RAW_LIMIT; i > 0; i--) if (SAFE_CUT.test(text[i]!)) return text.slice(0, i);
+  return "";
 }
 
 /**
