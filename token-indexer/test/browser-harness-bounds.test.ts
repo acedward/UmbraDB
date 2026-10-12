@@ -260,8 +260,8 @@ describe("the Chromium tests' driver, timed", () => {
     vi.useRealTimers();
 
     // A browser launch, in real time, with an executable that is not a browser: it records its process id, prints the
-    // DevTools line after `lineAfterMs` (never: null) and pointing at an endpoint that accepts the connection but never
-    // answers the WebSocket handshake.
+    // DevTools line after `lineAfterMs` (never: null), pointing at an endpoint that accepts the connection but never
+    // answers the WebSocket handshake, and ends by itself after 30 s (so a failed run leaves no process behind).
     const held: Socket[] = [];
     const endpoint = createServer((s) => { held.push(s); });
     await new Promise<void>((r) => endpoint.listen(0, "127.0.0.1", () => r()));
@@ -275,7 +275,7 @@ describe("the Chromium tests' driver, timed", () => {
           "#!/usr/bin/env node",
           `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
           lineAfterMs === null ? "" : `setTimeout(() => process.stderr.write(${JSON.stringify(line)}), ${lineAfterMs});`,
-          "setInterval(() => {}, 60000);",
+          "setTimeout(() => process.exit(0), 30000);",
         ].join("\n"));
         chmodSync(path, 0o755);
         return { path, pid: () => Number(readFileSync(pidFile, "utf8")) };
