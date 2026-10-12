@@ -36,8 +36,9 @@
  * machine's interfaces ({@link networkState}) changed while it ran and the script of a worker the page created failed
  * with `net::ERR_ABORTED`.
  *
- * The rule: the `ready` step always runs, and a step that fails or succeeds is never loaded again. Once the attempt is
- * seen aborted, the step has {@link READY_SETTLE_MS} (fifteen seconds) more to end:
+ * The rule: the `ready` step always runs, and a step that fails, or that succeeds before its abort signal is set, is
+ * never loaded again. Once the attempt is seen aborted, the step has {@link READY_SETTLE_MS} (fifteen seconds) more to
+ * end:
  * - it fails — it throws, or it sees the page report a failure (a boot that ended "failed"), whatever made it fail: the
  *   attempt's own failure; the step's error is thrown, the attempt's records kept, with one printed line
  *   (`not loaded again`);
@@ -56,9 +57,9 @@
  * decision, on all that happened until then:
  * - the late step failed with anything but that error (it saw the page report a failure, or a command it sent before
  *   answered with one): a failed step — its error thrown, not loaded again;
- * - the late step succeeded before its signal was set: the page booted, and the attempt stands, as when the step ends
- *   in time;
- * - the attempt recorded a failure the aborted loads do not explain (above): it fails like a failed step;
+ * - the attempt recorded a failure the aborted loads do not explain (above), also when the late step succeeded: it
+ *   fails like a failed step;
+ * - the late step succeeded before its signal was set: the page booted, and the attempt stands;
  * - otherwise the page is loaded again: the step stopped at its signal (it ended once the signal was set, with that
  *   error or by returning, which shows nothing of the page), it is still running, or there is no step.
  * Each attempt runs in the same browser profile (its storage stays), so a failure only a first boot would show is not
@@ -408,10 +409,11 @@ export class Page {
       const settledMs = await this.networkSettled(() => late.end !== undefined && late.end.kind !== "abandoned");
       stepper.abort();
       await Promise.race([stepEnded, sleep(ABANDONED_STEP_MS)]);
-      // The late step succeeded before its signal was set: the attempt stands, as when the step ends in time.
-      if (late.end?.kind === "done") return;
-      // What arrived meanwhile counts too: the late step's failure, and what the attempt recorded.
+      // What arrived meanwhile counts too: the late step's failure, and what the attempt recorded, also when the late
+      // step succeeded.
       if (own().length > 0) throw notAgain(own());
+      // The late step succeeded before its signal was set, and the attempt recorded nothing of its own: it stands.
+      if (late.end?.kind === "done") return;
       if (attempt >= LOAD_ATTEMPTS) throw new Error(`${url}: ${reason}, in each of ${attempt} attempts${last}`);
       const dropped = this.droppedSince(marks);
       this.loadRetries.push({ url, reason, dropped });

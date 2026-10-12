@@ -25,7 +25,8 @@
  *   worker errors and boot state kept in what the page recorded; a polling step still waiting after its wait goes on
  *   watching the page while the network settles: a boot that reports "failed" then fails the load with the step's error
  *   (not loaded again), and a boot that reports "ready" then stands (not loaded again), but a step that returns once
- *   its signal is set has not seen the page ready (loaded again); a failure of the page's own that comes while the
+ *   its signal is set has not seen the page ready (loaded again), and a boot that reports "ready" then after an
+ *   exception of its own fails with the exception (not loaded again); a failure of the page's own that comes while the
  *   network settles stops the reload too, and so do the late step's own failure when a question it asked before answers
  *   then (a boot that ended "failed"), an error on the console of a first boot whose step is still waiting, and a load
  *   that never ends (its load event never comes); a boot that succeeds although a stylesheet was aborted stands, not
@@ -94,6 +95,11 @@ setTimeout(() => { window.booted = "ready"; }, 2_500);
 </script>`;
 // A first boot that never ends (then it boots well).
 const NEVER_READY = `<!doctype html><meta charset="utf-8"><title>never ready</title><link rel="stylesheet" href="/style-b.css">`;
+// A first boot that throws an exception of its own at 2 s and reports "ready" at 3 s (then it boots well).
+const ERROR_THEN_READY = `<!doctype html><meta charset="utf-8"><title>error then ready</title><link rel="stylesheet" href="/style-b.css"><script>
+setTimeout(() => { throw new Error("an unrelated failure of the page"); }, 2_000);
+setTimeout(() => { window.booted = "ready"; }, 3_000);
+</script>`;
 const BOOT_WELL = `<!doctype html><meta charset="utf-8"><title>boot</title><link rel="stylesheet" href="/style-b.css"><script>window.booted = "ready"; window.lateBoot = "ready";</script>`;
 // A page whose fetch starts 300 ms after it loads, and one with an image.
 const DELAYED = `<!doctype html><meta charset="utf-8"><title>delayed</title><script>
@@ -133,13 +139,13 @@ describe("the Chromium tests' driver", () => {
       } else if (path === "/module" || path === "/missing-module") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(path === "/module" ? MODULE : MISSING_MODULE);
-      } else if (["/boot-fails", "/worker-fails", "/boot-reports-failure", "/boot-well", "/late-failure", "/console-failure", "/hangs", "/late-boot", "/late-report", "/late-ready", "/never-ready"].includes(path)) {
+      } else if (["/boot-fails", "/worker-fails", "/boot-reports-failure", "/boot-well", "/late-failure", "/console-failure", "/hangs", "/late-boot", "/late-report", "/late-ready", "/never-ready", "/error-then-ready"].includes(path)) {
         const n = (answered.get(path) ?? 0) + 1;
         answered.set(path, n);
         const first: Record<string, string> = {
           "/boot-fails": BOOT_FAILS, "/worker-fails": WORKER_FAILS, "/boot-reports-failure": BOOT_REPORTS_FAILURE, "/late-failure": LATE_FAILURE,
           "/console-failure": CONSOLE_FAILURE, "/hangs": HANGS, "/late-boot": LATE_BOOT, "/late-report": LATE_REPORT, "/late-ready": LATE_READY,
-          "/never-ready": NEVER_READY,
+          "/never-ready": NEVER_READY, "/error-then-ready": ERROR_THEN_READY,
         };
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
         res.end(n > 1 || path === "/boot-well" ? BOOT_WELL : first[path]!);
@@ -345,7 +351,7 @@ describe("the Chromium tests' driver", () => {
     }
   }, 180_000);
 
-  it("[[browser.harness.load-retry-independent]] an aborted load never hides a failure of the page's own: the ready step always runs and a step that fails is never loaded again — a boot that fails with an application exception, with a running worker's error, or that only reports it failed, while a stylesheet is aborted, keeps what the attempt recorded; a polling step still waiting after its wait watches the page while the network settles: a boot that reports failed then is not loaded again, one that reports ready then stands, a step returning once its signal is set is loaded again; a failure of the page's own while the network settles stops the reload too, as do the late step's own failure, an error on the console and a load that never ends; a boot that succeeds stands; an exception naming the aborted load is the abort's: loaded again when the step cannot end, the aborted attempt kept in the report and counted in the printed line; an aborted image is no reason to load again; a step still waiting when the network has settled gets its abort signal and stops before the page is loaded again", async () => {
+  it("[[browser.harness.load-retry-independent]] an aborted load never hides a failure of the page's own: the ready step always runs and a step that fails is never loaded again — a boot that fails with an application exception, with a running worker's error, or that only reports it failed, while a stylesheet is aborted, keeps what the attempt recorded; a polling step still waiting after its wait watches the page while the network settles: a boot that reports failed then is not loaded again, one that reports ready then stands, a step returning once its signal is set is loaded again, a late ready after an exception of the page's own fails; a failure of the page's own while the network settles stops the reload too, as do the late step's own failure, an error on the console and a load that never ends; a boot that succeeds stands; an exception naming the aborted load is the abort's: loaded again when the step cannot end, the aborted attempt kept in the report and counted in the printed line; an aborted image is no reason to load again; a step still waiting when the network has settled gets its abort signal and stops before the page is loaded again", async () => {
     const printed = vi.spyOn(console, "error");
     const lines = (page: Page): string[] =>
       printed.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith(`browser page ${page.targetId.slice(0, 8)} `) && /loading it again|not loaded again/u.test(l));
@@ -430,6 +436,19 @@ describe("the Chromium tests' driver", () => {
       expect(readySeen).toBe(1);
       expect(lines(returning.page)).toEqual([expect.stringMatching(/style-b\.css.*loading it again \(attempt 2 of 3, /u)]);
       await returning.page.close();
+
+      // An exception of the page's own 2 s after it runs, after the step's 1 s wait, then the boot reports "ready" at 3 s,
+      // while the network settles: the late success does not stand over the exception — the load fails with it, not
+      // loaded again.
+      answered.delete("/error-then-ready");
+      const errorThenReady = await failingPage("/style-b.css", 1, "ConnectionAborted", { ...aborted, readySettleMs: 1_000 });
+      await expect(errorThenReady.page.goto(`${site.origin}/error-then-ready`, 30_000, bootedWell(errorThenReady.page)))
+        .rejects.toThrow(/the page failed on its own .*exception: .*an unrelated failure of the page.*not loaded again/u);
+      expect(answered.get("/error-then-ready")).toBe(1);
+      expect(errorThenReady.page.loadRetries).toEqual([]);
+      expect(await errorThenReady.page.eval("window.booted")).toBe("ready");
+      expect(errorThenReady.page.exceptions.join("\n")).toContain("an unrelated failure of the page");
+      await errorThenReady.page.close();
 
       // A failure of the page's own that comes after the step was abandoned, while the network settles: it counts too —
       // not loaded again (the next load would boot well).
