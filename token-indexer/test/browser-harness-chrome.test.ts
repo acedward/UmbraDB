@@ -121,6 +121,16 @@ window.workerSaid = null;
 new Worker("/hello.js").onmessage = (e) => { window.workerSaid = e.data; };
 </script>`;
 
+/** Waits, at most `timeoutMs`, until `check()` holds: what a page records arrives as DevTools events, which can come
+ *  after `goto` has settled. */
+async function arrives(what: string, check: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 describe("the Chromium tests' driver", () => {
   let site: LocalServer;
   let browser: Browser;
@@ -196,8 +206,9 @@ describe("the Chromium tests' driver", () => {
     const page = await browser.newPage({ workers: true });
     await page.goto(`${site.origin}/`);
     await page.waitFor("window.seen.length === 2", 30_000, "both workers' error events");
-    const deadline = Date.now() + 10_000;
-    while (page.workerErrors.length < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    // Recorded as their DevTools events arrive: both workers' error events, the page's exception, and the 90 console
+    // lines of the page and its worker.
+    await arrives("the page's records", () => page.workerErrors.length >= 2 && page.exceptions.some((e) => e.includes("page boom")) && page.console.length >= 90);
 
     // The page's own listeners and checks see the worker as before.
     expect(await page.eval("window.isWorker")).toBe(true);
@@ -371,7 +382,10 @@ describe("the Chromium tests' driver", () => {
         expect(failed()).toBe(1);
         expect(answered.get(path)).toBe(1);
         expect(page.loadRetries).toEqual([]);
-        expect([...page.exceptions, ...page.workerErrors.map((e) => e.message)].join("\n")).toContain(own);
+        // The page's own failure is recorded as its event arrives, which can be after the step saw the boot "failed".
+        const recorded = (): string => [...page.exceptions, ...page.workerErrors.map((e) => e.message)].join("\n");
+        await arrives(`the page's own failure (${own})`, () => recorded().includes(own));
+        expect(recorded()).toContain(own);
         expect(await page.eval("window.booted")).toBe("failed");
         expect(page.diagnostics()).toContain(own);
         expect(lines(page)).toEqual([expect.stringMatching(/1 load failed with net::ERR_CONNECTION_ABORTED .*style-b\.css.*: not loaded again/u)]);
