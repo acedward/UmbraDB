@@ -260,41 +260,47 @@ describe("the Chromium tests' driver, timed", () => {
     vi.useRealTimers();
 
     // A browser launch, in real time, with an executable that is not a browser: it records its process id, prints the
-    // DevTools line after `lineAfterMs` (never: null), pointing at an endpoint that accepts the connection but never
-    // answers the WebSocket handshake, and ends by itself after 30 s (so a failed run leaves no process behind).
+    // DevTools line after `lineAfterMs` (never: null) and records when it did, the line pointing at an endpoint that
+    // accepts the connection but never answers the WebSocket handshake, and ends by itself after 30 s (so a failed run
+    // leaves no process behind). The margins are a second or more either way, for a slow machine.
     const held: Socket[] = [];
     const endpoint = createServer((s) => { held.push(s); });
     await new Promise<void>((r) => endpoint.listen(0, "127.0.0.1", () => r()));
     const dir = mkdtempSync(join(tmpdir(), "umbradb-not-a-browser-"));
     try {
-      const notABrowser = (name: string, lineAfterMs: number | null): { path: string; pid: () => number } => {
+      const notABrowser = (name: string, lineAfterMs: number | null): { path: string; pid: () => number; lineAt: () => number } => {
         const path = join(dir, `${name}.cjs`);
         const pidFile = join(dir, `${name}.pid`);
+        const lineFile = join(dir, `${name}.line`);
         const line = `DevTools listening on ws://127.0.0.1:${(endpoint.address() as AddressInfo).port}/devtools/browser/fake\n`;
         writeFileSync(path, [
           "#!/usr/bin/env node",
           `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-          lineAfterMs === null ? "" : `setTimeout(() => process.stderr.write(${JSON.stringify(line)}), ${lineAfterMs});`,
+          lineAfterMs === null ? "" : `setTimeout(() => { process.stderr.write(${JSON.stringify(line)}); require("node:fs").writeFileSync(${JSON.stringify(lineFile)}, String(Date.now())); }, ${lineAfterMs});`,
           "setTimeout(() => process.exit(0), 30000);",
         ].join("\n"));
         chmodSync(path, 0o755);
-        return { path, pid: () => Number(readFileSync(pidFile, "utf8")) };
+        return { path, pid: () => Number(readFileSync(pidFile, "utf8")), lineAt: () => Number(readFileSync(lineFile, "utf8")) };
       };
-      // The DevTools line at 500 ms: the connection has only the rest of the launch's 1,000 ms.
-      const late = notABrowser("late-line", 500);
+      // The DevTools line at about 2,000 ms: the connection has only the rest of the launch's 3,000 ms, so the launch
+      // ends at 3,000 ms, at least a second before the line's time plus 3,000 ms (where a connection given the whole
+      // 3,000 ms would end).
+      const late = notABrowser("late-line", 2_000);
       let t0 = Date.now();
-      await expect(Browser.launch(late.path, 1_000)).rejects.toThrow("the browser's DevTools connection did not open within 1000 ms");
-      let took = Date.now() - t0;
-      expect(took, "the launch's own 1,000 ms").toBeGreaterThanOrEqual(990);
-      expect(took, "counted from the launch's start, not from the DevTools line").toBeLessThan(1_400);
+      await expect(Browser.launch(late.path, 3_000)).rejects.toThrow("the browser's DevTools connection did not open within 3000 ms");
+      const endedAt = Date.now();
+      let took = endedAt - t0;
+      expect(took, "the launch's own 3,000 ms").toBeGreaterThanOrEqual(2_990);
+      expect(took, "counted from the launch's start").toBeLessThan(4_000);
+      expect(endedAt, "not from the DevTools line").toBeLessThan(late.lineAt() + 3_000 - 1_000);
       expect(await ended(late.pid()), "the process it started ended").toBe(true);
-      // No DevTools line at all.
+      // No DevTools line at all: the launch's own 1,000 ms (the upper bound only guards against a launch that never ends).
       const silent = notABrowser("no-line", null);
       t0 = Date.now();
       await expect(Browser.launch(silent.path, 1_000)).rejects.toThrow("the browser did not start within 1000 ms");
       took = Date.now() - t0;
       expect(took).toBeGreaterThanOrEqual(990);
-      expect(took).toBeLessThan(1_400);
+      expect(took).toBeLessThan(2_500);
       expect(await ended(silent.pid()), "the process it started ended").toBe(true);
     } finally {
       for (const s of held) s.destroy();
