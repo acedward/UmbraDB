@@ -25,7 +25,9 @@
  * {@link COMMAND_TIMEOUT_MS} (ten minutes). A command with no answer by then fails with {@link CommandTimeoutError}
  * (`waitFor` and `goto` with their own "timed out" errors), is then not waited for, and its answer, should it come later,
  * is ignored. So a page whose main thread hangs, or a worker whose script never yields, ends each wait at its bound.
- * {@link Browser.launch}'s `timeoutMs` bounds the browser's start and its DevTools connection together.
+ * {@link Browser.launch}'s `timeoutMs` bounds the browser's start and its DevTools connection together; a launch that
+ * fails ends the process it started and removes the profile directory it created. A load waits for its load event, and
+ * a crash for the crash, until exactly their bound (no polling).
  *
  * Failures explain themselves: every page also records the `error` events of the dedicated workers it creates (their
  * message, file, line and column, through a wrapper of the page's `Worker` constructor and a DevTools binding; nothing
@@ -325,7 +327,10 @@ export class Page {
   private readonly byId = new Map<string, RequestRecord>();
   /** The page's session and, with `{ workers: true }`, its workers' sessions: whatever they report is recorded. */
   private readonly sessions = new Set<string>();
-  private loads = 0;
+  /** Called at the page's next load event (each once). */
+  private readonly loadWaiters: Array<() => void> = [];
+  /** Called when the tab's renderer crashes (each once). */
+  private readonly crashWaiters: Array<() => void> = [];
   private trackingWorkers = false;
   /** The `error` events of the dedicated workers the page created. */
   readonly workerErrors: WorkerErrorRecord[] = [];
@@ -376,8 +381,12 @@ export class Page {
       page.recorded?.();
     }));
     conn.on("Log.entryAdded", mine((p, w) => page.logs.push({ source: p.entry.source, level: p.entry.level, text: p.entry.text, url: p.entry.url, ...tag(w) })));
-    conn.on("Page.loadEventFired", mine(() => { page.loads++; }));
-    conn.on("Inspector.targetCrashed", (_p, s) => { if (s === sessionId) page.crashed = page.ended = true; });
+    conn.on("Page.loadEventFired", mine(() => { for (const w of page.loadWaiters.splice(0)) w(); }));
+    conn.on("Inspector.targetCrashed", (_p, s) => {
+      if (s !== sessionId) return;
+      page.crashed = page.ended = true;
+      for (const w of page.crashWaiters.splice(0)) w();
+    });
     conn.on("Runtime.bindingCalled", (p, s) => {
       if (s !== sessionId || p.name !== WORKER_ERROR_BINDING) return;
       let e: WorkerErrorRecord;
@@ -502,19 +511,23 @@ export class Page {
   private async load(url: string, timeoutMs: number): Promise<void> {
     this.url = url;
     this.navigationError = undefined;
-    const before = this.loads;
     const end = Date.now() + timeoutMs;
+    let resolveLoaded!: () => void;
+    const loaded = new Promise<void>((r) => { resolveLoaded = r; });
+    this.loadWaiters.push(resolveLoaded);
     let r: { errorText?: string };
     try {
-      r = (await this.conn.send("Page.navigate", { url }, this.sessionId, timeoutMs)) as { errorText?: string };
-    } catch (e) {
-      if (e instanceof CommandTimeoutError) throw new Error(`load of ${url} timed out`);
-      throw e;
-    }
-    if (r.errorText !== undefined && r.errorText !== "") this.navigationError = r.errorText;
-    while (this.loads === before) {
-      if (Date.now() > end) throw new Error(`load of ${url} timed out`);
-      await sleep(50);
+      try {
+        r = (await this.conn.send("Page.navigate", { url }, this.sessionId, timeoutMs)) as { errorText?: string };
+      } catch (e) {
+        if (e instanceof CommandTimeoutError) throw new Error(`load of ${url} timed out`);
+        throw e;
+      }
+      if (r.errorText !== undefined && r.errorText !== "") this.navigationError = r.errorText;
+      if (!(await within(loaded, end - Date.now()))) throw new Error(`load of ${url} timed out`);
+    } finally {
+      const i = this.loadWaiters.indexOf(resolveLoaded);
+      if (i >= 0) this.loadWaiters.splice(i, 1);
     }
   }
 
@@ -770,10 +783,16 @@ export class Page {
    */
   async crash(timeoutMs = 10_000): Promise<void> {
     const end = Date.now() + timeoutMs;
+    let resolveCrashed!: () => void;
+    const crashed = new Promise<void>((r) => { resolveCrashed = r; });
+    if (this.crashed) resolveCrashed();
+    else this.crashWaiters.push(resolveCrashed);
     void this.conn.send("Page.crash", {}, this.sessionId, timeoutMs).catch(() => { /* the crashed target never answers */ });
-    while (!this.crashed) {
-      if (Date.now() > end) throw new Error("the renderer did not crash");
-      await sleep(10);
+    try {
+      if (!(await within(crashed, end - Date.now()))) throw new Error("the renderer did not crash");
+    } finally {
+      const i = this.crashWaiters.indexOf(resolveCrashed);
+      if (i >= 0) this.crashWaiters.splice(i, 1);
     }
   }
 
@@ -825,22 +844,35 @@ function errorLine(e: WorkerErrorRecord): string {
   return `${e.message === "" ? "(no message: the script did not load or did not start)" : e.message} at ${e.file === "" ? e.worker : e.file}:${e.line}:${e.column}`;
 }
 
+/**
+ * How {@link Browser.launch} starts the browser's process and opens its DevTools socket. The driver's own tests replace
+ * them, to time the launch's bound with fake time (`browser-harness-bounds.test.ts`); every other caller uses the
+ * defaults.
+ */
+export interface LaunchSeam {
+  /** Default: Node's `spawn`, the process's stderr piped (the DevTools line is read from it), stdin and stdout ignored. */
+  spawn?: (executable: string, args: string[]) => ChildProcess;
+  /** Default: `new WebSocket(url)`. */
+  socket?: (url: string) => WebSocket;
+}
+
 export class Browser {
   private readonly pages: Page[] = [];
   private constructor(readonly executable: string, private readonly child: ChildProcess, private readonly conn: Connection, private readonly dir: string) {}
 
   /** Starts the browser and opens its DevTools connection, both within `timeoutMs`; a launch that fails ends the
-   *  browser it started. */
-  static async launch(executable: string, timeoutMs = 60_000): Promise<Browser> {
+   *  process it started and removes the profile directory it created. `seam`: see {@link LaunchSeam}. */
+  static async launch(executable: string, timeoutMs = 60_000, seam: LaunchSeam = {}): Promise<Browser> {
     const end = Date.now() + timeoutMs;
     const dir = mkdtempSync(join(tmpdir(), "mip0018-ui-"));
-    const child = spawn(executable, [
+    const start = seam.spawn ?? ((e: string, args: string[]): ChildProcess => spawn(e, args, { stdio: ["ignore", "ignore", "pipe"] }));
+    const child = start(executable, [
       "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
       "--disable-extensions", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps",
       "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider", "--metrics-recording-only", "--mute-audio",
       "--no-pings", "--password-store=basic", "--use-mock-keychain", "--hide-scrollbars", "--font-render-hinting=none",
       `--user-data-dir=${dir}`, "--remote-debugging-port=0", "--window-size=1400,900", "about:blank",
-    ], { stdio: ["ignore", "ignore", "pipe"] });
+    ]);
     let err = "";
     try {
       const wsUrl = await new Promise<string>((resolve, reject) => {
@@ -852,7 +884,7 @@ export class Browser {
         });
         child.once("exit", (code) => { clearTimeout(t); reject(new Error(`the browser exited (${code}): ${err.slice(-2000)}`)); });
       });
-      const ws = new WebSocket(wsUrl);
+      const ws = (seam.socket ?? ((u: string) => new WebSocket(u)))(wsUrl);
       const opened = new Promise<void>((resolve, reject) => {
         ws.addEventListener("open", () => resolve(), { once: true });
         ws.addEventListener("error", () => reject(new Error("DevTools WebSocket failed")), { once: true });
@@ -865,6 +897,12 @@ export class Browser {
       return new Browser(executable, child, new Connection(ws), dir);
     } catch (e) {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      // The profile goes with the launch (best effort: a file the ending browser still writes can be left).
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+      } catch {
+        // left behind
+      }
       throw e;
     }
   }
