@@ -17,7 +17,8 @@
  *   - a browser launch whose process never prints its DevTools line fails at the launch's time with the start's error;
  *     one whose line comes at 2,000 ms and whose DevTools socket never opens fails at the launch's 3,000 ms with the
  *     connection's error, the socket closed; each kills its process and removes the profile directory it created; one
- *     whose socket opens resolves then, and closing it ends the process and removes the profile;
+ *     whose socket opens resolves then, and closing it ends the process and removes the profile; one whose spawn throws
+ *     fails with that error and leaves no profile;
  *   - a command that cannot be serialized, or that the socket refuses, fails at once and leaves no timer and nothing
  *     waiting; an answer that comes after its command's bound is ignored (nothing throws, and the commands still
  *     waiting keep waiting for their own answers);
@@ -106,9 +107,22 @@ class FakeChild extends EventEmitter {
   }
   /** The profile directory the launch gave it. */
   get profile(): string {
-    return this.args.find((a) => a.startsWith("--user-data-dir="))!.slice("--user-data-dir=".length);
+    return profileOf(this.args);
   }
 }
+
+/** The profile directory in a launch's arguments. */
+function profileOf(args: string[]): string {
+  return args.find((a) => a.startsWith("--user-data-dir="))!.slice("--user-data-dir=".length);
+}
+
+/** What the case's launches started — profile directories, processes, sockets — cleaned after it whatever its outcome
+ *  (a launch still waiting when an assertion fails included), before real time is restored. */
+const launched = {
+  profiles: [] as string[],
+  processes: [] as Array<{ exitCode: number | null; signalCode: NodeJS.Signals | null; kill(signal?: NodeJS.Signals): boolean }>,
+  sockets: [] as Array<{ close(): void }>,
+};
 
 /** The answers a page's opening needs; `own` first (`"default"`: these). */
 const pageAnswers = (own: (c: Command) => Answer | "default" = () => "default") => (c: Command): Answer => {
@@ -138,6 +152,9 @@ async function endsExactlyAt(t: { settled: () => boolean }, from: number, bound:
 const connections: Connection[] = [];
 afterEach(() => {
   for (const c of connections.splice(0)) c.close();
+  for (const s of launched.sockets.splice(0)) s.close();
+  for (const p of launched.processes.splice(0)) if (p.exitCode === null && p.signalCode === null) p.kill("SIGKILL");
+  for (const d of launched.profiles.splice(0)) rmSync(d, { recursive: true, force: true });
   vi.useRealTimers();
 });
 
@@ -155,7 +172,7 @@ async function fakePage(devtools: FakeDevTools, opts: { workers?: boolean } = {}
 }
 
 describe("the Chromium tests' driver, timed", () => {
-  it("[[browser.harness.command-bounds-timing]] each bound is still waiting 1 ms before it and has ended at it: a command's own and the ten-minute default; a load's, from before its navigation is sent; each evaluation of a wait, the wait's remaining time; a worker evaluation's, its setup included, never sent while the setup waits; a crash's and its command's; a browser launch's start and DevTools connection together, its process killed, its socket closed and its profile removed; a command that cannot be serialized or sent leaves nothing behind; an answer after its bound is ignored; a real launch that fails ends its process and removes its profile", async () => {
+  it("[[browser.harness.command-bounds-timing]] each bound is still waiting 1 ms before it and has ended at it: a command's own and the ten-minute default; a load's, from before its navigation is sent; each evaluation of a wait, the wait's remaining time; a worker evaluation's, its setup included, never sent while the setup waits; a crash's and its command's; a browser launch's start and DevTools connection together, its process killed, its socket closed and its profile removed, also when its spawn throws; a command that cannot be serialized or sent leaves nothing behind; an answer after its bound is ignored; a real launch that fails ends its process and removes its profile", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
 
     // A command's own bound, and the default.
@@ -272,11 +289,14 @@ describe("the Chromium tests' driver, timed", () => {
         spawn: (_e: string, args: string[]): ChildProcess => {
           const c = new FakeChild(args);
           children.push(c);
+          launched.profiles.push(c.profile);
+          launched.processes.push(c);
           return c as unknown as ChildProcess;
         },
         socket: (url: string): WebSocket => {
           const s = new FakeSocket(url);
           sockets.push(s);
+          launched.sockets.push(s);
           if (opensAt !== null) setTimeout(() => s.open(), opensAt - lineAt!);
           return s as unknown as WebSocket;
         },
@@ -307,6 +327,19 @@ describe("the Chromium tests' driver, timed", () => {
       }
       expect(child.kills, "its process killed").toEqual(["SIGKILL"]);
       expect(existsSync(child.profile), "its profile removed").toBe(false);
+    }
+
+    // A launch whose spawn throws: it fails with that error, and the profile it created is removed.
+    {
+      const profiles: string[] = [];
+      const spawnThrows = (_e: string, args: string[]): ChildProcess => {
+        profiles.push(profileOf(args));
+        launched.profiles.push(profileOf(args));
+        throw new Error("spawn failed");
+      };
+      await expect(Browser.launch("not-a-browser", 1_000, { spawn: spawnThrows })).rejects.toThrow("spawn failed");
+      expect(profiles).toHaveLength(1);
+      expect(existsSync(profiles[0]!), "its profile removed").toBe(false);
     }
 
     // A command that cannot be serialized, and one the socket refuses: each fails at once, with no timer and nothing
@@ -354,14 +387,15 @@ describe("the Chromium tests' driver, timed", () => {
       const realSpawn = (e: string, args: string[]): ChildProcess => {
         const child = spawn(e, args, { stdio: ["ignore", "ignore", "pipe"] });
         started.push({ child, args });
+        launched.profiles.push(profileOf(args));
+        launched.processes.push(child);
         return child;
       };
       await expect(Browser.launch(path, 1_000, { spawn: realSpawn })).rejects.toThrow("the browser did not start within 1000 ms");
       const { child, args } = started[0]!;
       if (child.exitCode === null && child.signalCode === null) await new Promise((r) => child.once("exit", r));
       expect(child.signalCode, "its process ended by the launch").toBe("SIGKILL");
-      const profile = args.find((a) => a.startsWith("--user-data-dir="))!.slice("--user-data-dir=".length);
-      expect(existsSync(profile), "its profile removed").toBe(false);
+      expect(existsSync(profileOf(args)), "its profile removed").toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

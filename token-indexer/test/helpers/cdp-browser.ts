@@ -866,15 +866,18 @@ export class Browser {
     const end = Date.now() + timeoutMs;
     const dir = mkdtempSync(join(tmpdir(), "mip0018-ui-"));
     const start = seam.spawn ?? ((e: string, args: string[]): ChildProcess => spawn(e, args, { stdio: ["ignore", "ignore", "pipe"] }));
-    const child = start(executable, [
-      "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
-      "--disable-extensions", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps",
-      "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider", "--metrics-recording-only", "--mute-audio",
-      "--no-pings", "--password-store=basic", "--use-mock-keychain", "--hide-scrollbars", "--font-render-hinting=none",
-      `--user-data-dir=${dir}`, "--remote-debugging-port=0", "--window-size=1400,900", "about:blank",
-    ]);
+    /** The process, once started (a spawn that throws leaves none). */
+    let started: ChildProcess | undefined;
     let err = "";
     try {
+      const child = start(executable, [
+        "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
+        "--disable-extensions", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--disable-default-apps",
+        "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider", "--metrics-recording-only", "--mute-audio",
+        "--no-pings", "--password-store=basic", "--use-mock-keychain", "--hide-scrollbars", "--font-render-hinting=none",
+        `--user-data-dir=${dir}`, "--remote-debugging-port=0", "--window-size=1400,900", "about:blank",
+      ]);
+      started = child;
       const wsUrl = await new Promise<string>((resolve, reject) => {
         const t = setTimeout(() => reject(new Error(`the browser did not start within ${timeoutMs} ms: ${err.slice(-2000)}`)), timeoutMs);
         child.stderr!.on("data", (b: Buffer) => {
@@ -896,7 +899,7 @@ export class Browser {
       await opened;
       return new Browser(executable, child, new Connection(ws), dir);
     } catch (e) {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (started !== undefined && started.exitCode === null && started.signalCode === null) started.kill("SIGKILL");
       // The profile goes with the launch (best effort: a file the ending browser still writes can be left).
       try {
         rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
