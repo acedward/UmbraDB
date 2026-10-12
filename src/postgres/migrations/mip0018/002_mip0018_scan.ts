@@ -1,5 +1,5 @@
 import type { ISql } from "postgres";
-import { assertValidSchemaName } from "../../client.js";
+import { assertValidSchemaName } from "../../schema-name.js";
 
 export const name = "002_mip0018_scan";
 
@@ -24,8 +24,9 @@ export const name = "002_mip0018_scan";
  *   operation (`maintenance_operations`, NULL for an update without one) are `bytea` — a `text` column refuses NUL and
  *   would stop the scan at the first such call. `maintenance_updates` holds an ASCII rendering only
  *   (`VerifierKeyInsert(publishMetadata, v3)`; a non-printable operation as `<bytes HEX>`). Reading
- *   `maintenance_operations` from JS: postgres.js 3.4 parses a NULL array element as an empty Buffer, so read
- *   it element by element (`unnest … WITH ORDINALITY`) where "no operation" and "empty operation" must differ.
+ *   `maintenance_operations` from JS: postgres.js 3.4 parses a NULL array element as empty bytes and PGlite as
+ *   `null`, so read it element by element (`unnest … WITH ORDINALITY`) where "no operation" and "empty operation"
+ *   must differ.
  * - `mip0018_builtin_tokens` — NIGHT and DUST (outside MIP-0018: the protocol fixes their properties); seeded per
  *   network by the scanner.
  *

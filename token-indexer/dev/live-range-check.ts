@@ -24,7 +24,7 @@ import { parseArgs } from "node:util";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { compareTables, firstDifference, rangeTables, type RangeTables } from "./range-tables.ts";
+import { compareNullElements, compareTables, firstDifference, type NullElements, rangeTables, type RangeTables } from "./range-tables.ts";
 
 const REPO = resolve(new URL("../..", import.meta.url).pathname);
 const METER = join(REPO, "token-indexer/dev/fetch-meter.ts");
@@ -206,18 +206,21 @@ async function main(): Promise<void> {
     } else if (phase === "compare") {
       const tags = values.tags!.split(",");
       const digests: Record<string, RangeTables> = {};
+      const nulls: Record<string, NullElements> = {};
       const rows: Record<string, Map<string, string[]>> = {};
       for (const tag of tags) {
         const { archive, mip } = schemasOf(tag);
         const r = await rangeTables(sql, archive, mip);
         digests[tag] = r.digest;
+        nulls[tag] = r.nullElements;
         rows[tag] = r.rows;
         writeFileSync(join(outDir, `${tag}-tables.json`), `${JSON.stringify(r.digest, null, 2)}\n`);
       }
       const pairs: Record<string, { identical: boolean; differences: string[]; firstRows?: Record<string, string | undefined> }> = {};
       for (let i = 0; i < tags.length; i++) for (let j = i + 1; j < tags.length; j++) {
         const [a, b] = [tags[i]!, tags[j]!];
-        const differences = compareTables(digests[a]!, digests[b]!);
+        // The NULL bytea[] elements too: the table digests count one as empty bytes.
+        const differences = [...compareTables(digests[a]!, digests[b]!), ...compareNullElements(nulls[a]!, nulls[b]!)];
         const firstRows: Record<string, string | undefined> = {};
         for (const d of differences) {
           const t = d.split(":")[0]!;

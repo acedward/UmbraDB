@@ -28,14 +28,15 @@
  * | `SYNC_BACKOFF_BASE_MS` | `1000` | first back-off delay on 429/403/5xx/transport/non-JSON |
  * | `SYNC_BACKOFF_MAX_MS` | `60000` | back-off ceiling (per call and for the loop) |
  * | `SYNC_BACKOFF_MAX_ATTEMPTS` | `8` | attempts per network call before the batch fails and the loop backs off |
+ *
+ * The loop runs in the token indexer's engine (`token-indexer/engine/engine.ts`, sync only); this file reads the
+ * flags and the environment, opens the database and prints the engine's sync events as JSON lines (`jsonLog`).
  */
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createClient } from "../src/postgres/client.js";
-import { jsonLog, publicEndpoint, publicErrorMessage } from "../wallet-monitor/log.js";
-import { bootstrapChainArchiveSchema } from "./bootstrap.js";
-import { abortableSleep } from "./retry.js";
-import { ChainArchiveSyncService, SyncRangeError } from "./sync-service.js";
+import { createIndexerEngine } from "../token-indexer/engine/engine.ts";
+import { jsonLog } from "../wallet-monitor/log.js";
 
 /** Settings that can come from the command line; anything unset falls back to the environment. */
 export interface ArchiveSyncArgs {
@@ -114,80 +115,36 @@ export async function runArchiveSync(signal: AbortSignal, args: ArchiveSyncArgs 
   if (startHeight !== undefined && endHeight !== undefined && endHeight < startHeight) {
     throw new Error(`end height ${endHeight} is below start height ${startHeight}`);
   }
-  const endpoints = [nodeUrl, indexerUrl];
-  const pacing = minIntervalMs === undefined ? {} : { minIntervalMs };
-
   const sql = createClient({ connectionString, schema });
   try {
-    await bootstrapChainArchiveSchema(sql, schema);
-    const service = new ChainArchiveSyncService({
+    const engine = createIndexerEngine({
       sql,
-      net,
-      schema,
-      node: { url: nodeUrl, timeoutMs: 30_000, ...pacing },
-      indexer: { url: indexerUrl, timeoutMs: 30_000, ...pacing },
-      ...(startHeight === undefined ? {} : { startHeight }),
-      ...(endHeight === undefined ? {} : { endHeight }),
-      concurrency,
+      network: net,
+      archiveSchema: schema,
       signal,
-      backoff: {
-        baseDelayMs: backoffBaseMs,
-        maxDelayMs: backoffMaxMs,
-        maxAttempts: backoffMaxAttempts,
-        // Every throttling answer is logged, with the status that caused the wait.
-        onRetry: (info) => jsonLog("archive-sync", "backoff", {
-          operation: info.operation, attempt: info.attempt, maxAttempts: info.maxAttempts,
-          delayMs: info.delayMs, httpStatus: info.httpStatus, throttled: info.throttled,
-          message: publicErrorMessage(info.message, endpoints),
-        }),
+      sync: {
+        nodeUrl,
+        indexerUrl,
+        ...(startHeight === undefined ? {} : { startHeight }),
+        ...(endHeight === undefined ? {} : { endHeight }),
+        maxBlocks,
+        concurrency,
+        ...(minIntervalMs === undefined ? {} : { minIntervalMs }),
+        timeoutMs: 30_000,
+        backoff: { baseDelayMs: backoffBaseMs, maxDelayMs: backoffMaxMs, maxAttempts: backoffMaxAttempts },
+        idleMs: 10_000,
       },
-    });
-    jsonLog("archive-sync", "start", {
-      net,
-      schema,
-      nodeUrl: publicEndpoint(nodeUrl),
-      indexerUrl: publicEndpoint(indexerUrl),
-      from: startHeight ?? "genesis",
-      to: endHeight ?? "follow",
-      maxBlocks,
-      concurrency: service.fetchConcurrency,
-      minIntervalMs: service.minIntervalMs,
-      cursor: (await service.getSyncCursor()) ?? null,
+      // start, backoff (every throttling answer), batch, range-complete, range-refused, error, stop
+      onEvent: (e) => {
+        if (e.source === "sync") jsonLog("archive-sync", e.event, { ...e.fields });
+      },
     });
     // The loop backs off exponentially (with jitter) after a failed batch instead of hammering a
     // throttling endpoint, and resets once a batch succeeds. Only an abort, a completed `--to`
     // range or a refused range ends it.
-    let loopBackoffMs = backoffBaseMs;
-    while (!signal.aborted) {
-      try {
-        const result = await service.syncOnce({ maxBlocks });
-        jsonLog("archive-sync", "batch", {
-          height: await service.getSyncedHeight(), ingested: result.ingestedBlocks,
-          from: result.fromHeight, to: result.toHeight, tip: result.targetTipHeight,
-          retries: result.retries, throttled: result.throttled, elapsedMs: result.elapsedMs,
-        });
-        loopBackoffMs = backoffBaseMs;
-        if (result.reachedEnd) {
-          jsonLog("archive-sync", "range-complete", { to: endHeight, height: await service.getSyncedHeight() });
-          break;
-        }
-        if (result.ingestedBlocks === 0) await abortableSleep(10_000, signal);
-      } catch (error) {
-        if (signal.aborted) break;
-        if (error instanceof SyncRangeError) {
-          jsonLog("archive-sync", "range-refused", { message: error.message });
-          throw error;
-        }
-        jsonLog("archive-sync", "error", {
-          message: publicErrorMessage(error, endpoints),
-          retryMs: loopBackoffMs,
-        });
-        await abortableSleep(Math.round(loopBackoffMs / 2 + Math.random() * (loopBackoffMs / 2)), signal);
-        loopBackoffMs = Math.min(loopBackoffMs * 2, backoffMaxMs);
-      }
-    }
+    await engine.start();
+    await engine.finished;
   } finally {
-    jsonLog("archive-sync", "stop");
     await sql.end({ timeout: 5 });
   }
 }

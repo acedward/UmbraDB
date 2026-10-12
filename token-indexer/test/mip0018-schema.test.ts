@@ -1,12 +1,12 @@
 /**
  * The `mip0018` migration lineage: its tables, exact bytes, lossless integers, constraints that keep tombstones and
- * other layouts out. One Postgres 17 container for the file.
+ * other layouts out. One database for the file (`test/helpers/test-database.ts`: Postgres 17 or PGlite).
  */
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { MIP0018_SCHEMA, mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 
 const schema = MIP0018_SCHEMA;
 const A = Buffer.alloc(32, 0xaa);
@@ -14,18 +14,18 @@ const D = Buffer.alloc(32, 0x11);
 const key = (text: string): Buffer => Buffer.from(text, "utf8");
 
 describe("mip0018 schema", () => {
-  let container: StartedPostgreSqlContainer | undefined;
+  let db: TestDatabase | undefined;
   let sql: UmbraDBSql;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
-    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    db = await openTestDatabase();
+    sql = db.client(schema);
     await runMigrations(sql, { schema, migrations: mip0018Migrations });
   }, 120_000);
 
   afterAll(async () => {
     await sql?.end({ timeout: 5 });
-    await container?.stop();
+    await db?.stop();
   }, 60_000);
 
   const field = (k: Buffer, valType: number, value: Buffer, uint: string | null, usable: boolean | null) => ({

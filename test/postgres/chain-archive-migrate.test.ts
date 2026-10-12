@@ -1,6 +1,6 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient } from "../../src/postgres/client.js";
+import { onPostgresql } from "../helpers/postgresql-only.ts";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 
@@ -8,7 +8,7 @@ import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_arch
  * Closes the v3 audit's "no committed automated test for the new lineage" gap
  * (`design/full-chain-storage-design.md` §5's own note that `chainArchiveMigrations` was
  * empirically applied by hand during the v2/v3 revisions but never exercised by a committed
- * test). Real Postgres 17 via testcontainers, matching every other test in this directory —
+ * test). A real database (Postgres 17 or PGlite, `test/helpers/test-database.ts`) —
  * not a mock, not an assertion about SQL text.
  *
  * Deliberately ONE test (not a `describe` full of small ones): the task this closes asks for a
@@ -18,19 +18,19 @@ import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_arch
  * over time) than five independent schemas each re-paying migration cost to prove one fact.
  */
 describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
   }, 120_000);
 
   afterAll(async () => {
-    await container?.stop();
+    await database?.stop();
   });
 
   it("fresh apply succeeds, is idempotent, supports a same-height fork with an overlapping tx hash, and rejects a dual-canonical insert and an FK violation", async () => {
     const schema = "chain_archive_v3_test";
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    const sql = database.client(schema);
     try {
       // --- fresh apply succeeds ---
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
@@ -125,7 +125,7 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
    */
   it("v4: rejects a reference to an unclassified blob on blocks, bridge_observations, and verifier_key_observations (not just transactions)", async () => {
     const schema = "chain_archive_v4_missing_role_test";
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    const sql = database.client(schema);
     try {
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
       const h = (n: number): string => n.toString(16).padStart(64, "0");
@@ -186,7 +186,7 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
    */
   it("v4: rejects deleting a chain_blob_roles row still referenced by a live row, allows deleting an unreferenced one, and closes the concurrent-deletion race", async () => {
     const schema = "chain_archive_v4_role_delete_test";
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    const sql = database.client(schema);
     try {
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
       const h = (n: number): string => n.toString(16).padStart(64, "0");
@@ -222,43 +222,46 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
         sql`delete from ${sql(schema)}.chain_blob_roles where blob_hash = ${txRawBlob} and role = 'tx_raw'`,
       ).rejects.toMatchObject({ code: "23514" });
 
-      // --- concurrency: an in-flight referencing INSERT (holding FOR SHARE, uncommitted)
-      // forces a concurrent DELETE of that same role to block, and to correctly fail once it
-      // unblocks and sees the now-committed reference. Uses two real reserved connections with
-      // manual BEGIN/COMMIT, matching transaction-lease.test.ts's own pattern for exercising
-      // genuine Postgres lock-blocking behavior. ---
-      const raceBlob = await registerBlob(h(310), "tx_raw");
-      const sessionA = await sql.reserve();
-      const sessionB = await sql.reserve();
-      let sessionACommitted = false;
-      try {
-        await sessionA`BEGIN`;
-        await sessionA`insert into ${sessionA(schema)}.transactions
-          (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
-          values (${net}, ${Buffer.from(h(311), "hex")}, 7, ${blockHash}, 1, 'regular', 1, ${raceBlob})`;
-        // Session A now holds FOR SHARE on the (raceBlob, 'tx_raw') chain_blob_roles row,
-        // uncommitted. Start session B's DELETE -- it must block on that lock, not race past it.
-        const deletePromise = sessionB`delete from ${sessionB(schema)}.chain_blob_roles
-          where blob_hash = ${raceBlob} and role = 'tx_raw'`;
-        await tick(150); // let session B's DELETE actually reach Postgres and start blocking
-        await sessionA`COMMIT`;
-        sessionACommitted = true;
-        // Once unblocked by A's commit, B's guard must see the now-live reference and reject.
-        await expect(deletePromise).rejects.toMatchObject({ code: "23514" });
-      } finally {
-        if (!sessionACommitted) {
-          await sessionA`ROLLBACK`.catch(() => {});
+      // Two sessions, one blocked on the other's row lock: PostgreSQL only (PGlite has one session).
+      if (onPostgresql("role-delete-lock-race")) {
+        // --- concurrency: an in-flight referencing INSERT (holding FOR SHARE, uncommitted)
+        // forces a concurrent DELETE of that same role to block, and to correctly fail once it
+        // unblocks and sees the now-committed reference. Uses two real reserved connections with
+        // manual BEGIN/COMMIT, matching transaction-lease.test.ts's own pattern for exercising
+        // genuine Postgres lock-blocking behavior. ---
+        const raceBlob = await registerBlob(h(310), "tx_raw");
+        const sessionA = await sql.reserve();
+        const sessionB = await sql.reserve();
+        let sessionACommitted = false;
+        try {
+          await sessionA`BEGIN`;
+          await sessionA`insert into ${sessionA(schema)}.transactions
+            (net, tx_hash, block_height, block_hash, position, kind, protocol_version, raw_blob_hash)
+            values (${net}, ${Buffer.from(h(311), "hex")}, 7, ${blockHash}, 1, 'regular', 1, ${raceBlob})`;
+          // Session A now holds FOR SHARE on the (raceBlob, 'tx_raw') chain_blob_roles row,
+          // uncommitted. Start session B's DELETE -- it must block on that lock, not race past it.
+          const deletePromise = sessionB`delete from ${sessionB(schema)}.chain_blob_roles
+            where blob_hash = ${raceBlob} and role = 'tx_raw'`;
+          await tick(150); // let session B's DELETE actually reach Postgres and start blocking
+          await sessionA`COMMIT`;
+          sessionACommitted = true;
+          // Once unblocked by A's commit, B's guard must see the now-live reference and reject.
+          await expect(deletePromise).rejects.toMatchObject({ code: "23514" });
+        } finally {
+          if (!sessionACommitted) {
+            await sessionA`ROLLBACK`.catch(() => {});
+          }
+          sessionA.release();
+          sessionB.release();
         }
-        sessionA.release();
-        sessionB.release();
-      }
 
-      // the reference and its role both still stand after the failed concurrent delete attempt
-      const stillPresent = await sql<{ n: number }[]>`
-        select count(*)::int as n from ${sql(schema)}.chain_blob_roles
-        where blob_hash = ${raceBlob} and role = 'tx_raw'
-      `;
-      expect(stillPresent[0]!.n).toBe(1);
+        // the reference and its role both still stand after the failed concurrent delete attempt
+        const stillPresent = await sql<{ n: number }[]>`
+          select count(*)::int as n from ${sql(schema)}.chain_blob_roles
+          where blob_hash = ${raceBlob} and role = 'tx_raw'
+        `;
+        expect(stillPresent[0]!.n).toBe(1);
+      }
     } finally {
       await sql.end({ timeout: 5 });
     }
@@ -269,7 +272,7 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
    */
   it("v4: rejects un-finalizing a previously-finalized block while still allowing legal transitions", async () => {
     const schema = "chain_archive_v4_finalized_test";
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    const sql = database.client(schema);
     try {
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
       const h = (n: number): string => n.toString(16).padStart(64, "0");
@@ -336,7 +339,7 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
    */
   it("v4: verifier_key_observations persists two legitimate different-tag observations, rejects a true duplicate, and the LEAST-upsert pattern collapses repeated first_seen_height claims correctly", async () => {
     const schema = "chain_archive_v4_verifier_key_test";
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    const sql = database.client(schema);
     try {
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
       const h = (n: number): string => n.toString(16).padStart(64, "0");

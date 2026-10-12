@@ -53,6 +53,7 @@ import {
   partApplied,
   type TransactionOutcome,
 } from "./applied-parts.ts";
+import { bytesEqual, hexToBytes, toHex } from "./bytes.ts";
 import { tokenColor } from "./color.ts";
 import { type EventRow, removeEventsAbove, writeEvents } from "./fields.ts";
 import { classifyEvent, MISC_EVENT_TYPE } from "../vendor/mip0018/codec/src/index.ts";
@@ -126,16 +127,16 @@ interface ActionRow {
   tx_index: number;
   segment_id: number;
   action_index: number;
-  tx_hash: Buffer;
+  tx_hash: Uint8Array;
   action: "call" | "deploy" | "maintenance";
-  contract_address: Buffer;
+  contract_address: Uint8Array;
   /** The entry point's exact bytes (arbitrary bytes on the ledger, so `bytea`, never `text`). */
-  entry_point: Buffer | null;
+  entry_point: Uint8Array | null;
   applied_phases: string[] | null;
   maintenance_counter: string | null;
   /** ASCII renderings (`describeUpdate`); the operations' exact bytes are in `maintenance_operations`. */
   maintenance_updates: string[] | null;
-  maintenance_operations: Array<Buffer | null> | null;
+  maintenance_operations: Array<Uint8Array | null> | null;
 }
 
 interface BlockRows {
@@ -147,8 +148,8 @@ interface BlockRows {
   transactions: number;
 }
 
-const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
-const buf = (h: string): Buffer => Buffer.from(h, "hex");
+const hex = toHex;
+const buf = hexToBytes;
 /** `bytea`'s type oid: the element type of `maintenance_operations` (`bytea[]`, may hold NULL elements). */
 const BYTEA_OID = 17;
 
@@ -193,7 +194,7 @@ export class Mip0018Scanner {
   }
 
   async getCursor(): Promise<ScanCursor | undefined> {
-    const rows = await this.sql<{ from_height: bigint; next_height: bigint; last_block_hash: Buffer | null }[]>`
+    const rows = await this.sql<{ from_height: bigint; next_height: bigint; last_block_hash: Uint8Array | null }[]>`
       SELECT from_height, next_height, last_block_hash FROM ${this.sql(this.schema)}.mip0018_scan WHERE network = ${this.network}`;
     const r = rows[0];
     if (r === undefined) return undefined;
@@ -292,14 +293,14 @@ export class Mip0018Scanner {
           // What this `log` op logs is not in the raw transaction — recorded, never applied.
           rows.events.push({
             ...at, event_index: l.eventIndex, tx_hash: txHash, segment_id: l.segment, phase: l.phase,
-            contract_address: buf(l.contractAddress), event_type: UNRESOLVED_EVENT_TYPE, name: Buffer.alloc(0), payload: Buffer.alloc(0),
+            contract_address: buf(l.contractAddress), event_type: UNRESOLVED_EVENT_TYPE, name: new Uint8Array(0), payload: new Uint8Array(0),
             classification: "unresolved", reason: l.unresolved, domain_sep: null, kind: null,
           });
           continue;
         }
         if (l.eventTypeCode !== MISC_EVENT_TYPE_CODE) continue; // a resolved event of another MIP-0002 type says nothing about metadata
-        const name = Buffer.from(l.name ?? "", "hex");
-        const payload = Buffer.from(l.payload ?? "", "hex");
+        const name = hexToBytes(l.name ?? "");
+        const payload = hexToBytes(l.payload ?? "");
         const c = l.undecodable === undefined
           ? classifyEvent({ type: MISC_EVENT_TYPE, name, payload })
           : { result: "ignore" as const, reason: `undecodable-data: ${l.undecodable}` };
@@ -307,7 +308,7 @@ export class Mip0018Scanner {
           ...at, event_index: l.eventIndex, tx_hash: txHash, segment_id: l.segment, phase: l.phase,
           contract_address: buf(l.contractAddress), event_type: MISC_EVENT_TYPE, name, payload,
           classification: c.result, reason: c.result === "accept" ? null : c.reason,
-          domain_sep: c.result === "accept" ? Buffer.from(c.header.domainSep) : null,
+          domain_sep: c.result === "accept" ? new Uint8Array(c.header.domainSep) : null,
           kind: c.result === "accept" ? c.header.kind : null,
         });
       }
@@ -351,12 +352,12 @@ export class Mip0018Scanner {
     const s = this.schema;
     await this.sql.begin(async (tx) => {
       for (const m of rows.mints) {
-        const owner = await tx<{ contract_address: Buffer; domain_sep: Buffer }[]>`
+        const owner = await tx<{ contract_address: Uint8Array; domain_sep: Uint8Array }[]>`
           SELECT contract_address, domain_sep FROM ${tx(s)}.mip0018_mints
-          WHERE network = ${this.network} AND color = ${m.color as Buffer} LIMIT 1`;
+          WHERE network = ${this.network} AND color = ${m.color as Uint8Array} LIMIT 1`;
         const o = owner[0];
-        if (o !== undefined && !(o.contract_address.equals(m.contract_address as Buffer) && o.domain_sep.equals(m.domain_sep as Buffer)))
-          throw new ScanError(`color ${hex(m.color as Buffer)} maps to two (contract, domainSep) pairs — impossible unless tokenType is broken`);
+        if (o !== undefined && !(bytesEqual(o.contract_address, m.contract_address as Uint8Array) && bytesEqual(o.domain_sep, m.domain_sep as Uint8Array)))
+          throw new ScanError(`color ${hex(m.color as Uint8Array)} maps to two (contract, domainSep) pairs — impossible unless tokenType is broken`);
         await tx`INSERT INTO ${tx(s)}.mip0018_mints ${tx(m)} ON CONFLICT DO NOTHING`;
       }
       for (const r of rows.sightings) await tx`INSERT INTO ${tx(s)}.mip0018_color_sightings ${tx(r)} ON CONFLICT DO NOTHING`;

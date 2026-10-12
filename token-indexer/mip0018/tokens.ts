@@ -4,6 +4,7 @@
  * in place — same row, now with its contract and domainSep), and the NIGHT/DUST rows. Pure queries; no writes.
  */
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
+import { hexToBytes, toHex } from "./bytes.ts";
 import type { Queryable } from "./fields.ts";
 
 export interface MintRef {
@@ -43,19 +44,19 @@ export interface BuiltinToken {
   note: string;
 }
 
-const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
-const buf = (h: string): Buffer => Buffer.from(h.replace(/^0x/, ""), "hex");
+const hex = toHex;
+const buf = (h: string): Uint8Array => hexToBytes(h.replace(/^0x/, ""));
 
 interface MintAgg {
-  color: Buffer;
-  contract_address: Buffer;
-  domain_sep: Buffer;
+  color: Uint8Array;
+  contract_address: Uint8Array;
+  domain_sep: Uint8Array;
   kind: number;
   mints: string;
   amount: string;
   first_height: string;
   first_tx_index: number;
-  first_tx_hash: Buffer;
+  first_tx_hash: Uint8Array;
 }
 
 async function colorEntries(sql: Queryable, schema: string, network: string, color?: string): Promise<Map<string, ColorEntry>> {
@@ -97,7 +98,7 @@ export async function lookupColor(sql: Queryable, network: string, color: string
 
 /** Every native token color seen in public data or minted, ordered by first appearance. */
 export async function nativeTokens(sql: Queryable, network: string, schema = MIP0018_SCHEMA): Promise<NativeToken[]> {
-  const rows = await sql<{ color: Buffer; block_height: bigint; tx_index: number; tx_hash: Buffer; evidence: string | null }[]>`
+  const rows = await sql<{ color: Uint8Array; block_height: bigint; tx_index: number; tx_hash: Uint8Array; evidence: string | null }[]>`
     SELECT color, block_height, tx_index, tx_hash, evidence FROM ${sql(schema)}.mip0018_color_sightings WHERE network = ${network}
     UNION ALL
     SELECT color, block_height, tx_index, tx_hash, NULL FROM ${sql(schema)}.mip0018_mints WHERE network = ${network}
@@ -118,7 +119,7 @@ export async function nativeTokens(sql: Queryable, network: string, schema = MIP
 
 /** NIGHT and DUST (outside MIP-0018; seeded per network by the scanner). */
 export async function builtinTokens(sql: Queryable, network: string, schema = MIP0018_SCHEMA): Promise<BuiltinToken[]> {
-  const rows = await sql<{ symbol: "NIGHT" | "DUST"; name: string; decimals: number; color: Buffer | null; note: string }[]>`
+  const rows = await sql<{ symbol: "NIGHT" | "DUST"; name: string; decimals: number; color: Uint8Array | null; note: string }[]>`
     SELECT symbol, name, decimals, color, note FROM ${sql(schema)}.mip0018_builtin_tokens
     WHERE network = ${network} ORDER BY CASE symbol WHEN 'NIGHT' THEN 0 ELSE 1 END`;
   return rows.map((r) => ({ symbol: r.symbol, name: r.name, decimals: r.decimals, color: r.color === null ? undefined : hex(r.color), note: r.note }));

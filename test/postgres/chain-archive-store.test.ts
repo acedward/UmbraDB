@@ -1,6 +1,6 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import { BlobIntegrityError, BlobMissingError } from "../../src/interfaces/chain-archive-store.js";
 import { ValidationError } from "../../src/interfaces/storage-errors.js";
@@ -8,7 +8,7 @@ import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 
 /**
- * Real Postgres 17 (testcontainers), not mocked -- exercises `PgChainArchiveStore`
+ * A real database (Postgres 17 or PGlite, `test/helpers/test-database.ts`), not mocked -- exercises `PgChainArchiveStore`
  * (`src/postgres/chain-archive-store.ts`) end-to-end against the actual migrated schema, mapped
  * directly to the acceptance criteria the implementation sprint's task requires:
  *
@@ -26,21 +26,21 @@ import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_arch
  *     usable index/partition-pruning existed.
  */
 describe("PgChainArchiveStore", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let sql: UmbraDBSql;
   let store: PgChainArchiveStore;
   const schema = "chain_archive_store_test";
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
-    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    database = await openTestDatabase();
+    sql = database.client(schema);
     await runMigrations(sql, { schema, migrations: chainArchiveMigrations });
     store = new PgChainArchiveStore(sql, schema);
   }, 120_000);
 
   afterAll(async () => {
     await sql?.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   });
 
   const h = (n: number, tag = 0): string => (tag.toString(16).padStart(2, "0") + n.toString(16)).padStart(64, "0");
@@ -89,7 +89,8 @@ describe("PgChainArchiveStore", () => {
     let canonical = await store.getCanonicalBlockAtHeight(net, height);
     expect(canonical?.blockHash).toBe(blockA);
 
-    // The reorg flip itself, from a second connection concurrently polling mid-flip -- must
+    // The reorg flip itself, from a second connection concurrently polling mid-flip (on PGlite a second client of the
+    // one session, whose reads run between the flip's statements' transactions) -- must
     // never observe two canonical rows OR zero canonical rows (the spec's own scenario wording:
     // "it SHALL observe exactly one canonical row (A before the flip, B after) -- never zero,
     // never both"). Sol-audit fix round, Finding 5: the previous version of this test (a)
@@ -100,7 +101,7 @@ describe("PgChainArchiveStore", () => {
     const observations: string[] = [];
     let polling = true;
     const poller = (async () => {
-      const sql2 = createClient({ connectionString: container.getConnectionUri(), schema });
+      const sql2 = database.client(schema);
       try {
         while (polling) {
           const rows = await sql2<{ block_hash: Buffer }[]>`
@@ -108,6 +109,9 @@ describe("PgChainArchiveStore", () => {
             WHERE net = ${net} AND height = ${height} AND is_canonical
           `;
           observations.push(rows.length === 0 ? "NONE" : rows.length > 1 ? "MULTIPLE" : rows[0]!.block_hash.toString("hex"));
+          // Give the event loop a turn: a database in the test process (PGlite) answers without I/O, so a loop of reads
+          // would otherwise keep the flip's timers below from ever firing.
+          await new Promise((resolve) => setImmediate(resolve));
         }
       } finally {
         await sql2.end({ timeout: 5 });

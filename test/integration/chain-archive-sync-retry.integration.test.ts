@@ -1,13 +1,14 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
 import { NodeRpcInvalidHeightError } from "../../chain-archive-sync/node-rpc-client.js";
 import type { BlockBundle, Hex32 } from "../../src/interfaces/chain-archive-store.js";
 
 /**
- * Real Postgres (testcontainers), a fully-controllable fake node RPC / indexer GraphQL (no
+ * A real database (Postgres 17 or PGlite, `test/helpers/test-database.ts`), a fully-controllable fake node RPC /
+ * indexer GraphQL (no
  * dependency on a live devnet, unlike `chain-archive-sync.integration.test.ts`) -- exercises the
  * sprint-fix round's Fix 1 and Fix 2 end to end through `ChainArchiveSyncService.syncOnce`, the
  * real production entry point, not just the underlying store methods in isolation. Also covers
@@ -122,16 +123,16 @@ function fakeIndexerFetch(blocks: FakeChainBlock[], tipHeight?: number): typeof 
 }
 
 describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let sql: UmbraDBSql;
   let schemaCounter = 0;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
   }, 120_000);
 
   afterAll(async () => {
-    await container?.stop();
+    await database?.stop();
   }, 60_000); // teardown under heavy host load can exceed the 10s default (matches setup.ts)
 
   afterEach(async () => {
@@ -143,7 +144,7 @@ describe("ChainArchiveSyncService retry safety (sprint-fix round Fixes 1-3)", ()
     opts?: { badHeaderNumberForHash?: Hex32; indexerTipHeight?: number },
   ) {
     const schema = `retry_test_${schemaCounter++}`;
-    sql = createClient({ connectionString: container.getConnectionUri(), schema });
+    sql = database.client(schema);
     await bootstrapChainArchiveSchema(sql, schema);
     const service = new ChainArchiveSyncService({
       sql, net: NET, schema,

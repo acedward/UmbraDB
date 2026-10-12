@@ -1,4 +1,5 @@
-import type { DbTransaction } from "../db.js";
+import { bytesToHex, hexToBytes } from "../../src/postgres/bytes.js";
+import type { DbTransaction } from "../reader.js";
 import type { IndexerBlock, IndexerTransaction, IndexerTransactionLookup } from "../indexer-gql.js";
 import type { RpcLog } from "../logs/get-logs.js";
 import { MethodRegistry, type RpcContext } from "../registry.js";
@@ -50,7 +51,7 @@ type BlockProjection = Pick<TransactionShapeInput, "blockHash" | "blockNumber" |
  */
 export function positionHashOf(row: DbTransaction): string {
   const source = row.canonicalHash ?? row.hash;
-  return sourceFixedDataHex(source.toString("hex"), 32, "transaction hash");
+  return sourceFixedDataHex(bytesToHex(source), 32, "transaction hash");
 }
 
 /**
@@ -68,7 +69,7 @@ async function rowPosition(row: DbTransaction, ctx: RpcContext): Promise<BlockPr
   const index = await transactionIndexOf(ctx, row.blockHeight, positionHashOf(row));
   if (index === undefined) return null;
   return {
-    blockHash: row.blockHash === null ? ZERO_HASH : sourceFixedDataHex(row.blockHash.toString("hex"), 32, "block hash"),
+    blockHash: row.blockHash === null ? ZERO_HASH : sourceFixedDataHex(bytesToHex(row.blockHash), 32, "block hash"),
     blockNumber: quantity(row.blockHeight),
     transactionIndex: index,
   };
@@ -79,7 +80,7 @@ function transactionShapeFromRow(row: DbTransaction, position: BlockProjection):
     // The KEY the caller asked about, never `canonicalHash`: a JSON-RPC result must echo the
     // identifier it was queried by, and for a relayer row that is the eth-side hash MetaMask
     // is polling with.
-    hash: sourceFixedDataHex(row.hash.toString("hex"), 32, "transaction hash"),
+    hash: sourceFixedDataHex(bytesToHex(row.hash), 32, "transaction hash"),
     ...position,
     from: evmAddressFromBytes(row.fromAddress),
     to: evmAddressFromBytes(row.toAddress),
@@ -95,7 +96,7 @@ async function transactionFromDb(row: DbTransaction, ctx: RpcContext): Promise<R
 /** Enriches an already-positioned block transaction from tx_index when available. */
 export async function synthesizeBlockTransaction(input: TransactionShapeInput, ctx: RpcContext): Promise<Record<string, unknown>> {
   const hash = sourceFixedDataHex(input.hash, 32, "transaction hash");
-  const row = await ctx.db.getTransactionByHash(Buffer.from(hash.slice(2), "hex"));
+  const row = await ctx.db.getTransactionByHash(hexToBytes(hash.slice(2)));
   return row === undefined ? synthesizeTransaction(input) : transactionShapeFromRow(row, input);
 }
 
@@ -171,7 +172,7 @@ export function synthesizeReceipt(input: ReceiptShapeInput): Record<string, unkn
  * became possible once the canonical hash was resolvable).
  */
 async function logsFor(ctx: RpcContext, midnightHash: string): Promise<RpcLog[]> {
-  return ctx.db.getLogsByTransactionHash(Buffer.from(midnightHash.slice(2), "hex"));
+  return ctx.db.getLogsByTransactionHash(hexToBytes(midnightHash.slice(2)));
 }
 
 /**
@@ -198,7 +199,7 @@ async function receiptFromDb(row: DbTransaction, ctx: RpcContext): Promise<Recor
   const position = await rowPosition(row, ctx);
   if (position === null) return null;
   return synthesizeReceipt({
-    hash: sourceFixedDataHex(row.hash.toString("hex"), 32, "transaction hash"),
+    hash: sourceFixedDataHex(bytesToHex(row.hash), 32, "transaction hash"),
     ...position,
     from: evmAddressFromBytes(row.fromAddress),
     to: evmAddressFromBytes(row.toAddress),
@@ -241,7 +242,7 @@ export async function synthesizeBlockReceipt(
   const position = { hash, blockHash: input.blockHash, blockNumber: input.blockNumber, transactionIndex: input.transactionIndex };
   // The hash came from the block query, so it IS the Midnight hash the logs are keyed on.
   const logs = await logsFor(ctx, hash);
-  const row = await ctx.db.getTransactionByHash(Buffer.from(hash.slice(2), "hex"));
+  const row = await ctx.db.getTransactionByHash(hexToBytes(hash.slice(2)));
   if (row !== undefined) {
     return synthesizeReceipt({
       ...position,
@@ -288,7 +289,7 @@ export function registerTransactionMethods(registry: MethodRegistry): void {
   registry.registerMethod("eth_getTransactionByHash", async (params, ctx) => {
     const [hashValue] = positionalParams(params, 1);
     const hash = fixedDataHex(hashValue, 32, "transaction hash");
-    const row = await ctx.db.getTransactionByHash(Buffer.from(hash.slice(2), "hex"));
+    const row = await ctx.db.getTransactionByHash(hexToBytes(hash.slice(2)));
     // A row the block query cannot place falls THROUGH to the indexer rather than failing, so a
     // stale `tx_index` row answers `null` instead of `-32603` (plan 00006 F8.2 / K1).
     if (row !== undefined) {
@@ -301,7 +302,7 @@ export function registerTransactionMethods(registry: MethodRegistry): void {
   registry.registerMethod("eth_getTransactionReceipt", async (params, ctx) => {
     const [hashValue] = positionalParams(params, 1);
     const hash = fixedDataHex(hashValue, 32, "transaction hash");
-    const row = await ctx.db.getTransactionByHash(Buffer.from(hash.slice(2), "hex"));
+    const row = await ctx.db.getTransactionByHash(hexToBytes(hash.slice(2)));
     if (row !== undefined) {
       const fromRow = await receiptFromDb(row, ctx);
       if (fromRow !== null) return fromRow;

@@ -1,0 +1,16 @@
+/* The system status page of the static browser build (system.html). The look is the explorer's own
+   (mip0018/ui/page.css); this adds the toolbar, the section heads and the tones of a value. */
+.toolbar { margin: 14px 28px 0; }
+.toolbar #message { margin-top: 6px; min-height: 1.4em; overflow-wrap: anywhere; }
+.toolbar .jump { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; }
+section .head { margin-bottom: 10px; }
+section .head h2 { margin: 0; flex: 1 1 auto; }
+section .table { margin-top: 14px; }
+section .table .note { margin-bottom: 4px; }
+section[data-section] td .d { display: inline; max-width: none; overflow: visible; }
+section[data-section="logs"] td:last-child { white-space: normal; min-width: 40ch; }
+.kv .v.tone-ok { color: var(--tag-described-fg); font-weight: 600; }
+.kv .v.tone-warn { color: var(--tag-observed-fg); font-weight: 600; }
+.kv .v.tone-bad { color: var(--bad); font-weight: 600; }
+body[data-role="follower"] #role, body[data-tab="follower"] #role { color: var(--tag-observed-fg); }
+body[data-live="paused"] #live { color: var(--bad); }

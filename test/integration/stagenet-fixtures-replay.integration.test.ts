@@ -1,8 +1,8 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { archiveDigest, dumpArchive } from "./fixtures/stagenet-archive/archive-digest.js";
 import { startFakeChain } from "./fixtures/stagenet-archive/fake-chain-server.js";
 import { loadManifest, loadRangeTape } from "./fixtures/stagenet-archive/stagenet-fixtures.js";
@@ -10,7 +10,8 @@ import { loadManifest, loadRangeTape } from "./fixtures/stagenet-archive/stagene
 /**
  * CI's replay data source. Each recorded Stagenet range (the reference IDX scan 714485–715183 and
  * U1's 715402–715433) is served back over HTTP by `fake-chain-server.ts` and synced with the
- * UNCHANGED `ChainArchiveSyncService` into a fresh schema of a real Postgres 17 (Testcontainers).
+ * UNCHANGED `ChainArchiveSyncService` into a fresh schema of the file's database (Postgres 17 or PGlite,
+ * `test/helpers/test-database.ts`).
  * The archive it writes must have exactly the digest of the archive the LIVE polite sync of the
  * same range wrote at capture time (`manifest.json` → `ranges[].liveSync.archiveDigest`; every
  * table, every column but the wall-clock ones). No network.
@@ -19,16 +20,16 @@ import { loadManifest, loadRangeTape } from "./fixtures/stagenet-archive/stagene
 const NET = "stagenet";
 
 describe("Stagenet fixture replay = live archive", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const sqls: UmbraDBSql[] = [];
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
   }, 180_000);
 
   afterAll(async () => {
     for (const s of sqls) await s.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   it("[[stagenet.fixtures.replay-equals-live]] replaying each recorded range through chain-archive-sync reproduces the live sync's archive digest", async () => {
@@ -39,7 +40,7 @@ describe("Stagenet fixture replay = live archive", () => {
       const fake = await startFakeChain(tape);
       try {
         const schema = `replay_${range.name}`;
-        const sql = createClient({ connectionString: container.getConnectionUri(), schema });
+        const sql = database.client(schema);
         sqls.push(sql);
         await bootstrapChainArchiveSchema(sql, schema);
         const svc = new ChainArchiveSyncService({
@@ -76,7 +77,7 @@ describe("Stagenet fixture replay = live archive", () => {
     changed.transactions[0]!.transactionResult = { status: "PARTIAL_SUCCESS", segments: [{ id: 1, success: true }] };
     const fake = await startFakeChain(tape, { indexerOverrides: new Map([[715433, changed]]) });
     try {
-      const sql = createClient({ connectionString: container.getConnectionUri(), schema: "replay_u1_changed" });
+      const sql = database.client("replay_u1_changed");
       sqls.push(sql);
       await bootstrapChainArchiveSchema(sql, "replay_u1_changed");
       const svc = new ChainArchiveSyncService({

@@ -181,17 +181,21 @@ A minted identity without fields (never described, or withdrawn): `described: fa
   "mip": { "id": "MIP-0018", "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092" },
   "vendored": { "repository": "https://github.com/midnight-experiments/mip-0018", "commit": "daec1f19747b09f4e245885ab0dd9ecc789a82ce" },
   "scanner": "following",
-  "unresolvedEvents": 0
+  "unresolvedEvents": 0,
+  "durability": "durable"
 }
 ```
 
 `startHeight` = the scan's first height, `indexedHeight` = the last scanned height (the scan cursor), `archiveHeight`
 = the chain archive's last height (all `null` before anything is scanned/archived). `genesisHash` is the configured
 network's (`null` when unknown). `scanner`: `following` (this process runs the scan loop), `stalled` (the loop's last
-attempt failed; it retries), `off` (API only). `unresolvedEvents` = the stored `log` ops whose logged value the raw
+attempt failed; it retries), `off` (no scan loop runs: an API-only process, or the browser engine with its token
+indexer switched off while the archive syncs). `unresolvedEvents` = the stored `log` ops whose logged value the raw
 transaction does not show (`unresolved` in `/v1/events`; never applied — while a contract has one, its tokens'
 metadata may differ from the ledger's events and their mark is ⚠ `unresolved` or `incorrect`; README "Known
-limitation"); `null` before the scan's schema exists.
+limitation"); `null` before the scan's schema exists. `durability`: `durable` (the durability probe refuses
+`fsync=off`, as always on PostgreSQL), or `non-durable` (a PGlite database in the mode that accepts `fsync=off`: a
+crash of the OS or browser can lose it, and it is rebuilt from the chain or a snapshot).
 
 ### `GET /v1/tokens?limit=&cursor=`
 

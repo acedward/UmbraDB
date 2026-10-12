@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UmbraDB system status</title>
+  <link rel="icon" href="../mip0018/ui/favicon.ico" sizes="16x16 32x32 48x48">
+  <link rel="stylesheet" href="../mip0018/ui/page.css">
+  <link rel="stylesheet" href="./system.css">
+</head>
+<body data-state="loading">
+<header>
+  <div class="brand">
+    <h1>System status</h1>
+    <span class="rule"></span>
+    <span class="sub">the browser engine: configuration, sync, scan, databases, storage, tabs and logs (read-only)</span>
+  </div>
+  <nav class="tabs">
+    <a href="./index.html" id="explorer-link">&#8592; indexer overview</a>
+    <span class="sep"></span>
+    <span class="strip" id="role">connecting</span>
+    <span class="strip" id="live"></span>
+  </nav>
+</header>
+<div class="banner" id="banner" hidden></div>
+<div class="toolbar">
+  <div class="row">
+    <button type="button" id="download" data-action="download" disabled>Download diagnostics</button>
+    <span class="note" id="collection">waiting for the engine's first snapshot&#8230;</span>
+  </div>
+  <div class="note" id="message"></div>
+  <nav class="jump note">
+    <a href="#sys-overview">overview</a> <a href="#sys-configuration">configuration</a> <a href="#sys-sync">sync</a>
+    <a href="#sys-scan">scan</a> <a href="#sys-databases">databases</a> <a href="#sys-storage">storage</a>
+    <a href="#sys-api">API</a> <a href="#sys-engine">engine</a> <a href="#sys-browser">browser</a>
+    <a href="#sys-snapshots">snapshots</a> <a href="#sys-logs">logs</a>
+  </nav>
+</div>
+<main id="sections"></main>
+<div class="foot">This page only reads: the engine's controls (start, stop, range, reset, snapshots) and the modules are on
+the indexer's overview. It reads the engine while it is visible and nothing while it is hidden. "Download diagnostics" saves the
+snapshot shown here as JSON, with its log lines; URLs lose their credentials, query and fragment, and secret-looking
+values are removed.</div>
+<script type="module" src="./system-page.ts"></script>
+</body>
+</html>

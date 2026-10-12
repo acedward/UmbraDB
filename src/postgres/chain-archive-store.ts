@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   BlobIntegrityError,
   BlobMissingError,
@@ -17,6 +16,7 @@ import {
 } from "../interfaces/chain-archive-store.js";
 import { ValidationError } from "../interfaces/storage-errors.js";
 import type { JSONValue, TransactionSql } from "postgres";
+import { bytesToHex, hexToBytes, sha256Hex } from "./bytes.js";
 import type { UmbraDBSql } from "./client.js";
 import { translatePostgresError } from "./errors.js";
 
@@ -26,16 +26,14 @@ import { translatePostgresError } from "./errors.js";
  *  composed together inside ONE transaction (`putBlockBundle`, Fix 1). */
 type ChainArchiveTx = TransactionSql<{ bigint: bigint }>;
 
-function sha256Hex(data: Uint8Array): Hex32 {
-  return createHash("sha256").update(data).digest("hex");
+/** A `Hex32` as the bytes bound to a `bytea` parameter. */
+function hexToBuf(hex: Hex32): Uint8Array {
+  return hexToBytes(hex);
 }
 
-function hexToBuf(hex: Hex32): Buffer {
-  return Buffer.from(hex, "hex");
-}
-
-function bufToHex(buf: Buffer): Hex32 {
-  return buf.toString("hex");
+/** A `bytea` value as hex: a `Buffer` from postgres.js, a plain `Uint8Array` from PGlite. */
+function bufToHex(buf: Uint8Array): Hex32 {
+  return bytesToHex(buf);
 }
 
 function assertHex32(value: string, field: string): void {
@@ -45,14 +43,14 @@ function assertHex32(value: string, field: string): void {
 
 interface BlockRow {
   net: string;
-  block_hash: Buffer;
+  block_hash: Uint8Array;
   height: bigint;
-  parent_hash: Buffer;
-  state_root: Buffer;
-  extrinsics_root: Buffer;
-  author: Buffer | null;
-  header_blob_hash: Buffer;
-  body_blob_hash: Buffer | null;
+  parent_hash: Uint8Array;
+  state_root: Uint8Array;
+  extrinsics_root: Uint8Array;
+  author: Uint8Array | null;
+  header_blob_hash: Uint8Array;
+  body_blob_hash: Uint8Array | null;
   is_canonical: boolean;
   status: string;
   finalized: boolean;
@@ -60,15 +58,15 @@ interface BlockRow {
 
 interface TxRow {
   net: string;
-  tx_hash: Buffer;
+  tx_hash: Uint8Array;
   block_height: bigint;
-  block_hash: Buffer;
+  block_hash: Uint8Array;
   position: number;
   kind: string;
   protocol_version: number;
   result: string | null;
   segments: unknown;
-  raw_blob_hash: Buffer;
+  raw_blob_hash: Uint8Array;
 }
 
 function toBlockMeta(row: BlockRow): BlockMeta {
@@ -170,7 +168,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         const hash = hexToBuf(hashHex);
         await tx`
           INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
-          VALUES (${hash}, ${Buffer.from(data)})
+          VALUES (${hash}, ${new Uint8Array(data)})
           ON CONFLICT (hash) DO NOTHING
         `;
         await tx`
@@ -198,7 +196,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
     const headerHash = hexToBuf(headerHashHex);
     await tx`
       INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
-      VALUES (${headerHash}, ${Buffer.from(block.headerBytes)})
+      VALUES (${headerHash}, ${new Uint8Array(block.headerBytes)})
       ON CONFLICT (hash) DO NOTHING
     `;
     await tx`
@@ -207,14 +205,14 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       ON CONFLICT (blob_hash, role) DO NOTHING
     `;
 
-    let bodyHash: Buffer | null = null;
+    let bodyHash: Uint8Array | null = null;
     let bodyHashHex: Hex32 | undefined;
     if (block.bodyBytes !== undefined) {
       bodyHashHex = sha256Hex(block.bodyBytes);
       bodyHash = hexToBuf(bodyHashHex);
       await tx`
         INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
-        VALUES (${bodyHash}, ${Buffer.from(block.bodyBytes)})
+        VALUES (${bodyHash}, ${new Uint8Array(block.bodyBytes)})
         ON CONFLICT (hash) DO NOTHING
       `;
       await tx`
@@ -253,7 +251,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       const rawHash = hexToBuf(rawHashHex);
       await tx`
         INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
-        VALUES (${rawHash}, ${Buffer.from(t.rawBytes)})
+        VALUES (${rawHash}, ${new Uint8Array(t.rawBytes)})
         ON CONFLICT (hash) DO NOTHING
       `;
       await tx`
@@ -283,7 +281,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
       const rawHash = hexToBuf(rawHashHex);
       await tx`
         INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
-        VALUES (${rawHash}, ${Buffer.from(o.rawBytes)})
+        VALUES (${rawHash}, ${new Uint8Array(o.rawBytes)})
         ON CONFLICT (hash) DO NOTHING
       `;
       await tx`
@@ -381,7 +379,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
         const vkHash = hexToBuf(vkHashHex);
         await tx`
           INSERT INTO ${tx(this.schema)}.chain_blobs (hash, data)
-          VALUES (${vkHash}, ${Buffer.from(vk.vkBytes)})
+          VALUES (${vkHash}, ${new Uint8Array(vk.vkBytes)})
           ON CONFLICT (hash) DO NOTHING
         `;
         await tx`
@@ -427,7 +425,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
           WHERE net = ${net} AND height = ${height} AND is_canonical
             AND block_hash <> ${blockHashBuf}
         `;
-        const updated = await tx<{ block_hash: Buffer }[]>`
+        const updated = await tx<{ block_hash: Uint8Array }[]>`
           UPDATE ${tx(this.schema)}.blocks
           SET is_canonical = true, status = 'canonical',
               finalized = COALESCE(${opts?.finalized ?? null}, finalized)
@@ -521,7 +519,7 @@ export class PgChainArchiveStore implements ChainArchiveStore {
   async getBlob(hash: Hex32): Promise<Uint8Array> {
     assertHex32(hash, "getBlob.hash");
     try {
-      const rows = await this.sql<{ data: Buffer }[]>`
+      const rows = await this.sql<{ data: Uint8Array }[]>`
         SELECT data FROM ${this.sql(this.schema)}.chain_blobs WHERE hash = ${hexToBuf(hash)}
       `;
       if (rows.length === 0) throw new BlobMissingError(hash);

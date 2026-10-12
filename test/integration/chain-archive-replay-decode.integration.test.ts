@@ -2,9 +2,9 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import {
@@ -21,8 +21,8 @@ import {
  * `openspec/changes/full-chain-storage-acceptance-criteria/specs/full-chain-archive-
  * verification/spec.md`): an actual end-to-end test that reconstructs real zswap, unshielded-
  * UTXO, and dust events **using only archived raw transaction bytes** -- read back from a real
- * Postgres `chain_archive` schema (testcontainers) via `getBlob` (hash-verified, Postgres-only,
- * zero network) and decoded locally with the `@midnight-ntwrk/ledger-v8` WASM decoder -- then
+ * `chain_archive` schema (Postgres 17 or PGlite, `test/helpers/test-database.ts`) via `getBlob` (hash-verified,
+ * database-only, zero network) and decoded locally with the `@midnight-ntwrk/ledger-v8` WASM decoder -- then
  * checks every reconstructed value against what the indexer INDEPENDENTLY reports for the same
  * event (read from a real Midnight indexer's own SQLite storage, captured from a synced public
  * testnet -- the ground-truth side AC-4's scenarios explicitly call for, queried separately and
@@ -76,7 +76,7 @@ interface SqliteTxRow {
 describe.skipIf(!LEDGER_AVAILABLE || !GROUND_TRUTH_AVAILABLE)(
   "AC-4: zswap/unshielded/dust events reconstructed purely from archived raw bytes match the indexer's independent report",
   () => {
-    let container: StartedPostgreSqlContainer;
+    let database: TestDatabase;
     let sql: UmbraDBSql;
     let store: PgChainArchiveStore;
     let db: DatabaseSync;
@@ -153,8 +153,8 @@ describe.skipIf(!LEDGER_AVAILABLE || !GROUND_TRUTH_AVAILABLE)(
       zswapTx = readTxRow(zswapId);
       unshieldedDustTx = readTxRow(unshieldedId);
 
-      container = await new PostgreSqlContainer("postgres:17-alpine").start();
-      sql = createClient({ connectionString: container.getConnectionUri(), schema: SCHEMA });
+      database = await openTestDatabase();
+      sql = database.client(SCHEMA);
       await bootstrapChainArchiveSchema(sql, SCHEMA);
       store = new PgChainArchiveStore(sql, SCHEMA);
 
@@ -204,7 +204,7 @@ describe.skipIf(!LEDGER_AVAILABLE || !GROUND_TRUTH_AVAILABLE)(
     afterAll(async () => {
       db?.close();
       await sql?.end({ timeout: 5 });
-      await container?.stop();
+      await database?.stop();
     });
 
     it("genesis system transaction: archived bytes decode to the real DistributeReserve bootstrap (design doc §3.2 sample decodes to DistributeReserve(1000000000000000))", async () => {

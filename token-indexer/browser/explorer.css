@@ -1,0 +1,128 @@
+/* The main page of the static browser build (index.html): the header tabs, the overview (the indexer section with its
+   controls, engine-panel.ts, and the Modules section), the module tabs (the Token Indexer tab holding the explorer, the
+   JSON RPC tab with the same structure, module-page.ts), the Database tab, and the note the explorer puts next to every
+   list (the first indexed height). The rest of the look is the explorer's own (mip0018/ui/page.css). */
+.tab-panel > .page { padding: 18px 28px 40px; display: grid; gap: 18px; }
+.tab-panel > .page > * { min-width: 0; }
+header.product nav.tabs a.system-link { font-size: 12.5px; }
+/* A module's page inside its tab (the explorer's, and module-page.ts's with the same structure): its own header is the
+   tab's sub-header; the page's header carries the wordmark. Its refresh button looks like the explorer's (button#now). */
+.tab-panel.module-tab > header { padding-top: 14px; background: var(--panel); }
+.tab-panel.module-tab > header .brand svg, .tab-panel.module-tab > header .brand .rule { display: none; }
+.tab-panel.module-tab > header h1 { font-size: 17px; }
+.tab-panel.module-tab button.now { background: var(--accent); border-color: var(--accent); color: var(--md-white); }
+.tab-panel.module-tab button.now:hover:enabled { background: #0000c4; border-color: #0000c4; }
+.engine-panel h2, .modules h2, .database-view h2 { margin: 0; flex: 1 1 auto; }
+.engine-panel > .row:first-child { margin-bottom: 12px; }
+.engine-panel .controls { margin-top: 14px; }
+.engine-panel .controls .sep { width: 1px; height: 22px; background: var(--rule); }
+.engine-panel input[type="text"] { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--ctl);
+  background: var(--md-white); color: var(--ink); }
+.engine-panel input[type="file"] { font-size: 12px; max-width: 26ch; }
+.engine-panel .confirm { margin-top: 12px; padding: 10px 14px; border: 1px solid var(--tag-observed-bd);
+  background: var(--tag-observed-bg); color: var(--tag-observed-fg); font-size: 13px; }
+.engine-panel .confirm .row { margin-top: 8px; }
+.engine-panel [data-field="message"], .modules [data-field="modules-message"], .database-view [data-field="db-message"] {
+  margin-top: 10px; min-height: 1.4em; overflow-wrap: anywhere; }
+/* An explanation on demand (explain.ts): its control reads as text with a dotted underline; its box opens next to it. */
+button.explain-control { font: inherit; font-size: inherit; font-weight: inherit; color: inherit; background: none; border: none;
+  padding: 0; margin: 0; text-align: left; cursor: pointer; text-decoration: underline dotted; text-decoration-color: var(--ctl);
+  text-underline-offset: 3px; overflow-wrap: anywhere; }
+button.explain-control:hover:enabled { border: none; text-decoration-color: var(--accent); }
+button.explain-control[aria-expanded="true"] { text-decoration-color: var(--accent); }
+button.explain-control:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The box: a popover anchored to the control that opened it, under it (above it, or to the other side, when there is no
+   room), over the page: it moves nothing and no scrolling container clips it. */
+.explain-box[popover] { position: fixed; inset: auto; margin: 4px 0; position-area: bottom span-right;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline; max-width: min(90ch, calc(100vw - 32px));
+  max-height: 50vh; overflow: auto; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  background: var(--md-white); color: var(--ink); font-size: 12.5px; line-height: 1.45; white-space: normal;
+  overflow-wrap: anywhere; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14); }
+.explain-box .explain-line + .explain-line { margin-top: 2px; }
+.engine-panel[data-state="failed"] [data-field="state"],
+.engine-panel[data-state="unsupported"] [data-field="state"],
+.engine-panel[data-state="stalled (scan)"] [data-field="state"],
+.engine-panel[data-health="stalled-scan"] [data-field="health"],
+.engine-panel[data-health="error"] [data-field="health"] { color: var(--bad); }
+.engine-panel[data-state="waiting (network)"] [data-field="state"],
+.engine-panel[data-state="paused (storage)"] [data-field="state"],
+.engine-panel[data-health="waiting-network"] [data-field="health"],
+.engine-panel[data-health="paused-quota"] [data-field="health"],
+.engine-panel[data-health="catching-up"] [data-field="health"] { color: var(--tag-observed-fg); }
+.engine-panel[data-health="following"] [data-field="health"],
+.engine-panel[data-health="running"] [data-field="health"] { color: var(--tag-described-fg); font-weight: 600; }
+.modules .head, .database-view .head { margin-bottom: 10px; }
+.modules td { vertical-align: middle; }
+.modules td.toggle { width: 2em; }
+.modules label.name { font-weight: 600; }
+.modules tr[data-state="planned"] label.name { color: var(--dim); font-weight: 500; }
+.database-view .picker { margin: 10px 0; }
+.database-view select { font: inherit; font-size: 13px; padding: 4px 6px; max-width: 100%; }
+.database-view .table-list { max-height: 26em; overflow-y: auto; }
+.database-view section.rows { margin-top: 18px; background: var(--md-white); }
+.database-view section.rows td .d { max-width: none; }
+.database-view section.rows th .type { display: block; font-family: var(--mono); font-size: 11px; color: var(--dim); font-weight: 400; }
+.database-view section.rows td button.explain-control { font-family: inherit; }
+.database-view td.hex { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.range-note { margin: -6px 0 10px; }
+.modules .now { margin-top: 2px; color: var(--ink); }
+/* The JSON RPC tab (jsonrpc-view.ts): the method list beside the chosen method; on a narrow screen the list is above. */
+.rpc-explorer { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.rpc-explorer > * { min-width: 0; }
+.rpc-list { background: var(--panel); border: 1px solid var(--line); padding: 12px 10px; position: sticky; top: 8px;
+  max-height: calc(100vh - 16px); overflow-y: auto; box-sizing: border-box; }
+.rpc-list input[type="search"] { font: inherit; font-size: 13px; width: 100%; box-sizing: border-box; padding: 5px 8px;
+  border: 1px solid var(--ctl); background: var(--md-white); color: var(--ink); }
+.rpc-list [data-field="rpc-list-count"] { margin: 6px 2px 0; }
+.rpc-list h2 { margin: 14px 2px 4px; }
+.rpc-list ul { list-style: none; margin: 0; padding: 0; }
+.rpc-list a.rpc-method { display: block; padding: 3px 8px; font-family: var(--mono); font-size: 12.5px; color: var(--ink);
+  text-decoration: none; border-left: 2px solid transparent; overflow-wrap: anywhere; }
+.rpc-list a.rpc-method:hover { background: var(--hover); }
+.rpc-list a.rpc-method.on { border-left-color: var(--accent); background: var(--tint-blue); }
+.rpc-list a.rpc-method[data-kind="node-only"], .rpc-list a.rpc-method[data-kind="not-implemented"] { color: var(--dim); }
+.rpc-list > p.note { margin: 14px 2px 0; overflow-wrap: anywhere; }
+.rpc-detail .rpc-title h3 { margin: 0; font-family: var(--mono); font-size: 17px; overflow-wrap: anywhere; }
+.rpc-detail .rpc-summary { margin: 8px 0 4px; font-size: 13px; }
+.rpc-detail p.note { margin: 4px 0; overflow-wrap: anywhere; }
+.rpc-detail .rpc-node-only { margin: 12px 0 0; font-size: 13px; color: var(--dim); }
+.rpc-detail .rpc-modes { margin-top: 14px; gap: 4px; }
+.rpc-detail .rpc-modes button[aria-pressed="true"], .rpc-answer button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.rpc-detail .rpc-field { margin-top: 10px; }
+.rpc-detail .rpc-field label { font-weight: 600; font-size: 13px; }
+.rpc-detail .rpc-field .row { margin-top: 4px; }
+.rpc-detail input[type="text"], .rpc-detail textarea, .rpc-detail select { font-family: var(--mono); font-size: 12.5px; padding: 4px 7px;
+  border: 1px solid var(--ctl); background: var(--md-white); color: var(--ink); box-sizing: border-box; }
+.rpc-detail .rpc-field input[type="text"], .rpc-detail .rpc-field textarea { width: min(100%, 62ch); }
+.rpc-detail .rpc-field select + input[type="text"] { width: min(100%, 50ch); }
+.rpc-detail [aria-invalid="true"] { border-color: var(--bad); }
+.rpc-detail textarea.rpc-raw { width: 100%; margin-top: 10px; resize: vertical; }
+.rpc-detail .err:empty { display: none; }
+.rpc-detail h2.rpc-sub { margin: 18px 0 6px; }
+.rpc-detail pre { margin: 0; padding: 8px 10px; background: var(--md-white); border: 1px solid var(--line); font-family: var(--mono);
+  font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32em; overflow-y: auto; }
+.rpc-detail pre:empty { display: none; }
+.rpc-detail .rpc-actions { margin-top: 10px; }
+.rpc-detail details.rpc-curl { margin-top: 8px; }
+.rpc-detail details.rpc-curl summary { cursor: pointer; }
+.rpc-detail .d { max-width: none; }
+.rpc-answer .rpc-tree { margin-top: 8px; padding: 8px 10px; background: var(--md-white); border: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12px; max-height: 40em; overflow: auto; }
+.rpc-answer .rpc-tree summary { cursor: pointer; }
+.rpc-answer .rpc-tree .kids { padding-left: 18px; border-left: 1px dotted var(--line); margin-left: 4px; }
+.rpc-answer .rpc-tree .leaf { padding: 1px 0; overflow-wrap: anywhere; }
+.rpc-answer .rpc-tree .k { color: var(--dim); }
+.rpc-answer .rpc-tree .v-string { color: var(--tag-described-fg); }
+.rpc-answer .rpc-tree .v-number, .rpc-answer .rpc-tree .v-boolean, .rpc-answer .rpc-tree .v-null { color: var(--accent); }
+.rpc-answer .rpc-tree .dec { font-family: inherit; }
+.rpc-answer > pre { margin-top: 8px; }
+.rpc-history .head { margin-bottom: 8px; }
+.rpc-history h2 { margin: 0; }
+.rpc-history td.params { white-space: normal; max-width: 50ch; overflow-wrap: anywhere; }
+.rpc-history td.outcome { white-space: normal; max-width: 40ch; }
+.rpc-history td .d { max-width: none; display: inline; }
+.rpc-status .v[data-bad] { color: var(--bad); }
+@media (max-width: 760px) {
+  .rpc-explorer { grid-template-columns: minmax(0, 1fr); }
+  .rpc-list { position: static; max-height: 45vh; }
+}

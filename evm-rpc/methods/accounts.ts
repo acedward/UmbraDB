@@ -1,16 +1,17 @@
+import { hexToBytes } from "../../src/postgres/bytes.js";
 import { MethodRegistry } from "../registry.js";
 import { fixedDataHex, invalidParams, positionalParams, quantity } from "./common.js";
 
 export const NIGHT_TO_WEI_SCALE = 1_000_000_000_000n;
 
-function accountParams(params: unknown): { address: Buffer; tag: unknown } {
+function accountParams(params: unknown): { address: Uint8Array; tag: unknown } {
   const [addressValue, tag = "latest"] = positionalParams(params, 1, 2);
   const address = fixedDataHex(addressValue, 20, "address");
   if (typeof tag !== "string") {
     // Historical state is unavailable, but syntactically the second argument remains a block tag.
     invalidParams("block tag must be a string");
   }
-  return { address: Buffer.from(address.slice(2), "hex"), tag };
+  return { address: hexToBytes(address.slice(2)), tag };
 }
 
 export function scaleNightToWei(value: bigint): bigint {

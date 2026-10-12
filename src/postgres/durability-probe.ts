@@ -17,9 +17,24 @@ import { StorageError } from "../interfaces/storage-errors.js";
  * is no `sql.unsafe()` site here — the frozen-surface allowlist is unchanged.
  */
 
-/** A recoverable durability trade the operator may deliberately accept (returned, never thrown). */
+/**
+ * How much durability a database client promises. `durable` is the PostgreSQL contract of this module (`fsync=off`
+ * is refused). `non-durable` accepts `fsync=off` by configuration: an OS or browser crash can lose or corrupt the
+ * database, which is then rebuilt (from the chain or a snapshot). Only the PGlite client (`pglite-sql.ts`) can be
+ * created `non-durable`, and the probe accepts the mode only on a server that identifies itself as PGlite.
+ */
+export type DurabilityMode = "durable" | "non-durable";
+
+/** The durability mode a client was created with: `non-durable` for a PGlite client created in that mode (it carries
+ *  the mode as `umbradbDurability`), `durable` for every other client. */
+export function durabilityModeOf(sql: unknown): DurabilityMode {
+  return (sql as { umbradbDurability?: unknown } | null | undefined)?.umbradbDurability === "non-durable" ? "non-durable" : "durable";
+}
+
+/** A durability trade that is accepted, never refused (returned, never thrown): `lost-tail`, a recoverable trade the
+ *  operator may deliberately accept; `non-durable`, `fsync=off` accepted by the client's non-durable mode. */
 export interface DurabilityWarning {
-  readonly kind: "lost-tail";
+  readonly kind: "lost-tail" | "non-durable";
   readonly setting: string;
   readonly value: string;
   readonly message: string;
@@ -81,6 +96,43 @@ export function classifyFsync(value: string): DurabilityViolation | null {
     };
   }
   return null;
+}
+
+/** Whether a `version()` string is PGlite's (`PostgreSQL 18.3 (PGlite 0.5.8) on wasm32-unknown-emscripten, …`). */
+export function isPgliteServer(version: string): boolean {
+  return /^PostgreSQL \S+ \(PGlite \d[^)]*\) /.test(version);
+}
+
+/**
+ * `fsync=off` under a client in the non-durable mode: accepted by configuration on a PGlite server (a `non-durable`
+ * warning), a violation on any other server (the non-durable mode is PGlite's only). `null` when `fsync` is on.
+ */
+export function classifyNonDurableFsync(
+  value: string,
+  serverVersion: string,
+): { warning: DurabilityWarning } | { violation: DurabilityViolation } | null {
+  if (value !== "off") return null;
+  if (isPgliteServer(serverVersion)) {
+    return {
+      warning: {
+        kind: "non-durable",
+        setting: "fsync",
+        value,
+        message:
+          "fsync=off accepted by configuration: this PGlite database runs in the non-durable mode, so an OS or " +
+          "browser crash can lose or corrupt it; it is rebuilt from the chain or a snapshot.",
+      },
+    };
+  }
+  return {
+    violation: {
+      setting: "durability",
+      value: "non-durable",
+      message:
+        "the non-durable mode is accepted only on PGlite; this server is not PGlite, so fsync=off is refused as " +
+        "on any PostgreSQL server.",
+    },
+  };
 }
 
 export function classifyFullPageWrites(value: string, allowOff: boolean): DurabilityViolation | null {
@@ -189,7 +241,9 @@ export async function probeAdvisoryLockVisibility(
 /**
  * Reads `fsync`, `synchronous_commit`, and `full_page_writes` on one pinned session and detects a
  * transaction pooler. Throws `DurabilityContractError` on a hard violation (fsync/full_page_writes)
- * or `TransactionPoolerDetectedError` on a pooler; otherwise returns any lost-tail warnings.
+ * or `TransactionPoolerDetectedError` on a pooler; otherwise returns any lost-tail warnings. A client
+ * in the non-durable mode (`durabilityModeOf`) on a PGlite server has `fsync=off` accepted, returned
+ * as a `non-durable` warning; on any other server it is refused as always.
  */
 export async function probeDurability<TTypes extends Record<string, unknown> = {}>(
   sql: Sql<TTypes>,
@@ -206,12 +260,22 @@ export async function probeDurability<TTypes extends Record<string, unknown> = {
     const fullPageWrites = await readSetting("full_page_writes");
 
     const violations: DurabilityViolation[] = [];
-    const fsyncViolation = classifyFsync(fsync);
-    if (fsyncViolation) violations.push(fsyncViolation);
+    const warnings: DurabilityWarning[] = [];
+    let fsyncViolation = classifyFsync(fsync);
+    if (fsyncViolation && durabilityModeOf(sql) === "non-durable") {
+      const version = await reserved<{ v: string }[]>`select version() as v`;
+      const nonDurable = classifyNonDurableFsync(fsync, version[0]!.v);
+      if (nonDurable !== null && "warning" in nonDurable) {
+        fsyncViolation = null;
+        warnings.push(nonDurable.warning);
+      } else if (nonDurable !== null) {
+        violations.push(nonDurable.violation);
+      }
+    }
+    if (fsyncViolation) violations.unshift(fsyncViolation);
     const fpwViolation = classifyFullPageWrites(fullPageWrites, opts?.allowFullPageWritesOff ?? false);
     if (fpwViolation) violations.push(fpwViolation);
 
-    const warnings: DurabilityWarning[] = [];
     const syncWarning = classifySynchronousCommit(synchronousCommit);
     if (syncWarning) warnings.push(syncWarning);
 

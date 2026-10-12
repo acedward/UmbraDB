@@ -11,7 +11,7 @@ import type { Server } from "node:http";
 import { Script } from "node:vm";
 import { afterAll, describe, expect, it } from "vitest";
 import type { UmbraDBSql } from "../../src/postgres/client.js";
-import { createMip0018Api, listen } from "../mip0018/api.ts";
+import { createMip0018Api, listen } from "../mip0018/api-node.ts";
 import { serve, type ServeHandle } from "../mip0018/serve-cli.ts";
 import { serveUi, sha256Source, UI_CSP, UI_HTML, UI_SCRIPT, UI_STYLE } from "../mip0018/ui/page.ts";
 

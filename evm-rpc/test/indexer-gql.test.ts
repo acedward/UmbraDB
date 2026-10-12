@@ -39,5 +39,29 @@ describe("IndexerGqlClient", () => {
     });
     await expect(parseClient.getLatestBlock()).rejects.toBeInstanceOf(IndexerGqlError);
   });
-});
 
+  it("[[evm-rpc.indexer-gql.before-request]] a request waits for beforeRequest and its timeout starts once admitted; a refused admission fetches nothing", async () => {
+    const events: string[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      events.push(`fetch, signal ${init?.signal?.aborted === true ? "aborted" : "live"}`);
+      return new Response(JSON.stringify({ data: { block: null } }));
+    }) as typeof fetch;
+    const client = new IndexerGqlClient({
+      url: "http://indexer/graphql",
+      fetchImpl,
+      timeoutMs: 50,
+      beforeRequest: async () => {
+        events.push("waiting");
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        events.push("admitted");
+      },
+    });
+    await expect(client.getLatestBlock()).resolves.toBeUndefined();
+    expect(events).toEqual(["waiting", "admitted", "fetch, signal live"]);
+
+    events.length = 0;
+    const refusing = new IndexerGqlClient({ url: "http://indexer/graphql", fetchImpl, beforeRequest: async () => { throw new Error("no room"); } });
+    await expect(refusing.getLatestBlock()).rejects.toThrow(IndexerGqlError);
+    expect(events).toEqual([]);
+  });
+});

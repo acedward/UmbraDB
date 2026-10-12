@@ -1,5 +1,5 @@
 import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
-import { defaultMinIntervalMs, parseRetryAfterMs, RequestPacer } from "./polite-http.js";
+import { defaultMinIntervalMs, type Pacer, parseRetryAfterMs, RequestPacer } from "./polite-http.js";
 
 /**
  * Minimal Substrate JSON-RPC client for a Midnight node -- plain `fetch`, no SDK dependency
@@ -60,6 +60,16 @@ export class NodeRpcParseError extends Error {
   }
 }
 
+/** A `null` result for a block the caller knows exists (a height at or below the finalized tip, a hash the chain
+ *  returned): the endpoint answered from a backend that does not have it yet (a load-balanced endpoint with a backend
+ *  behind the chain). Retried as a parse error is (`retry.ts`): the next answer may come from another backend. */
+export class NodeRpcMissingError extends NodeRpcParseError {
+  constructor(message: string, url: string, method: string) {
+    super(message, url, method);
+    this.name = "NodeRpcMissingError";
+  }
+}
+
 /** Fix 3: raised by `getHeightOf` when the node's `header.number` field is missing or does not
  *  decode to a safe integer -- previously `parseInt(header.number, 16)` silently produced `NaN`
  *  in that case, which then made `syncOnce`'s loop-bounds check (`startHeight > NaN` is always
@@ -80,6 +90,12 @@ export interface NodeRpcClientOptions {
   /** Minimum spacing between two request starts. Default: 250 ms for a public
    *  Midnight host (`polite-http.ts`), 0 otherwise. */
   minIntervalMs?: number;
+  /** A pacer shared with the other clients of the same endpoint, used instead of a pacer of the client's own (and of
+   *  `minIntervalMs`). Default: none. */
+  pacer?: Pacer;
+  /** The caller's stop: when it ends, a call waiting for the pacer's turn ends at once and never starts its request, a
+   *  request in flight is aborted, and a later call is refused. Default: none. */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -93,14 +109,16 @@ export class NodeRpcClient {
   private readonly publicUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
-  private readonly pacer: RequestPacer;
+  private readonly pacer: Pacer;
+  private readonly signal: AbortSignal | undefined;
 
   constructor(opts: NodeRpcClientOptions) {
     this.url = opts.url;
     this.publicUrl = publicEndpoint(opts.url);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.pacer = new RequestPacer(opts.minIntervalMs ?? defaultMinIntervalMs(opts.url));
+    this.pacer = opts.pacer ?? new RequestPacer(opts.minIntervalMs ?? defaultMinIntervalMs(opts.url));
+    this.signal = opts.signal;
   }
 
   /** The effective request spacing (logged by the CLI). */
@@ -110,14 +128,15 @@ export class NodeRpcClient {
 
   private async call<T>(method: string, params: unknown[]): Promise<T> {
     const id = nextId++;
-    await this.pacer.wait();
+    if (this.signal?.aborted === true) throw this.signal.reason;
+    await this.pacer.wait(this.signal);
     let res: Response;
     try {
       res = await this.fetchImpl(this.url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: this.signal === undefined ? AbortSignal.timeout(this.timeoutMs) : AbortSignal.any([AbortSignal.timeout(this.timeoutMs), this.signal]),
       });
     } catch (err) {
       throw new NodeRpcError(
@@ -151,15 +170,22 @@ export class NodeRpcClient {
 
   /** `null` params ⇒ current best (not-necessarily-finalized) head's hash. */
   async getBlockHash(height?: number): Promise<string> {
-    return this.call<string>("chain_getBlockHash", height === undefined ? [] : [height]);
+    return this.present("chain_getBlockHash", height, await this.call<string | null>("chain_getBlockHash", height === undefined ? [] : [height]));
   }
 
   async getHeader(blockHash?: string): Promise<SubstrateHeader> {
-    return this.call<SubstrateHeader>("chain_getHeader", blockHash === undefined ? [] : [blockHash]);
+    return this.present("chain_getHeader", blockHash, await this.call<SubstrateHeader | null>("chain_getHeader", blockHash === undefined ? [] : [blockHash]));
   }
 
   async getBlock(blockHash?: string): Promise<SubstrateBlock> {
-    return this.call<SubstrateBlock>("chain_getBlock", blockHash === undefined ? [] : [blockHash]);
+    return this.present("chain_getBlock", blockHash, await this.call<SubstrateBlock | null>("chain_getBlock", blockHash === undefined ? [] : [blockHash]));
+  }
+
+  /** `result`, or a {@link NodeRpcMissingError} when the node answered `null` for `what`. */
+  private present<T>(method: string, what: string | number | undefined, result: T | null | undefined): T {
+    if (result === null || result === undefined)
+      throw new NodeRpcMissingError(`${method}: ${this.publicUrl} has no block for ${what ?? "its head"} (it answered null)`, this.publicUrl, method);
+    return result;
   }
 
   async getFinalizedHead(): Promise<string> {

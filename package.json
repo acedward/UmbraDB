@@ -34,10 +34,16 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "build:browser": "vite build --config token-indexer/browser/vite.config.ts && tsx token-indexer/dev/browser-snapshot.ts --out dist-browser",
+    "dev:browser": "vite --config token-indexer/browser/vite.config.ts",
+    "serve:browser": "tsx token-indexer/dev/serve-browser.ts",
     "docs:storage": "typedoc",
     "docs:storage:check": "typedoc --emit none --treatWarningsAsErrors",
     "test": "vitest run",
     "test:conformance": "node scripts/conformance-gate.mjs",
+    "test:pglite": "node scripts/pglite-gate.mjs",
+    "test:browser": "vitest run token-indexer/test/browser- token-indexer/test/mip0018-ui-browser",
+    "test:crash": "UMBRADB_CRASH_RUNS=${UMBRADB_CRASH_RUNS:-100} vitest run token-indexer/test/browser-crash-chrome.test.ts -t crash.kills",
     "test:coverage": "vitest run --coverage",
     "test:mutation": "stryker run",
     "test:mutation:ci": "node scripts/mutation-per-adapter.mjs",
@@ -58,6 +64,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@midnightntwrk/ledger-v9": "1.0.0-rc.3",
     "@midnightntwrk/wallet-sdk-abstractions": "3.0.0-canary.20260716150734-e744d99",
     "@midnightntwrk/wallet-sdk-address-format": "4.0.0-beta.2",
@@ -80,6 +87,8 @@
     "tsx": "^4.23.1",
     "typedoc": "^0.28.0",
     "typescript": "^5.9.0",
+    "vite": "8.3.4",
+    "vite-plugin-wasm": "3.6.0",
     "vitest": "^4.1.10"
   }
 }

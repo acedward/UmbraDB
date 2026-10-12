@@ -8,7 +8,8 @@ import { NodeRpcError, NodeRpcParseError } from "./node-rpc-client.js";
  *
  * Retryable: HTTP 429 (rate limited), 403 (what a WAF in front of a public endpoint answers when it
  * decides a client is abusive -- observed on the public preprod RPC), 5xx (outage), a failed
- * transport (DNS, reset, timeout) and a 2xx whose body is not JSON (a proxy's error page). Never
+ * transport (DNS, reset, timeout), a 2xx whose body is not JSON (a proxy's error page) and a node's `null` for a block
+ * it should have (`NodeRpcMissingError`: a load-balanced endpoint's backend behind the chain). Never
  * retried: a JSON-RPC/GraphQL protocol error, a malformed block number, the "indexer has not yet
  * synced height N" signal and any database error -- those are surfaced to the caller's own loop.
  */

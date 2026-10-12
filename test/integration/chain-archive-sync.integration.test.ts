@@ -1,12 +1,13 @@
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import { openTestDatabase, type TestDatabase } from "../helpers/test-database.ts";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
 import { IndexerClient } from "../../chain-archive-sync/indexer-client.js";
 
 /**
- * REAL, non-mocked, live end-to-end integration test: a real Postgres (testcontainers) plus a
+ * REAL, non-mocked, live end-to-end integration test: a real database (Postgres 17 or PGlite,
+ * `test/helpers/test-database.ts`) plus a
  * live HTTP connection to an already-running local Midnight devnet (node RPC
  * `http://localhost:9944`, indexer GraphQL `http://localhost:8088/api/v3/graphql`, network id
  * `undeployed1` -- confirmed live via `system_chain` during the original implementation session).
@@ -48,12 +49,12 @@ const INDEXER_URL = "http://localhost:8088/api/v3/graphql";
 const up = await devnetIsUp();
 
 describe.skipIf(!up)("ChainArchiveSyncService against the live local devnet (real node + indexer, real Postgres)", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let sql: UmbraDBSql;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
-    sql = createClient({ connectionString: container.getConnectionUri(), schema: "chain_archive" });
+    database = await openTestDatabase();
+    sql = database.client("chain_archive");
     // The "real invocation path" (task requirement 1): bootstraps the chain_archive schema via
     // runMigrations(sql, { schema, migrations: chainArchiveMigrations }), exercised here against
     // a real Postgres instance, not merely unit-tested in isolation
@@ -65,7 +66,7 @@ describe.skipIf(!up)("ChainArchiveSyncService against the live local devnet (rea
 
   afterAll(async () => {
     await sql?.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   });
 
   it("syncs real blocks from genesis, including genesis's real ~26 transactions with cross-checked raw bytes", async () => {

@@ -6,11 +6,12 @@
  *
  * The archive is filled first by `chain-archive-sync/sync-cli.ts --from N --to M`. The scan stops when it reaches
  * `--to` or the archive's last height, printing one JSON line per batch and a final summary; exit 0. Re-running
- * resumes at the scan's own cursor.
+ * resumes at the scan's own cursor. The scan runs in the indexer engine (`../engine/engine.ts`, scan mode `drain`);
+ * this file parses the arguments, opens the database and prints the engine's batches.
  */
 import { parseArgs } from "node:util";
 import { createClient } from "../../src/postgres/client.js";
-import { Mip0018Scanner } from "./scan.ts";
+import { createIndexerEngine } from "../engine/engine.ts";
 
 export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env, log: (line: string) => void = console.log): Promise<number> {
   const { values } = parseArgs({
@@ -34,19 +35,21 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
   };
   const sql = createClient({ connectionString: url, schema: values.schema });
   try {
-    const scanner = new Mip0018Scanner({
+    const engine = createIndexerEngine({
       sql, network: values.network, schema: values.schema, archiveSchema: values["archive-schema"],
-      ...(values.from === undefined ? {} : { fromHeight: int(values.from, "from")! }),
-      ...(values.to === undefined ? {} : { toHeight: int(values.to, "to")! }),
+      scan: {
+        mode: "drain",
+        ...(values.from === undefined ? {} : { fromHeight: int(values.from, "from")! }),
+        ...(values.to === undefined ? {} : { toHeight: int(values.to, "to")! }),
+        batch: int(values["max-blocks"], "max-blocks")!,
+      },
+      onEvent: (e) => {
+        if (e.source === "scan" && e.event === "batch") log(JSON.stringify({ event: "batch", ...e.fields }));
+      },
     });
-    await scanner.bootstrap();
-    const maxBlocks = int(values["max-blocks"], "max-blocks")!;
-    for (;;) {
-      const r = await scanner.scanOnce({ maxBlocks });
-      log(JSON.stringify({ event: "batch", ...r }));
-      if (r.reachedEnd || r.scannedBlocks === 0) break;
-    }
-    log(JSON.stringify({ event: "done", cursor: await scanner.getCursor() }));
+    await engine.start();
+    await engine.finished;
+    log(JSON.stringify({ event: "done", cursor: await engine.scanCursor() }));
     return 0;
   } finally {
     await sql.end({ timeout: 5 });

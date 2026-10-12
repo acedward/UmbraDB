@@ -445,7 +445,7 @@ describe("PgTransactionHistoryStorage", () => {
     });
 
     it("rejects an object key (not just a string leaf) containing a NUL byte", () => {
-      const badKey = String.fromCharCode(98, 97, 100, 0, 107, 101, 121); // "bad key"
+      const badKey = String.fromCharCode(98, 97, 100, 0, 107, 101, 121); // "bad\0key"
       const s = store();
       return expect(
         s.gotFinalized(entry("bad-key1", ["a"], { note: { [badKey]: 1 } })),

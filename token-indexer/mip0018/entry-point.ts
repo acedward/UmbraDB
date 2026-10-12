@@ -15,11 +15,12 @@
  * not empty. Everything else (NUL, controls, spaces, bidi or other non-ASCII characters, non-UTF-8 bytes) is served
  * as hex only. The rule is UmbraDB's display choice.
  */
+import { latin1Text, toHex, utf8Bytes } from "./bytes.ts";
 
 /** The bytes the ledger stored for an entry point, from ledger-v9's JS form (`Uint8Array | string`). */
-export function entryPointBytes(e: Uint8Array | string): Buffer {
-  if (typeof e === "string") return Buffer.from(e, "utf8"); // the ledger produced the string from valid UTF-8: exact
-  if (e instanceof Uint8Array) return Buffer.from(e);
+export function entryPointBytes(e: Uint8Array | string): Uint8Array {
+  if (typeof e === "string") return utf8Bytes(e); // the ledger produced the string from valid UTF-8: exact
+  if (e instanceof Uint8Array) return new Uint8Array(e);
   throw new TypeError(`an entry point is a string or a Uint8Array, got ${typeof e}`);
 }
 
@@ -34,7 +35,7 @@ function permitted(b: number): boolean {
 export function entryPointText(bytes: Uint8Array): string | null {
   if (bytes.length === 0) return null;
   for (const b of bytes) if (!permitted(b)) return null;
-  return Buffer.from(bytes).toString("latin1"); // ASCII only here, so latin1 = UTF-8 = the bytes
+  return latin1Text(bytes); // ASCII only here, so latin1 = UTF-8 = the bytes
 }
 
 /**
@@ -59,9 +60,9 @@ export interface EntryPointJson {
 /** `bytes` = the entry point, or its first bytes when `length` (its full length) is larger. */
 export function entryPointJson(bytes: Uint8Array, length = bytes.length): EntryPointJson {
   if (length > bytes.length || bytes.length > ENTRY_POINT_MAX_BYTES)
-    return { hex: Buffer.from(bytes.subarray(0, ENTRY_POINT_MAX_BYTES)).toString("hex"), length, truncated: true };
+    return { hex: toHex(bytes.subarray(0, ENTRY_POINT_MAX_BYTES)), length, truncated: true };
   const text = entryPointText(bytes);
-  const out: EntryPointJson = { hex: Buffer.from(bytes).toString("hex") };
+  const out: EntryPointJson = { hex: toHex(bytes) };
   if (text !== null) out.text = text;
   return out;
 }
@@ -72,5 +73,5 @@ export function entryPointJson(bytes: Uint8Array, length = bytes.length): EntryP
  * cannot be confused). ASCII only; the exact bytes are stored next to it.
  */
 export function entryPointLabel(bytes: Uint8Array): string {
-  return entryPointText(bytes) ?? `<bytes ${Buffer.from(bytes).toString("hex")}>`;
+  return entryPointText(bytes) ?? `<bytes ${toHex(bytes)}>`;
 }

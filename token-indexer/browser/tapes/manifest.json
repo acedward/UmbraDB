@@ -1,0 +1,32 @@
+{
+  "format": "umbradb-stagenet-browser-tapes/1",
+  "$comment": "gzip copies of the recorded Stagenet range tapes, for browsers (Chrome's DecompressionStream has no brotli). Each copy decodes to exactly the JSON text of its brotli source in the fixture folder. Written by token-indexer/dev/browser-tapes.ts; checked by test/integration/stagenet-browser-tapes.test.ts.",
+  "sourceManifest": "test/integration/fixtures/stagenet-archive/manifest.json",
+  "compression": "gzip, level 9 (node:zlib)",
+  "tapes": [
+    {
+      "range": "idx",
+      "path": "stagenet-714485-715183.tape.json.gz",
+      "bytes": 1010756,
+      "sha256": "60b9681d9fb8991efe98ca3ae0aadfb9d809bab4f1710ab8579ce85384f268c1",
+      "source": "stagenet-714485-715183.tape.json.br",
+      "sourceSha256": "014875e6b864a53f5f51f5419a71a5019450826a81f3a82e012b34591c1815b2",
+      "json": {
+        "bytes": 2941341,
+        "sha256": "539de31cffdb77f6c6e950d455c4b69f292ff087b7073365d3c5b01289caf65d"
+      }
+    },
+    {
+      "range": "u1",
+      "path": "stagenet-715402-715433.tape.json.gz",
+      "bytes": 48947,
+      "sha256": "7c9beb9e3a2ee6aa0af652f1c7553d670faac9354670ff66c3cfd1c16f06898d",
+      "source": "stagenet-715402-715433.tape.json.br",
+      "sourceSha256": "bdc6b4dccfff3983e50ea373d6a79c5e41d660234ad7425e994af55266df4923",
+      "json": {
+        "bytes": 135594,
+        "sha256": "b50d04c6d82166306298bf109b5724b9f96da5d63e2ad669d4eaaff8dc28d446"
+      }
+    }
+  ]
+}

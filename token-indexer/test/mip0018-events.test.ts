@@ -10,18 +10,19 @@
  * the accepted and rejected positions are listed below). The C10 payload is MIP Appendix A (A1).
  */
 import { Event, Transaction } from "@midnightntwrk/ledger-v9";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { openTestDatabase, type TestDatabase } from "../../test/helpers/test-database.ts";
 import { bootstrapChainArchiveSchema } from "../../chain-archive-sync/bootstrap.js";
 import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.js";
-import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadContractEvents, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
-import { createMip0018Api, listen } from "../mip0018/api.ts";
+import { createMip0018Handler } from "../mip0018/api.ts";
 import { eventCounts, listEvents, type LoggedEvent } from "../mip0018/events.ts";
 import { listIdentities } from "../mip0018/metadata.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { decodePayload, EVENT_NAME, encodePayload, record, toHex } from "../vendor/mip0018/codec/src/index.ts";
+import { requestBothWays, serveBothWays } from "./helpers/api-both-ways.ts";
 import { decodeSynthetic, putSyntheticBlocks, type SynthArchivedTx, type SynthLog, type SynthOp } from "./helpers/synthetic-archive.ts";
 
 const NET = "stagenet";
@@ -59,7 +60,7 @@ const V1 = toHex(EVENT_NAME);
 const pos = (e: LoggedEvent): string => `${e.height}/${e.txIndex}/${e.eventIndex}`;
 
 describe("MIP-0018 events from raw transactions", () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   const clients: UmbraDBSql[] = [];
   let counter = 0;
   const ranges: Record<string, { sql: UmbraDBSql; mip: string }> = {};
@@ -68,7 +69,7 @@ describe("MIP-0018 events from raw transactions", () => {
     const n = counter++;
     const archive = `${prefix}_arch_${n}`;
     const mip = `${prefix}_mip_${n}`;
-    const sql = createClient({ connectionString: container.getConnectionUri(), schema: mip });
+    const sql = database.client(mip);
     clients.push(sql);
     await bootstrapChainArchiveSchema(sql, archive);
     return { sql, archive, mip };
@@ -94,14 +95,14 @@ describe("MIP-0018 events from raw transactions", () => {
   }
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:17-alpine").start();
+    database = await openTestDatabase();
     await archiveAndScan("idx", loadRangeTape("idx"), 714485, 715183);
     await archiveAndScan("u1", loadRangeTape("u1"), 715402, 715433);
   }, 300_000);
 
   afterAll(async () => {
     for (const c of clients) await c.end({ timeout: 5 });
-    await container?.stop();
+    await database?.stop();
   }, 60_000);
 
   const events = (range: "idx" | "u1", filter: Parameters<typeof listEvents>[2] = {}) =>
@@ -242,17 +243,16 @@ describe("MIP-0018 events from raw transactions", () => {
     ]);
     expect(await eventCounts(db.sql, NET, A, db.mip)).toEqual({ events: 4, accepted: 2, rejected: 0, ignored: 0, unresolved: 2 });
 
-    // Served: position and reason in /v1/events, the count in /v1/status.
-    const server = createMip0018Api({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive });
-    const port = await listen(server, 0, "127.0.0.1");
+    // Served: position and reason in /v1/events, the count in /v1/status (over HTTP and through handle(), identical).
+    const api = await serveBothWays(createMip0018Handler({ sql: db.sql, network: NET, schema: db.mip, archiveSchema: db.archive }));
+    const server = api.server;
     try {
-      const base = `http://127.0.0.1:${port}`;
-      const ev = (await (await fetch(`${base}/v1/events?contract=${A}`)).json()) as { items: Array<Record<string, unknown>> };
+      const ev = (await requestBothWays(api, `/v1/events?contract=${A}`)).json as { items: Array<Record<string, unknown>> };
       expect(ev.items.map((e) => [e.eventIndex, e.classification, e.reason])).toEqual([
         [0, "accept", null], [1, "accept", null], [2, "unresolved", "log-operand-not-pushed"], [3, "unresolved", "log-conditionally-executed"],
       ]);
       expect(ev.items[2]).toEqual({ height: 700, txIndex: 0, txHash: "d5".repeat(32), eventIndex: 2, segment: 1, phase: "guaranteed", contractAddress: A, classification: "unresolved", reason: "log-operand-not-pushed" });
-      const st = (await (await fetch(`${base}/v1/status`)).json()) as { unresolvedEvents: number; indexedHeight: number };
+      const st = (await requestBothWays(api, "/v1/status")).json as { unresolvedEvents: number; indexedHeight: number };
       expect(st).toMatchObject({ unresolvedEvents: 2, indexedHeight: 701 });
     } finally {
       server.closeAllConnections();

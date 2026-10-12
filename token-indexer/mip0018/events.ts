@@ -6,6 +6,7 @@
  */
 import type { UmbraDBSql } from "../../src/postgres/client.js";
 import { MIP0018_SCHEMA } from "../../src/postgres/migrations/mip0018/index.js";
+import { hexToBytes, toHex } from "./bytes.ts";
 
 export interface LoggedEvent {
   height: number;
@@ -27,17 +28,17 @@ export interface LoggedEvent {
   kind: number | undefined;
 }
 
-const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
-const buf = (h: string): Buffer => Buffer.from(h.replace(/^0x/, "").toLowerCase(), "hex");
+const hex = toHex;
+const buf = (h: string): Uint8Array => hexToBytes(h.replace(/^0x/, "").toLowerCase());
 
 /** Events of a network in chain order, optionally of one contract and/or one transaction. */
 export async function listEvents(
   sql: UmbraDBSql, network: string, filter: { contractAddress?: string; txHash?: string } = {}, schema = MIP0018_SCHEMA,
 ): Promise<LoggedEvent[]> {
   const rows = await sql<{
-    block_height: bigint; tx_index: number; event_index: number; tx_hash: Buffer | null; segment_id: number | null; phase: string | null;
-    contract_address: Buffer; event_type: string; name: Buffer; payload: Buffer; classification: LoggedEvent["classification"];
-    reason: string | null; domain_sep: Buffer | null; kind: number | null;
+    block_height: bigint; tx_index: number; event_index: number; tx_hash: Uint8Array | null; segment_id: number | null; phase: string | null;
+    contract_address: Uint8Array; event_type: string; name: Uint8Array; payload: Uint8Array; classification: LoggedEvent["classification"];
+    reason: string | null; domain_sep: Uint8Array | null; kind: number | null;
   }[]>`
     SELECT block_height, tx_index, event_index, tx_hash, segment_id, phase, contract_address, event_type, name, payload,
            classification, reason, domain_sep, kind

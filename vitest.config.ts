@@ -1,10 +1,12 @@
-import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+import { configDefaults, defineConfig } from "vitest/config";
+import { POSTGRESQL_ONLY_FILES, TEST_BACKEND } from "./test/helpers/postgresql-only.ts";
 
 /**
  * UmbraDB test + coverage configuration.
  *
  * Behaviour of `vitest run` is unchanged from the pre-config defaults (default `forks` pool,
- * default `**​/*.{test,spec}.ts` include, no global setup) — this file exists to add the
+ * default include of every `*.test.ts` and `*.spec.ts` file in any directory, no global setup) — this file exists to add the
  * **coverage gate** that `v1.0.0-recovery-testing` owns and must CI-wire before G9 is declared
  * CLOSED (`docs/v1-implementation-guideline.md` §1.0, §2.3, §3.6). `src/` behaviour is untouched;
  * coverage only READS `src`.
@@ -33,7 +35,7 @@ import { defineConfig } from "vitest/config";
  *
  * vitest-4 semantics honoured: a file matched by a glob threshold is checked ONLY against that
  * glob (the global thresholds are NOT inherited), and glob keys must be real patterns — hence the
- * `**​/postgres/<file>.ts` form (a bare relative path does not match the provider's file paths) and
+ * double-star `postgres/<file>.ts` form (a bare relative path does not match the provider's file paths) and
  * the explicit `perFile: true` on each glob (globs do not inherit the top-level `perFile`).
  *
  * The deferred full-chain-archival track (`chain-archive-*`, `migrations/chain_archive/**`;
@@ -42,7 +44,7 @@ import { defineConfig } from "vitest/config";
  */
 
 // Per-file durability floors (lines / branches) — BINDING §2.3 minimum is 90 / 85; each is pinned
-// at or a few points below the measured value but NEVER under 90 / 85. `**​/postgres/<file>.ts`
+// at or a few points below the measured value but NEVER under 90 / 85. `**/postgres/<file>.ts`
 // matches exactly the postgres adapter (not its `interfaces/` namesake).
 const DURABILITY = {
   "**/postgres/checkpoint-store.ts": { lines: 94, branches: 93, perFile: true },
@@ -59,13 +61,25 @@ const DURABILITY = {
   "**/postgres/transaction-lease.ts": { lines: 90, branches: 85, perFile: true },
 } as const;
 
+// The database the tests run on (`UMBRADB_BACKEND`, `test/helpers/test-database.ts`). On PGlite the PostgreSQL-only
+// files are not collected (`test/helpers/postgresql-only.ts` gives each one's reason), and a file that still starts a
+// PostgreSQL container fails at once instead of quietly running on PostgreSQL.
+const ON_PGLITE = TEST_BACKEND === "pglite";
+
 export default defineConfig({
   test: {
+    exclude: ON_PGLITE ? [...configDefaults.exclude, ...POSTGRESQL_ONLY_FILES] : configDefaults.exclude,
+    alias: ON_PGLITE
+      ? { "@testcontainers/postgresql": fileURLToPath(new URL("./test/helpers/no-postgresql-container.ts", import.meta.url)) }
+      : {},
     // Teardown budget. `registerSuiteLifecycle`'s afterAll already sets 60s explicitly because
     // `container.stop()` can exceed the 10s default under heavy host load; suites with a plain
     // inline afterAll (e.g. chain-archive-rollover) inherit this global so coverage-instrumented,
     // fully-parallel runs don't flake on teardown. Inline explicit timeouts still win.
     hookTimeout: 60_000,
+    // Test budget, for the same reason: a test that opens PGlite, starts a worker or a browser takes a few seconds on a
+    // slow runner with coverage (the default 5s is a fast machine's figure). A test that sets its own timeout keeps it.
+    testTimeout: 60_000,
     coverage: {
       provider: "v8",
       all: true,

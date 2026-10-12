@@ -1,0 +1,1594 @@
+/**
+ * The browser engine's host: what the worker (`worker.ts`) runs, written against injected dependencies only, so tests
+ * drive it in Node with an in-memory PGlite (`memory://`).
+ *
+ * **Boot**, once, in phases reported to the page as `boot` notices and in `status`:
+ * 1. `capabilities`: the capability check (`capabilities.ts`). A refusal ends the boot as `unsupported`; nothing is
+ *    opened or started.
+ * 2. `store`: PGlite opens the store (`store.ts`); on a first open it creates the database (about a second in Chrome,
+ *    with a second PGlite heap while it runs). Under the store's lock, first: a new store the saved settings ask for
+ *    (the mark of a `range` or `reset` that did not finish) is made, any import journal dropped; otherwise an import a
+ *    previous worker left unfinished (its journal) is finished, which replaces the store (see Snapshots). Otherwise the
+ *    store's identity file (`store-identity.ts`) is read: a store another PGlite version wrote is refused unopened, and
+ *    so is a store whose identity file cannot be read; a new store is marked "creating" before PGlite creates it. A
+ *    store marked "creating" (its first boot never completed: a worker that ended while PGlite created it leaves files
+ *    PGlite cannot open, and nothing was stored) is removed and created again. Any other store that fails to open is
+ *    reported.
+ * 3. `ledger`: loads ledger-v9 (WASM) and checks that its classes kept their names: the scan stores a contract action's
+ *    class name, so a build that renamed them would write wrong rows. A renamed class fails the boot.
+ * 4. `migrate`: both schema lineages, the chain archive's and MIP-0018's, as the Node commands run them.
+ * Then the store's identity is written (a boot that cannot write it fails), the saved configuration is read (after a
+ * finished import, the one that continues it is saved first, and only then is the import's journal removed), and the
+ * boot is `ready`. A failure in 2–4 or after ends the boot `failed` and closes the store (its lock is released). When
+ * the store is the reason (refused, unopenable, or opened but unusable: its migrations, its identity or finishing an
+ * import failed), `storeProblem` says so, and the requests that replace the store (`reset`, `range`, `import`) then
+ * replace it under its lock and run the boot again; nothing is ever read from a refused store. A ledger that fails to
+ * load is not the store's fault: no `storeProblem`, and nothing offers to drop the store's data for it.
+ *
+ * **Requests** (`protocol.ts`): `status` answers at any time; `api` waits for the boot and answers through the running
+ * engine's API handler, or, while no engine runs, a handler of the same store with no loops (`scanner: "off"`); `start`
+ * saves the given configuration, or the saved one, with the automatic start on and runs a new engine (sync + scan in
+ * follow mode) with it, `stop` stops it; `range` saves the new range with the mark that the store is to be replaced
+ * (one write, `settings.ts`), then replaces the store with a new, empty one and starts the range, `reset` does the same
+ * with the saved configuration (replacing the store: PGlite is closed, every file of the store is removed, and the boot
+ * runs again from its store phase, so nothing of the old database survives; it saves the settings again without the
+ * mark once the new store is in place); all four run one at a time, in arrival order. A boot that finds the mark (a
+ * worker ended before the new store was in place) makes the new store first and drops any import journal on file: the
+ * mark is the newer of the two, since an import that starts while it is on file clears it right after writing its
+ * journal (a worker that ends in between leaves the mark, and the new store is made). `digest` computes the store's
+ * archive and range-tables digests in one read-only transaction (the loops wait for it); `system` watches or refreshes
+ * the system snapshot and `watchdog` sets the page's watchdog and starts the heartbeat (`host-system.ts`). `module`
+ * switches the token indexer (the MIP-0018 scan) off or on: off, the running engine's scan stops at a block boundary
+ * while its sync goes on; on, it continues from its cursor; the choice is saved with the settings before anything is
+ * switched (every save of the settings keeps it, also before and after the store is replaced), and every engine the
+ * host runs afterwards (a `start`, a reopen, a replaced store, the next worker or tab) starts with it. `tables` and
+ * `rows` read the store's catalog and a page of one of its tables for the Database tab (`store-tables.ts`), between the
+ * engine's transactions; while the store is replaced they wait for the new one (or answer `boot-failed` when the
+ * replacement fails).
+ *
+ * **JSON RPC** (`jsonrpc-module.ts`): `jsonrpc` answers one JSON-RPC 2.0 request body with the EVM JSON-RPC module's
+ * read-only methods, as Node's `npm run evm-rpc` answers it, while the `jsonrpc` module is on (the saved settings; on
+ * unless they say otherwise), and is refused `module-off` while it is off. The module starts with the first request it
+ * answers: its `evm_rpc` database, a PGlite database in memory made by the module's migrations, is then created
+ * (about a second), and its blocks and transactions come from the build's indexer (`indexerUrl`). It answers at most 8
+ * requests at once; another one is refused `busy`. `module` saves the switch first, like the token indexer's; switched
+ * off, new requests are refused at once, the requests it is answering end at once (`module-off`: their indexer requests
+ * are cut short) and its database is closed. Every worker reads the switch from the settings (a reload, a worker the
+ * watchdog restarted, the next leader tab, a replaced store); the module does not touch the store.
+ *
+ * **Snapshots** (`snapshot-store.ts`): `export` writes a snapshot file (the rows of the store's tables) while the engine
+ * runs (a consistent read between two transactions). `import` checks a snapshot file and loads its rows into a trial
+ * store in memory without touching anything (a refusal changes nothing, and a running engine keeps running); then it
+ * saves the file as the store's import journal (a failure to save it changes nothing), stops the engine, waits for the
+ * requests reading the store, closes PGlite keeping the store's lock, and runs the boot again from its store phase,
+ * which finishes the import from the journal; meanwhile the requests that read the store wait. An import stops the
+ * engine as `stop` does (the automatic start is off) and saves a configuration that continues the imported archive: its
+ * first height as the start, no end, the saved source and tuning; a `start` then continues from the snapshot's height
+ * + 1. A failed import closes every store it opened. The last export and import are in `status` and in the system
+ * snapshot.
+ *
+ * **Engine**: the engine (`../engine/engine.ts`) runs with a scheduler that yields to the event loop before each step
+ * (`scheduler.ts`), so requests and `stop` are served while it syncs; the chain is the network (`fetch` to the node and
+ * the indexer) or a recorded range replayed in the worker (`tapes.ts`). A store whose archive has a cursor continues
+ * from it, through any gap since it stopped (never jumping to the new tip). A new archive starts at `startHeight`, by
+ * default the finalized tip both sources serve, `min(node finalized height, indexer tip)`, resolved when the sync
+ * begins: while the endpoints fail the engine waits with back-off, and it never starts at genesis by default. The
+ * clients reach PGlite through the session monitor (`session.ts`), which also gives the event loop a turn between
+ * statements, so API requests are served between block transactions while a step runs. A sync loop that ends with an
+ * error (a range the archive cannot honour, a failed cursor read) ends the engine, so the scan never follows an
+ * archive that no longer grows: the engine is reported failed with the sync's error (`status`, an `engine` notice),
+ * and the API keeps answering.
+ *
+ * **Saved configuration** (`settings.ts`): the last `start` configuration or `range`, kept beside the store, and
+ * whether the engine should start by itself (`autoStart`; a `stop` request turns it off until the next `start`). A
+ * `start` with no configuration runs it; an automatic start (`automatic: true`) runs it only if the settings say to
+ * start by itself when it runs; the leader tab and a restart's restore send that once the worker has booted
+ * (`tabs.ts`, `supervisor.ts`), so a new store starts at the tip and a reopened one resumes, a chosen range keeping its
+ * end. The settings also say whether the store holds an imported snapshot (from an import until `range` or `reset`
+ * replaces it): a `reset` then starts the build's default configuration, as on a new store. What the next worker runs comes
+ * from these settings alone, so a change is answered only once it is saved: a `start`, `module`, `range` or `reset` the
+ * browser refuses to save changes nothing (`settings-failed`); a `stop` always stops the engine and answers
+ * `settings-failed` when staying stopped could not be saved. A `start` of what the settings already say (the
+ * automatic start, a restart's restore) writes nothing, so it runs also while the browser refuses writes.
+ *
+ * **Storage** (`quota.ts`): the boot takes the first reading of the browser's usage and quota before `ready`, so every
+ * `status` of a ready worker reports one (`storage`); before each sync batch the guard reads them again and pauses the
+ * sync before the quota is reached; it resumes once space frees. A write the browser refuses anyway (a sync or scan
+ * error saying a file could not grow) rolls its block back and pauses the sync the same way, with the refusal as the
+ * reason, until a later batch can write.
+ *
+ * **Reopen**: PGlite fails every statement once a database has failed about 1,700 statements (and until it is
+ * reopened). The host counts the statements the database fails and, at {@link REOPEN_AFTER_FAILED_STATEMENTS} since
+ * the store was opened, or at once when a statement fails with "stack depth limit exceeded", reopens the store: it
+ * holds new requests, stops the engine (its steps in flight end, so both cursors are at a full block), lets the
+ * requests reading the store end, closes PGlite, opens it again and runs the engine again with the same configuration
+ * (it continues at the cursors).
+ */
+import { archiveDigest, dumpArchive } from "../../chain-archive-sync/archive-digest.js";
+import type { ArchiveTape } from "../../chain-archive-sync/archive-tape.js";
+import { createTapeFetch } from "../../chain-archive-sync/tape-replay.js";
+import { durabilityModeOf } from "../../src/postgres/durability-probe.js";
+import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
+import { mip0018Migrations } from "../../src/postgres/migrations/mip0018/index.js";
+import type { UmbraDBSql } from "../../src/postgres/client.js";
+import { KNOWN_GENESIS } from "../mip0018/api-views.ts";
+import { createIndexerEngine, type EngineClock, type EngineEvent, type EngineOptions, type EngineScheduler, type IndexerEngine, systemClock } from "../engine/engine.ts";
+import { rangeTables } from "../engine/range-tables.ts";
+import { defaultMinIntervalMs } from "../../chain-archive-sync/polite-http.js";
+import { checkCapabilities } from "./capabilities.ts";
+import { JSONRPC_CHAIN_ID, JSONRPC_MAX_REQUESTS, JSONRPC_START_TIMEOUT_MS, jsonRpcClientVersion, type JsonRpcModule, JsonRpcModuleError, type JsonRpcModuleOptions, startJsonRpcModule } from "./jsonrpc-module.ts";
+import { NODE_ONLY_METHODS } from "../../evm-rpc/method-info.js";
+import { NOT_IMPLEMENTED_METHODS } from "../../evm-rpc/methods/not-implemented.js";
+import { registerReadOnlyMethods } from "../../evm-rpc/read-only.js";
+import { MethodRegistry } from "../../evm-rpc/registry.js";
+import { PacingQueue } from "./pacing-queue.ts";
+import { type BuildInfo, createHostSystem, type SystemProviders } from "./host-system.ts";
+import {
+  type ApiResult,
+  type BootState,
+  type CapabilityReport,
+  type DigestResult,
+  type EngineSettings,
+  type ErrorCode,
+  type HostStatus,
+  type ImportResult,
+  type JsonRpcStateResult,
+  boundedModules,
+  issuesOf,
+  type ModuleId,
+  type Notice,
+  parseRequest,
+  PROTOCOL_VERSION,
+  type ProtocolError,
+  type Request,
+  type RequestType,
+  type Response,
+  type StartConfig,
+  StartConfigSchema,
+  type StoreInfo,
+  type TapeRange,
+} from "./protocol.ts";
+import { browserStorageEnvironment, createQuotaGuard, isRefusedWrite, type StorageEnvironment } from "./quota.ts";
+import { yieldingScheduler } from "./scheduler.ts";
+import { STACK_DEPTH_EXCEEDED } from "./session.ts";
+import { type EngineSettingsStore, memorySettingsStore, opfsSettingsStore, SavedSettingsSchema } from "./settings.ts";
+import { pgliteVersionOf, type SnapshotManifest, type SnapshotRecord, SnapshotRefusal, snapshotRecord } from "./snapshot.ts";
+import {
+  exportSnapshot,
+  type ExportedSnapshot,
+  openFinishingImport,
+  type OpenedStore,
+  prepareImport,
+  type SnapshotFiles,
+  snapshotFilesFor,
+  type PreparedImport,
+  type TrialOpener,
+} from "./snapshot-store.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, migrateStore, openStore, type OpenStoreOptions, type Store, StoreBusyError } from "./store.ts";
+import { STORE_IDENTITY_FORMAT, storeIdentityFor, type StoreIdentityFile, unopenableStore, unreadableIdentity, unusableStore, versionRefusal } from "./store-identity.ts";
+import { listTables, readRows, TableRefusal } from "./store-tables.ts";
+import type { HeldLock } from "./tab-locks.ts";
+import { loadTape } from "./tapes.ts";
+
+/** Heights per sync batch unless `start` says otherwise: a stop waits for at most one batch. */
+export const DEFAULT_SYNC_MAX_BLOCKS = 20;
+/** Blocks per scan step unless `start` says otherwise: API requests are served between steps. */
+export const DEFAULT_SCAN_BATCH = 10;
+
+/** Failed statements since the store was opened at which the host reopens it: well below the about 1,700 (`exec`) to
+ *  1,870 (`query`) after which PGlite 0.5.8 fails every statement. */
+export const REOPEN_AFTER_FAILED_STATEMENTS = 1_000;
+
+/** The ledger-v9 classes whose names the scan stores. */
+export const LEDGER_CLASS_NAMES = ["Transaction", "ContractCall", "ContractDeploy", "MaintenanceUpdate"] as const;
+
+export type LogLevel = "info" | "warn" | "error";
+
+export interface WorkerHostOptions {
+  /** The network of the store, the sync and the API. */
+  network: string;
+  /** The PGlite data directory (`opfs-ahp://<name>`, `memory://`). */
+  dataDir: string;
+  /** The endpoints a `network` source uses when `start` names none. */
+  nodeUrl: string;
+  indexerUrl: string;
+  /** Default: {@link checkCapabilities} on the worker's global scope. */
+  checkCapabilities?: () => Promise<CapabilityReport>;
+  /** Default: {@link openStore}. The host passes the session monitor's options and those that finish a pending
+   *  snapshot import. */
+  openStore?: (dataDir: string, opts?: OpenStoreOptions) => Promise<Store>;
+  /** Runs both schema lineages' migrations on the store (the boot's `migrate` phase). Default: {@link migrateStore}. */
+  migrate?: (store: Store) => Promise<void>;
+  /** Loads ledger-v9. Default: `import("@midnightntwrk/ledger-v9")`. */
+  loadLedger?: () => Promise<Record<string, unknown>>;
+  /** Loads a recorded range. Default: {@link loadTape}. */
+  loadTape?: (range: TapeRange) => Promise<ArchiveTape>;
+  /** `fetch` of a `network` source and of the JSON RPC module. Default: the global `fetch`. */
+  fetch?: typeof fetch;
+  /** The JSON RPC module: the client version it reports (the worker gives the build's; default
+   *  `jsonRpcClientVersion("unknown")`), its chain ID (the worker gives the build's; default the module's, 2400) and how
+   *  it starts (default {@link startJsonRpcModule}). */
+  jsonRpc?: {
+    clientVersion?: string;
+    chainId?: bigint;
+    start?: (o: JsonRpcModuleOptions) => Promise<JsonRpcModule>;
+    /** The deadline of the module's start. Default {@link JSONRPC_START_TIMEOUT_MS}. */
+    startTimeoutMs?: number;
+  };
+  clock?: EngineClock;
+  /** Default: {@link yieldingScheduler}. */
+  schedule?: EngineScheduler;
+  /** Receives the host's log lines. Default: the console. */
+  log?: (level: LogLevel, message: string) => void;
+  /** A monotonic clock in milliseconds for the boot timings. Default `performance.now`. */
+  monotonic?: () => number;
+  /** The configuration of a store with no saved one. Default `{}` (the network endpoints, from the finalized tip). */
+  defaultStart?: StartConfig;
+  /** Where the saved configuration is kept. Default: a file beside an `opfs-ahp://` store, else memory. */
+  settings?: EngineSettingsStore;
+  /** What the storage guard reads. Default: `navigator.storage` and the store's OPFS directory. */
+  storage?: StorageEnvironment;
+  /** The storage guard's intervals (`quota.ts`). */
+  quota?: { checkEveryMs?: number; recheckMs?: number; storeEveryMs?: number; readTimeoutMs?: number };
+  /** Called with the store before `range` or `reset` replaces it (an export can be taken there). */
+  beforeWipe?: (store: Store) => Promise<void>;
+  /** Facts of the build for the system snapshot. */
+  build?: BuildInfo | null;
+  /** What the system snapshot reads from other parts of the host (each has a placeholder default, `host-system.ts`). */
+  system?: SystemProviders;
+  /** Collection intervals of the system snapshot. Default 2 s and 30 s. */
+  systemIntervals?: { countersEveryMs?: number; databaseEveryMs?: number };
+  /** Time between two turns the session gives the event loop while statements run back to back (`session.ts`). */
+  sliceMs?: number;
+  /** Failed statements since the store was opened at which it is reopened. Default {@link REOPEN_AFTER_FAILED_STATEMENTS}. */
+  reopenAfterFailedStatements?: number;
+  /** Where a snapshot import keeps its journal and how the store's files are found and removed. Default: beside an
+   *  `opfs-ahp://` store in OPFS, else memory. */
+  snapshotFiles?: SnapshotFiles;
+  /** Opens the new, empty store an import's trial loads the snapshot into. Default: `openStore("memory://")` (through
+   *  {@link openStore} when that is given). */
+  snapshotTrial?: TrialOpener;
+  /** Where the store's identity (the PGlite version that wrote it) is kept. Default: beside an `opfs-ahp://` store in
+   *  OPFS, else memory. The check before opening needs the running version: `build.pgliteVersion`. */
+  storeIdentity?: StoreIdentityFile;
+}
+
+export interface WorkerHost {
+  /** Runs the boot once; later calls return the same promise. Never rejects. */
+  boot(): Promise<BootState>;
+  /** Answers one incoming message. Never rejects: every failure is an error response. */
+  receive(raw: unknown): Promise<Response>;
+  /** Adds a notice listener; returns the function that removes it. */
+  onNotice(listener: (notice: Notice) => void): () => void;
+  /** Stops the engine and closes the store. */
+  close(): Promise<void>;
+}
+
+class HostError extends Error {
+  constructor(readonly code: ErrorCode, message: string) {
+    super(message);
+  }
+}
+
+/** The store cannot be used: refused (`version`), not opened (`unopenable`) or not usable once open (`unusable`); its
+ *  message tells the user what to do. */
+class StoreProblem extends Error {
+  constructor(readonly kind: NonNullable<BootState["storeProblem"]>, message: string) {
+    super(message);
+  }
+}
+
+/** How the boot's store phase treats the store: as it is (a pending import finished first), or removed and created
+ *  anew (`reset`, `range`; a pending import is dropped). */
+type StoreOpening = "open" | "reset";
+
+const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** The refusal of a call that was waiting for the JSON RPC module's start when the module was switched off. */
+const SWITCHED_OFF = new Error("the JSON RPC module was switched off");
+
+/** `p`, unless `signal` ends first: then rejects with {@link SWITCHED_OFF} at once (no listener left behind). */
+function unlessSwitchedOff<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(SWITCHED_OFF);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(SWITCHED_OFF);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** JSON with every object's keys sorted, for comparing values that may list their keys in another order. */
+function canonicalJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x: unknown) =>
+    x !== null && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x);
+}
+
+const defaultLog = (level: LogLevel, message: string): void => {
+  const line = `[umbradb engine] ${message}`;
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.info(line);
+};
+
+/** The events worth a log line (batches and API requests are counted, not logged). */
+function logLineOf(e: EngineEvent): [LogLevel, string] | undefined {
+  if (e.source === "sync") {
+    if (e.event === "start") return ["info", `sync start: ${e.fields.net} from ${e.fields.from} to ${e.fields.to}, cursor ${e.fields.cursor?.height ?? "none"}`];
+    if (e.event === "range-complete") return ["info", `sync range complete at ${e.fields.height}`];
+    if (e.event === "range-refused") return ["error", `sync range refused: ${e.fields.message}`];
+    if (e.event === "error") return ["warn", `sync error (retry in about ${e.fields.retryMs} ms): ${e.fields.message}`];
+    if (e.event === "backoff") return ["warn", `sync ${e.fields.operation} retried in ${e.fields.delayMs} ms: ${e.fields.message}`];
+    if (e.event === "stop") return ["info", "sync stopped"];
+    return undefined;
+  }
+  if (e.source === "scan" && e.event === "error") return ["warn", `scan error (failure ${e.fields.failures}): ${e.fields.error}`];
+  if (e.source === "api" && e.event === "log") return ["error", `api: ${e.fields.line}`];
+  return undefined;
+}
+
+export function createWorkerHost(opts: WorkerHostOptions): WorkerHost {
+  const consoleLog = opts.log ?? defaultLog;
+  const monotonic = opts.monotonic ?? (() => performance.now());
+  const clock = opts.clock ?? systemClock;
+  const reopenAfter = opts.reopenAfterFailedStatements ?? REOPEN_AFTER_FAILED_STATEMENTS;
+  const listeners = new Set<(notice: Notice) => void>();
+  const notify = (notice: Notice): void => {
+    for (const l of [...listeners]) {
+      try {
+        l(notice);
+      } catch (e) {
+        log("error", `notice listener failed: ${messageOf(e)}`);
+      }
+    }
+  };
+  const system = createHostSystem({
+    clock,
+    notify,
+    build: opts.build ?? null,
+    providers: {
+      storage: () => quota.reading(),
+      startMode: () => (typeof saved?.config.startHeight === "number" ? "range" : "tip"),
+      autoStart: () => saved?.autoStart ?? false,
+      snapshots: () => ({ lastExport, lastImport }),
+      ...opts.system,
+    },
+    ...opts.systemIntervals,
+  });
+  /** A host line: to the console and to the telemetry's log ring. */
+  const log = (level: LogLevel, message: string): void => {
+    consoleLog(level, message);
+    system.telemetry.log(level, "host", message);
+  };
+
+  const bootState: BootState = {
+    phase: "starting",
+    error: null,
+    capabilities: null,
+    storeProblem: null,
+    timings: { capabilitiesMs: null, storeMs: null, ledgerMs: null, migrateMs: null, totalMs: null },
+  };
+  const snapshotBoot = (): BootState => ({ ...bootState, timings: { ...bootState.timings } });
+  const announceBoot = (): void => notify({ v: PROTOCOL_VERSION, type: "notice", notice: "boot", boot: snapshotBoot() });
+
+  let store: Store | undefined;
+  let storeInfo: StoreInfo | undefined;
+  /** The API with no loops, answering while no engine runs. */
+  let idleApi: IndexerEngine | undefined;
+  /** Reads the stored cursors (never started). */
+  let cursorReader: IndexerEngine | undefined;
+  let active: IndexerEngine | undefined;
+  let last: { engine: IndexerEngine; config: StartConfig; error: string | null; run: AbortController } | undefined;
+  let booting: Promise<BootState> | undefined;
+  let lifecycle: Promise<unknown> = Promise.resolve();
+  let closed = false;
+  /** The options of each engine the host created (the system snapshot describes the one answering). */
+  const optionsOf = new WeakMap<IndexerEngine, EngineOptions>();
+  let detachTelemetry: (() => void) | undefined;
+  let detachIdle: (() => void) | undefined;
+  /** Requests wait for a reopen in progress. */
+  let reopening: Promise<void> | undefined;
+  let failedSinceOpen = 0;
+  /** Requests reading the store now (`status`, `api`, `system`); a reopen waits for them. */
+  let reading = 0;
+
+  const settingsStore = opts.settings ?? (opts.dataDir.startsWith("opfs-ahp://") ? opfsSettingsStore(opts.dataDir) : memorySettingsStore());
+  /** The saved configuration, read once the store is open. */
+  let saved: EngineSettings | undefined;
+  /** The modules switched off or on, saved with the configuration (a module not named is on). */
+  let modules: NonNullable<EngineSettings["modules"]> = {};
+  /** The settings file: the configuration and the automatic start (`settings`), whether the store is to be replaced by a
+   *  new one before they apply (`newStore`), and the modules (kept in `modules`). */
+  /** The store holds an imported snapshot (the settings file says so; see {@link reset}). */
+  let storeImported = false;
+  async function loadSettings(): Promise<{ settings: EngineSettings; newStore: boolean } | undefined> {
+    const loaded = await settingsStore.load();
+    storeImported = loaded?.imported === true;
+    if (loaded === undefined) return undefined;
+    const { modules: m, newStore, imported: _imported, ...rest } = loaded;
+    modules = m ?? {};
+    return { settings: rest, newStore: newStore === true };
+  }
+  /** The settings file as the store phase of the last boot read it (under the store's lock). */
+  let settingsOnFile: Awaited<ReturnType<typeof loadSettings>>;
+  /** Whether two settings say the same (the configuration's keys in any order). */
+  const sameSettings = (a: EngineSettings, b: EngineSettings): boolean => canonicalJson(a) === canonicalJson(b);
+  const withModules = (s: EngineSettings, m: typeof modules = modules): EngineSettings => (Object.keys(m).length === 0 ? s : { ...s, modules: { ...m } });
+  /** Saves `next` with the modules (default: the current ones), whether the store holds an imported snapshot (default:
+   *  as it does) and, with `newStore`, the mark that the store is to be replaced by a new one first; rejects when the
+   *  browser refuses the write, and without writing anything when the settings are not what the reader takes back (the
+   *  same schema), so the file on record is never one a worker would read as none. */
+  const writeSettings = async (next: EngineSettings, o: { modules?: typeof modules; newStore?: true; imported?: boolean } = {}): Promise<void> => {
+    const file = {
+      ...withModules(next, o.modules),
+      ...(o.newStore === true ? { newStore: true as const } : {}),
+      ...((o.imported ?? storeImported) ? { imported: true as const } : {}),
+    };
+    const checked = SavedSettingsSchema.safeParse(file);
+    if (!checked.success) throw new Error(`the settings would not be read back (${checked.error.issues[0]?.message ?? "invalid"})`);
+    await settingsStore.save(file);
+  };
+  /** Whether the token indexer (the MIP-0018 scan) is on. */
+  const scanEnabled = (): boolean => modules["token-indexer"] ?? true;
+  const quota = createQuotaGuard({
+    env: opts.storage ?? browserStorageEnvironment(opts.dataDir),
+    now: () => clock.now(),
+    sleep: (ms, signal) => clock.sleep(ms, signal),
+    ...(opts.quota?.checkEveryMs === undefined ? {} : { checkEveryMs: opts.quota.checkEveryMs }),
+    ...(opts.quota?.recheckMs === undefined ? {} : { recheckMs: opts.quota.recheckMs }),
+    ...(opts.quota?.storeEveryMs === undefined ? {} : { storeEveryMs: opts.quota.storeEveryMs }),
+    ...(opts.quota?.readTimeoutMs === undefined ? {} : { readTimeoutMs: opts.quota.readTimeoutMs }),
+    log,
+  });
+
+  // Snapshots: the last export and import, the journal, and the swap in progress (`status` and `api` wait for it).
+  const snapshotFiles = opts.snapshotFiles ?? snapshotFilesFor(opts.dataDir);
+  /** Opens the store with the session monitor's options (`storeOptions`) and those a snapshot import adds. */
+  const opener = (dataDir: string, options: OpenStoreOptions): Promise<Store> => (opts.openStore ?? openStore)(dataDir, { ...storeOptions(), ...options });
+  const genesisHash = (): string | null => KNOWN_GENESIS[opts.network] ?? null;
+  let lastExport: SnapshotRecord | null = null;
+  let lastImport: SnapshotRecord | null = null;
+  let swapping: Promise<void> | undefined;
+  /** The manifest of an import the boot's store phase finished (its configuration is saved once the settings are
+   *  read), and why one could not be finished (the store was opened empty). */
+  let finishedImport: SnapshotManifest | undefined;
+  let importFailure: string | undefined;
+  /** An `import` request is running the boot (its log lines say so). */
+  let importing = false;
+  const identityFile = opts.storeIdentity ?? storeIdentityFor(opts.dataDir);
+
+  async function phase<T>(name: BootState["phase"], key: keyof BootState["timings"], fn: () => Promise<T>): Promise<T> {
+    bootState.phase = name;
+    announceBoot();
+    const t = monotonic();
+    try {
+      return await fn();
+    } finally {
+      bootState.timings[key] = monotonic() - t;
+    }
+  }
+
+  async function checkLedger(): Promise<void> {
+    const ledger = await (opts.loadLedger ?? (() => import("@midnightntwrk/ledger-v9") as Promise<Record<string, unknown>>))();
+    for (const name of LEDGER_CLASS_NAMES) {
+      const cls = ledger[name];
+      const actual = typeof cls === "function" ? cls.name : typeof cls;
+      if (actual !== name)
+        throw new Error(`the ledger build renamed its class ${name} to ${JSON.stringify(actual)}; the scan stores class names, so this build cannot run`);
+    }
+  }
+
+  const migrate = (s: Store): Promise<void> => (opts.migrate ?? migrateStore)(s);
+
+  async function readStoreInfo(s: Store): Promise<StoreInfo> {
+    const [settings] = await s.archive<{ version: string; fsync: string }[]>`
+      select current_setting('server_version') as version, current_setting('fsync') as fsync`;
+    const names = async (sql: Store["archive"], schema: string): Promise<string[]> =>
+      (await sql<{ name: string }[]>`select name from ${sql(schema)}._migrations order by name`).map((r) => r.name);
+    return {
+      dataDir: s.dataDir,
+      created: s.created,
+      serverVersion: settings!.version,
+      fsync: settings!.fsync,
+      durability: durabilityModeOf(s.mip0018),
+      migrations: { archive: await names(s.archive, ARCHIVE_SCHEMA), mip0018: await names(s.mip0018, MIP0018_SCHEMA) },
+    };
+  }
+
+  /** An engine over the store; with `loops`, also the sync and scan configuration (used to read cursors or to run). */
+  function engineOf(s: Store, extra: Partial<EngineOptions> = {}): IndexerEngine {
+    const options: EngineOptions = {
+      sql: s.mip0018,
+      archiveSql: s.archive,
+      network: opts.network,
+      schema: MIP0018_SCHEMA,
+      archiveSchema: ARCHIVE_SCHEMA,
+      clock,
+      ...extra,
+    };
+    const engine = createIndexerEngine(options);
+    optionsOf.set(engine, options);
+    return engine;
+  }
+
+  /** The session monitor's options for the store the host opens. */
+  const storeOptions = (): OpenStoreOptions => ({
+    session: { ...(opts.sliceMs === undefined ? {} : { sliceMs: opts.sliceMs }), onFailedStatement },
+  });
+
+  /** The engines and the system snapshot of a newly opened store. */
+  function useStore(s: Store): void {
+    store = s;
+    failedSinceOpen = 0;
+    idleApi = engineOf(s);
+    detachIdle?.();
+    detachIdle = system.telemetry.attach(idleApi);
+    // Never started: its sync and scan settings only let it read the stored cursors.
+    cursorReader = engineOf(s, { sync: { nodeUrl: "http://cursor.invalid/", indexerUrl: "http://cursor.invalid/" }, scan: {} });
+    system.bind({
+      sql: s.mip0018,
+      dataDir: s.dataDir,
+      engine: () => active ?? idleApi!,
+      engineOptions: () => optionsOf.get(active ?? idleApi!)!,
+      browser: () => (bootState.capabilities === null ? null : { browser: bootState.capabilities.browser, checks: { ...bootState.capabilities.checks } }),
+    });
+  }
+
+  function onFailedStatement(code: string): void {
+    system.telemetry.noteFailedStatement();
+    failedSinceOpen++;
+    if (store === undefined || closed || reopening !== undefined) return;
+    if (code !== STACK_DEPTH_EXCEEDED && failedSinceOpen < reopenAfter) return;
+    const why = code === STACK_DEPTH_EXCEEDED
+      ? `a statement failed with "stack depth limit exceeded" (${code})`
+      : `${failedSinceOpen} statements failed since the store was opened`;
+    const p = serial(() => reopen(why));
+    reopening = p.then(() => undefined, () => undefined).finally(() => { reopening = undefined; });
+  }
+
+  async function reopen(reason: string): Promise<void> {
+    const s = store;
+    if (s === undefined || closed) return;
+    const t0 = monotonic();
+    const resume = active !== undefined ? last?.config : undefined;
+    const engine = active;
+    await halt(false);
+    while (reading > 0) await clock.sleep(5, new AbortController().signal);
+    system.unbind();
+    store = undefined;
+    try {
+      await s.close();
+      useStore(await (opts.openStore ?? openStore)(opts.dataDir, storeOptions()));
+    } catch (e) {
+      bootState.phase = "failed";
+      bootState.error = `reopening the store failed: ${messageOf(e)}`;
+      system.telemetry.noteFatal(bootState.error);
+      log("error", bootState.error);
+      announceBoot();
+      if (engine !== undefined) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: bootState.error } });
+      return;
+    }
+    system.telemetry.notePgliteReopen();
+    log("warn", `PGlite reopened in ${Math.round(monotonic() - t0)} ms: ${reason}`);
+    if (resume !== undefined) {
+      try {
+        await run(store!, resume, false);
+      } catch (e) {
+        if (last !== undefined) last.error = messageOf(e);
+        log("error", `the engine did not start again after the reopen: ${messageOf(e)}`);
+        notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: messageOf(e) } });
+      }
+    }
+  }
+
+  /** Writes the store's identity (`store-identity.ts`) unless it is on file already: the versions read from the store.
+   *  Fails (`unusable`) when it cannot be written: a store the boot used must have one. */
+  async function recordIdentity(s: Store): Promise<void> {
+    const [v] = await s.archive<{ version: string; server: string }[]>`select version() as version, current_setting('server_version') as server`;
+    const pglite = pgliteVersionOf(v!.version);
+    if (pglite === null) return;
+    const identity = { format: STORE_IDENTITY_FORMAT, pglite, postgres: v!.server } as const;
+    const onFile = await identityFile.read();
+    if (onFile.kind === "identity" && onFile.identity.pglite === identity.pglite && onFile.identity.postgres === identity.postgres) return;
+    try {
+      await identityFile.save(identity);
+    } catch (e) {
+      throw new StoreProblem("unusable", unusableStore(`its identity could not be saved: ${messageOf(e)}`));
+    }
+  }
+
+  /** The `store` phase (see the module documentation); `lock`: the store's lock, already held (a store closed for a
+   *  `reset`, a `range` or an import). */
+  async function openForBoot(mode: StoreOpening, lock?: HeldLock): Promise<Store> {
+    const running = opts.build?.pgliteVersion ?? null;
+    /** The store holds nothing yet: its first boot has not completed, so it may be created again. */
+    let creating = false;
+    const markCreating = async (): Promise<void> => {
+      try {
+        await identityFile.markCreating();
+      } catch (e) {
+        throw new StoreProblem("unusable", unusableStore(`its identity file could not be written: ${messageOf(e)}`));
+      }
+      creating = true;
+    };
+    // Under the store's lock, before the import journal is read: the settings file, and whether a new store is to be made
+    // (a `reset` or `range` now, or one the settings file says a worker left to do). Such a replacement is newer than
+    // any import journal on file (an import that starts after it clears its mark once its own journal is written), so
+    // the journal is dropped.
+    const newStore = async (): Promise<boolean> => {
+      settingsOnFile = await loadSettings();
+      return mode === "reset" || settingsOnFile?.newStore === true;
+    };
+    // Under the store's lock, before PGlite opens the store.
+    const beforeOpen = async (_dir: string, importing: SnapshotManifest | null): Promise<void> => {
+      if (mode === "reset" || settingsOnFile?.newStore === true) {
+        await snapshotFiles.removeStore();
+        await markCreating();
+        return;
+      }
+      // A pending import replaces the store: what its identity says does not matter.
+      if (importing !== null) {
+        await markCreating();
+        return;
+      }
+      const state = await identityFile.read();
+      if (state.kind === "unreadable") throw new StoreProblem("unopenable", unreadableIdentity(state.error));
+      if (state.kind === "identity" && running !== null && state.identity.pglite !== running) throw new StoreProblem("version", versionRefusal(state.identity, running));
+      if (state.kind === "creating") creating = true;
+      else if (state.kind === "absent" && !(await snapshotFiles.storeExists())) await markCreating();
+    };
+    try {
+      return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, {
+        beforeOpen,
+        discardJournal: newStore,
+        ...(lock === undefined ? {} : { lock }),
+      }));
+    } catch (e) {
+      if (e instanceof StoreProblem || e instanceof StoreBusyError) throw e;
+      if (!creating) throw new StoreProblem("unopenable", unopenableStore(messageOf(e)));
+      // The store's first boot never completed (PGlite's creation of it was interrupted): nothing was stored yet.
+      log("warn", `the store's first boot did not complete and it cannot be opened (${messageOf(e)}): it is created again`);
+      try {
+        return noteFinishedImport(await openFinishingImport(opener, opts.dataDir, snapshotFiles, opts.network, { beforeOpen: async () => { await snapshotFiles.removeStore(); } }));
+      } catch (e2) {
+        if (e2 instanceof StoreBusyError) throw e2;
+        throw new StoreProblem("unopenable", unopenableStore(messageOf(e2)));
+      }
+    }
+  }
+
+  /** Runs `fn`; a failure that is not already a {@link StoreProblem} makes the store `unusable` (`what` says what failed). */
+  async function usable<T>(fn: () => Promise<T>, what?: string): Promise<T> {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof StoreProblem) throw e;
+      throw new StoreProblem("unusable", unusableStore(what === undefined ? messageOf(e) : `${what}: ${messageOf(e)}`));
+    }
+  }
+
+  /** The boot from the `store` phase on: open (finishing a pending import), ledger, migrations, identity, saved
+   *  settings (after a finished import: the continuing configuration saved, then its journal removed; after one whose
+   *  rows did not load: the build's default configuration saved, then its journal removed), then `ready`. On
+   *  a failure the boot is `failed` (with `storeProblem` when the store is the reason) and the store is closed, its lock
+   *  released. Never rejects. */
+  async function bootStore(mode: StoreOpening, lock?: HeldLock): Promise<void> {
+    const t0 = monotonic();
+    bootState.error = null;
+    bootState.storeProblem = null;
+    finishedImport = undefined;
+    importFailure = undefined;
+    settingsOnFile = undefined;
+    try {
+      let s: Store | undefined;
+      try {
+        s = await phase("store", "storeMs", () => openForBoot(mode, lock));
+        const opened = s;
+        await phase("ledger", "ledgerMs", checkLedger);
+        await phase("migrate", "migrateMs", () => usable(() => migrate(opened)));
+        storeInfo = await usable(() => readStoreInfo(opened));
+        await recordIdentity(opened);
+        // Read by the store phase, under the store's lock.
+        const file = settingsOnFile as Awaited<ReturnType<typeof loadSettings>>;
+        const settings = file?.settings ?? { config: opts.defaultStart ?? {}, autoStart: true };
+        saved = settings;
+        // Set by the store phase (`noteFinishedImport`).
+        const imported = finishedImport as SnapshotManifest | undefined;
+        if (imported === undefined && file?.newStore === true) {
+          // The new store the settings asked for is in place: they are saved again without the mark.
+          await usable(() => writeSettings(settings), "the configuration to start on the new store could not be saved");
+        }
+        if (importFailure !== undefined) {
+          // A pending import whose rows did not load left the store empty: it holds no snapshot, and the configuration
+          // that continued the earlier store (or snapshot) gives way to the build's default, as on a new store (the
+          // automatic start as it was). The journal stays until that is saved: a worker that ends before that tries the
+          // import again at its next boot, and opens the store empty again when it fails again.
+          const fresh = { config: opts.defaultStart ?? {}, autoStart: settings.autoStart };
+          await usable(() => writeSettings(fresh, { imported: false }), "the configuration of the store opened empty could not be saved");
+          saved = fresh;
+          storeImported = false;
+          await usable(() => snapshotFiles.removeJournal(), "the journal of the import that could not be loaded could not be removed");
+        }
+        if (imported !== undefined) {
+          // The journal stays until the configuration that continues the import is saved: a worker that ends before
+          // that finishes the import again at its next boot.
+          await usable(() => saveImported(imported), "the configuration that continues the imported snapshot could not be saved");
+          await usable(() => snapshotFiles.removeJournal(), "the import's journal could not be removed");
+          lastImport = snapshotRecord(imported, clock.now(), null);
+          if (!importing) log("warn", `finished an interrupted snapshot import: the store now holds ${imported.network} up to ${imported.archive.height}`);
+        }
+      } catch (e) {
+        if (s !== undefined) await s.close().catch(() => {});
+        throw e;
+      }
+      useStore(s);
+      // The first storage reading, before `ready`: every status of a ready worker carries one (the walk of the store's
+      // files, which can be slow, fills in its size later).
+      await quota.check();
+      bootState.phase = "ready";
+      log("info", `store ${s.dataDir} ready (${s.created ? "created" : "reopened"}, PostgreSQL ${storeInfo.serverVersion})`);
+    } catch (e) {
+      bootState.phase = "failed";
+      bootState.error = messageOf(e);
+      bootState.storeProblem = e instanceof StoreProblem ? e.kind : null;
+      log("error", `boot failed: ${bootState.error}`);
+    } finally {
+      bootState.timings.totalMs = (bootState.timings.capabilitiesMs ?? 0) + monotonic() - t0;
+      announceBoot();
+    }
+  }
+
+  async function runBoot(): Promise<BootState> {
+    const t0 = monotonic();
+    try {
+      const report = await phase("capabilities", "capabilitiesMs", opts.checkCapabilities ?? (() => checkCapabilities()));
+      bootState.capabilities = report;
+      if (!report.supported) {
+        bootState.phase = "unsupported";
+        bootState.error = report.message;
+        log("error", report.message);
+        bootState.timings.totalMs = monotonic() - t0;
+        announceBoot();
+        return snapshotBoot();
+      }
+    } catch (e) {
+      bootState.phase = "failed";
+      bootState.error = messageOf(e);
+      log("error", `boot failed: ${bootState.error}`);
+      bootState.timings.totalMs = monotonic() - t0;
+      announceBoot();
+      return snapshotBoot();
+    }
+    await bootStore("open");
+    return snapshotBoot();
+  }
+
+  /** Whether the boot ended `failed` because of the store (see {@link openForBoot}): `reset`, `range` and `import`
+   *  then replace the store. */
+  async function storeFailed(): Promise<boolean> {
+    await boot();
+    const failed = !closed && bootState.phase === "failed" && bootState.storeProblem !== null && store === undefined;
+    // The saved configuration lives beside the store, not in it: a store that could not be used still has it.
+    if (failed && saved === undefined) saved = (await loadSettings())?.settings;
+    return failed;
+  }
+
+  /** Requests that read the store wait while `fn` runs (it replaces the store). */
+  async function swap<T>(fn: () => Promise<T>): Promise<T> {
+    let done!: () => void;
+    swapping = new Promise<void>((resolve) => (done = resolve));
+    try {
+      return await fn();
+    } finally {
+      swapping = undefined;
+      done();
+    }
+  }
+
+  /**
+   * Runs the boot again from its store phase in `mode` (a `reset`, a `range` or an import). The open store `s`, if any,
+   * is taken out of use first: the engine stopped, the requests reading it ended, PGlite closed with the store's lock
+   * kept for the new open. Fails with `boot-failed` when the boot fails (every store it opened is closed then, its lock
+   * released, and `storeProblem` says whether `reset`, `range` and `import` can replace the store).
+   */
+  async function rebootStore(mode: StoreOpening, s: Store | undefined): Promise<Store> {
+    await swap(async () => {
+      let lock: HeldLock | undefined;
+      if (s !== undefined) {
+        await halt();
+        while (reading > 0) await clock.sleep(5, new AbortController().signal);
+        system.unbind();
+        store = undefined;
+        try {
+          lock = await s.detach();
+        } catch (e) {
+          // PGlite did not close cleanly (its lock is released then): the boot takes the lock again.
+          log("error", `closing the store failed: ${messageOf(e)}`);
+        }
+      }
+      log("warn", mode === "reset" ? "the store is removed and created again" : "the store is replaced by a snapshot");
+      await bootStore(mode, lock);
+    });
+    if (store === undefined) throw new HostError("boot-failed", bootState.error ?? "the boot failed");
+    return store;
+  }
+
+  const boot = (): Promise<BootState> => (booting ??= runBoot());
+
+  /** The open store once the boot has succeeded. */
+  async function ready(): Promise<Store> {
+    await boot();
+    if (closed) throw new HostError("internal", "the worker host is closed");
+    if (bootState.phase === "unsupported") throw new HostError("unsupported-browser", bootState.error ?? "unsupported browser");
+    if (store === undefined) throw new HostError("boot-failed", bootState.error ?? "the boot failed");
+    return store;
+  }
+
+  async function readCursors(): Promise<HostStatus["cursors"]> {
+    if (cursorReader === undefined) return null;
+    const [sync, scan] = [await cursorReader.syncCursor(), await cursorReader.scanCursor()];
+    return { sync: sync ?? null, scan: scan ?? null };
+  }
+
+  async function status(): Promise<HostStatus> {
+    return {
+      protocol: PROTOCOL_VERSION,
+      network: opts.network,
+      boot: snapshotBoot(),
+      store: storeInfo ?? null,
+      engine: last === undefined ? null : { running: active === last.engine, config: last.config, status: last.engine.status(), error: last.error },
+      cursors: bootState.phase === "ready" && !closed ? await readCursors() : null,
+      settings: saved === undefined ? null : withModules(saved),
+      storage: quota.status(),
+      snapshots: { lastExport, lastImport },
+      ...(storeImported && bootState.phase === "ready" ? { storeImported: true as const } : {}),
+    };
+  }
+
+  /** The node and indexer of a start: the network, or a recorded range replayed here. */
+  async function chainOf(config: StartConfig): Promise<{ fetch: typeof fetch; nodeUrl: string; indexerUrl: string }> {
+    const source = config.source ?? { kind: "network" as const };
+    if (source.kind === "network") {
+      const f = opts.fetch;
+      return {
+        fetch: f === undefined ? (input, init) => fetch(input, init) : f,
+        nodeUrl: source.nodeUrl ?? opts.nodeUrl,
+        indexerUrl: source.indexerUrl ?? opts.indexerUrl,
+      };
+    }
+    let tape: ArchiveTape;
+    try {
+      tape = await (opts.loadTape ?? ((r: TapeRange) => loadTape(r)))(source.range);
+    } catch (e) {
+      throw new HostError("start-failed", `the recorded range ${source.range} could not be loaded: ${messageOf(e)}`);
+    }
+    if (tape.network !== opts.network) throw new HostError("start-failed", `the recorded range ${source.range} is ${tape.network}, not ${opts.network}`);
+    const replay = createTapeFetch(tape, {
+      ...(source.finalizedHeight === undefined ? {} : { finalizedHeight: source.finalizedHeight }),
+      ...(source.advance === undefined ? {} : { advance: source.advance }),
+      now: () => clock.now(),
+    });
+    return { fetch: replay.fetchImpl, nodeUrl: replay.nodeUrl, indexerUrl: replay.indexerUrl };
+  }
+
+  /** The scheduler of a run: before a sync batch, the storage guard admits it (it waits while the sync is paused before
+   *  the quota; a stop ends the wait and the batch is not run). */
+  const gated = (run: AbortSignal, base: EngineScheduler): EngineScheduler => async (kind, step) => {
+    if (kind === "sync") await quota.admit(run);
+    return base(kind, step);
+  };
+
+  /** Saves `config` (or the saved configuration) with the automatic start on, then runs it: a source that cannot be
+   *  reached refuses the start before anything is saved, a start the browser refuses to save starts nothing, settings
+   *  that already say this are not written again, and an engine that fails to start puts the settings before it back.
+   *  `automatic` (a restart's restore, the leader tab's start): the saved configuration, and only if the saved settings
+   *  say to start by itself now, in the serialized order of requests (a `stop` or an import answered before it holds);
+   *  otherwise, or with the engine running, the status, nothing changed. */
+  async function start(config: StartConfig | undefined, automatic = false): Promise<HostStatus> {
+    const s = await ready();
+    if (automatic) {
+      if (active !== undefined || saved?.autoStart !== true) return status();
+      config = undefined;
+    }
+    if (active !== undefined) throw new HostError("already-running", "the engine is running; stop it first");
+    const effective = config ?? saved?.config ?? opts.defaultStart ?? {};
+    // The chain first: a source that cannot be reached (a recorded range that does not load) refuses the start before
+    // anything is saved.
+    const chain = await chainOf(effective);
+    const before = saved;
+    const next = { config: effective, autoStart: true };
+    // Settings that already say this (the automatic start, a restart's restore) need no write.
+    if (before === undefined || !sameSettings(before, next)) {
+      try {
+        await writeSettings(next);
+      } catch (e) {
+        throw new HostError("settings-failed", `the configuration to start could not be saved (${messageOf(e)}): the engine was not started`);
+      }
+    }
+    saved = next;
+    try {
+      await run(s, effective, true, chain);
+    } catch (e) {
+      if (before !== undefined) {
+        try {
+          if (!sameSettings(before, next)) await writeSettings(before);
+          saved = before;
+        } catch (e2) {
+          log("warn", `the settings before the failed start could not be saved again: ${messageOf(e2)}`);
+        }
+      }
+      throw e;
+    }
+    return status();
+  }
+
+  /** Saves `next` as the saved configuration, with the mark that the store is to be replaced by a new one, before the
+   *  store is touched (`range`, `reset`): a worker that ends before the new store is in place leaves both, and the next
+   *  boot makes the new store, then starts `next` on it. Fails (and nothing is changed) when it cannot be saved. */
+  async function saveBeforeReplacing(next: EngineSettings, what: string): Promise<void> {
+    try {
+      // The new store holds no snapshot.
+      await writeSettings(next, { newStore: true, imported: false });
+    } catch (e) {
+      throw new HostError("settings-failed", `${what} could not be saved (${messageOf(e)}): nothing was changed`);
+    }
+    saved = next;
+    storeImported = false;
+  }
+
+  /** Runs a new engine (sync + scan in follow mode) with `config`. A new archive starts at `config.startHeight`, by
+   *  default the finalized tip. Its events go to the telemetry; `announce: false` posts no `engine` notice (a reopen). */
+  async function run(s: Store, config: StartConfig, announce = true, resolved?: Awaited<ReturnType<typeof chainOf>>): Promise<void> {
+    const chain = resolved ?? (await chainOf(config));
+    system.telemetry.setEndpoints({ node: chain.nodeUrl, indexer: chain.indexerUrl });
+    const runner = new AbortController();
+    let engine: IndexerEngine;
+    try {
+      engine = engineOf(s, {
+        sync: {
+          nodeUrl: chain.nodeUrl,
+          indexerUrl: chain.indexerUrl,
+          startHeight: config.startHeight ?? "tip",
+          ...(config.endHeight === undefined ? {} : { endHeight: config.endHeight }),
+          maxBlocks: config.sync?.maxBlocks ?? DEFAULT_SYNC_MAX_BLOCKS,
+          ...(config.sync?.concurrency === undefined ? {} : { concurrency: config.sync.concurrency }),
+          ...(config.sync?.minIntervalMs === undefined ? {} : { minIntervalMs: config.sync.minIntervalMs }),
+          // The network's endpoints are paced by the worker's queue of their origin, shared with the JSON RPC module.
+          ...(config.source?.kind === "tape" ? {} : { pacerFor }),
+          ...(config.sync?.idleMs === undefined ? {} : { idleMs: config.sync.idleMs }),
+          ...(config.sync?.backoff === undefined ? {} : { backoff: config.sync.backoff }),
+        },
+        scan: {
+          mode: "follow",
+          batch: config.scan?.batch ?? DEFAULT_SCAN_BATCH,
+          ...(config.scan?.idleMs === undefined ? {} : { idleMs: config.scan.idleMs }),
+          enabled: scanEnabled(),
+        },
+        fetch: system.telemetry.instrumentFetch(chain.fetch),
+        schedule: gated(runner.signal, opts.schedule ?? yieldingScheduler),
+        signal: runner.signal,
+        onEvent: (e) => {
+          const line = logLineOf(e);
+          if (line !== undefined) consoleLog(line[0], line[1]);
+          // A sync loop that ended with an error (a refused range, a failed cursor read) ends the engine.
+          if (e.source === "sync" && e.event === "stop") queueMicrotask(() => void endIfSyncFailed(engine));
+          // A write the browser refused for lack of space: the storage guard pauses the sync and says why.
+          if (e.event === "error" && (e.source === "sync" || e.source === "scan")) {
+            const message = String(e.source === "sync" ? e.fields.message : e.fields.error);
+            if (isRefusedWrite(message)) quota.refusedWrite(message);
+          }
+        },
+      });
+      detachTelemetry?.();
+      detachTelemetry = system.telemetry.attach(engine);
+      await engine.start();
+    } catch (e) {
+      runner.abort();
+      throw new HostError("start-failed", messageOf(e));
+    }
+    const record = { engine, config, error: null as string | null, run: runner };
+    active = engine;
+    last = record;
+    engine.finished.catch((e: unknown) => {
+      record.error ??= messageOf(e);
+      if (active === engine) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error: record.error } });
+    });
+    if (announce) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "running", error: null } });
+    void endIfSyncFailed(engine); // a sync that failed before the engine was recorded
+  }
+
+  /** Ends `engine` when its sync loop has failed: the scan does not follow an archive that no longer grows. The engine is
+   *  then failed with the sync's error (`status` and an `engine` notice), as an engine whose loops all ended is. */
+  async function endIfSyncFailed(engine: IndexerEngine): Promise<void> {
+    const sync = engine.status().sync;
+    if (sync.phase !== "failed" || active !== engine) return;
+    const record = last;
+    const error = `the sync stopped: ${sync.lastError ?? "unknown error"}`;
+    if (record?.engine === engine) record.error = error;
+    log("error", error);
+    await serial(async () => {
+      if (active !== engine) return;
+      record?.run.abort();
+      await engine.stop();
+      active = undefined;
+      notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "failed", error } });
+    });
+  }
+
+  /** Stops the running engine; resolves once its steps in flight have ended. `announce: false` posts no `engine`
+   *  notice (a reopen). */
+  async function halt(announce = true): Promise<void> {
+    const engine = active;
+    if (engine !== undefined) {
+      last?.run.abort();
+      await engine.stop();
+      active = undefined;
+      if (announce) notify({ v: PROTOCOL_VERSION, type: "notice", notice: "engine", engine: { state: "stopped", error: last?.error ?? null } });
+    }
+  }
+
+  /** A `stop` request: halts the engine and turns the automatic start off until the next `start`. The engine stops
+   *  even when the browser refuses to save that; the answer then says so (the saved settings still start it). */
+  async function stop(): Promise<HostStatus> {
+    await halt();
+    if (saved !== undefined && saved.autoStart && bootState.phase === "ready") {
+      const next = { ...saved, autoStart: false };
+      try {
+        await writeSettings(next);
+      } catch (e) {
+        throw new HostError("settings-failed", `the engine is stopped, but turning its automatic start off could not be saved (${messageOf(e)}): the next page to open the engine starts it again`);
+      }
+      saved = next;
+    }
+    return status();
+  }
+
+  /** Replaces the store with a new, empty one made by the migrations (see {@link rebootStore}): every file of the old
+   *  store is removed, so nothing of its database survives. */
+  async function replaceWithNewStore(s: Store | undefined): Promise<void> {
+    if (s !== undefined && opts.beforeWipe !== undefined) await opts.beforeWipe(s);
+    await rebootStore("reset", s);
+    log("info", "the store was replaced by a new, empty one");
+  }
+
+  /** A `range` request: a new range means a new archive (one archive has no gaps and no backfill), so the new range is
+   *  saved, the store replaced by a new one, and the range started; the source and tuning of the saved configuration
+   *  stay. */
+  async function range(startHeight: number | "tip", endHeight: number | undefined): Promise<HostStatus> {
+    const failed = await storeFailed();
+    const s = failed ? undefined : await ready();
+    const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight };
+    delete config.endHeight;
+    if (endHeight !== undefined) config.endHeight = endHeight;
+    const valid = StartConfigSchema.safeParse(config);
+    if (!valid.success) throw new HostError("bad-request", issuesOf(valid.error));
+    await saveBeforeReplacing({ config, autoStart: true }, "the new range");
+    await replaceWithNewStore(s);
+    return start(config);
+  }
+
+  /** A `reset` request: the store is replaced by a new one and the saved configuration starts again (a tip start
+   *  resolves the tip anew), or, while the store holds an imported snapshot, the build's default configuration (by
+   *  default the finalized tip), as on a new store: the snapshot's first height is not a start the user chose, and a
+   *  range from it is a `range` away. */
+  async function reset(): Promise<HostStatus> {
+    const failed = await storeFailed();
+    const s = failed ? undefined : await ready();
+    const config = storeImported ? (opts.defaultStart ?? {}) : (saved?.config ?? opts.defaultStart ?? {});
+    await saveBeforeReplacing({ config, autoStart: true }, "the configuration to start after the reset");
+    await replaceWithNewStore(s);
+    return start(undefined);
+  }
+
+  // ── Pacing ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  /** One pacing queue per endpoint origin for the worker's whole life, shared by every client of that origin (the
+   *  sync's node and indexer clients, the JSON RPC module): on a public endpoint the worker starts at most one request
+   *  every 250 ms there, whichever client sends it — unless a `start` sets `sync.minIntervalMs`, an explicit spacing
+   *  the sync keeps on its own pacer (`engine.ts`). Each caller waits with its own signal (the sync's run, the
+   *  module's stop), so a stop ends its waits at once whatever the queue holds. */
+  const pacers = new Map<string, PacingQueue>();
+  function pacerFor(url: string): PacingQueue | undefined {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return undefined;
+    }
+    let pacer = pacers.get(origin);
+    if (pacer === undefined) {
+      pacer = new PacingQueue({ minIntervalMs: defaultMinIntervalMs(url) });
+      pacers.set(origin, pacer);
+    }
+    return pacer;
+  }
+
+  // ── The JSON RPC module ───────────────────────────────────────────────────────────────────────────────────────────
+
+  /** The JSON RPC module's start (in progress or done) while the module runs. */
+  let jsonRpc: Promise<JsonRpcModule> | undefined;
+  /** The module that answers now (its start has ended), for its last indexer problem. */
+  let jsonRpcOpen: JsonRpcModule | undefined;
+  /** Modules being stopped (each ends its requests, then closes its database); the next start and `close` wait for
+   *  them. */
+  const jsonRpcStopping = new Set<Promise<void>>();
+  /** The start attempt that has not ended (one at a time; `close` does not wait for it). */
+  let jsonRpcAttempt: Promise<void> | undefined;
+  /** The starts that have ended (a module, or a failure). */
+  const jsonRpcSettled = new WeakSet<Promise<JsonRpcModule>>();
+  /** Aborted when the module is switched off: the calls waiting for its start are answered `module-off`. */
+  let jsonRpcOff: AbortController | undefined;
+  const jsonRpcEnabled = (): boolean => modules.jsonrpc ?? true;
+  /** The module's calls since the worker started (`jsonrpc-state`). */
+  const jsonRpcCalls = { answered: 0, inFlight: 0, refusedBusy: 0, refusedOff: 0, failed: 0 };
+  /** The module's last start failure, and the last indexer problem of a module that has stopped since. */
+  let jsonRpcStartError: { at: number; message: string } | null = null;
+  let jsonRpcPastProblem: { at: number; message: string } | null = null;
+  /** The counts of the module's methods (its registry's, and those only Node serves). */
+  const jsonRpcMethods = ((): { served: number; notImplemented: number; nodeOnly: number } => {
+    const registry = new MethodRegistry();
+    registerReadOnlyMethods(registry);
+    const stubs = new Set(NOT_IMPLEMENTED_METHODS.map((m) => m.method));
+    const names = registry.listMethods();
+    return { served: names.filter((m) => !stubs.has(m)).length, notImplemented: names.filter((m) => stubs.has(m)).length, nodeOnly: NODE_ONLY_METHODS.length };
+  })();
+
+  /**
+   * The module, started now unless it runs; a start that fails is logged and the next request starts it again. A module
+   * that is being stopped is closed first, so the worker never holds two (each its own database). One start runs at a
+   * time: a start past its deadline, or whose module was switched off meanwhile, keeps running until it ends (it cannot
+   * be cut short), its module then closed at once; until then a request is refused at once instead of starting another.
+   */
+  function jsonRpcRun(): Promise<JsonRpcModule> {
+    if (jsonRpc !== undefined) return jsonRpc;
+    if (jsonRpcAttempt !== undefined) return Promise.reject(new Error("an earlier start has not ended yet (its module is closed when it ends)"));
+    const t = monotonic();
+    const closing = [...jsonRpcStopping];
+    const pacer = pacerFor(opts.indexerUrl);
+    const raw = Promise.all(closing).then(() => (opts.jsonRpc?.start ?? startJsonRpcModule)({
+      indexerUrl: opts.indexerUrl,
+      clientVersion: opts.jsonRpc?.clientVersion ?? jsonRpcClientVersion("unknown"),
+      ...(opts.jsonRpc?.chainId === undefined ? {} : { chainId: opts.jsonRpc.chainId }),
+      ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }),
+      ...(pacer === undefined ? {} : { pacer }),
+      now: () => clock.now(),
+    }));
+    // The start has a deadline: past it the start counts as failed for the calls waiting for it.
+    const limit = opts.jsonRpc?.startTimeoutMs ?? JSONRPC_START_TIMEOUT_MS;
+    let timedOut = false;
+    const started = new Promise<JsonRpcModule>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error(`it did not start within ${limit / 1000} s`));
+      }, limit);
+      raw.then(
+        (m) => {
+          clearTimeout(timer);
+          if (!timedOut) resolve(m);
+        },
+        (e: unknown) => {
+          clearTimeout(timer);
+          if (!timedOut) reject(e);
+        },
+      );
+    });
+    // The attempt is tracked until it ends: a module nobody wants any more (past its deadline, switched off, or the
+    // worker closed meanwhile) is closed as soon as it comes, and only then may another start begin.
+    const attempt: Promise<void> = raw
+      .then(
+        async (m) => {
+          if (!timedOut && jsonRpc === started) return;
+          try {
+            await m.close();
+            log("info", "a JSON RPC module whose start ended late was closed: its evm_rpc database is closed");
+          } catch (e) {
+            log("warn", `closing a late JSON RPC module's database failed: ${messageOf(e)}`);
+          }
+        },
+        () => {},
+      )
+      .finally(() => {
+        if (jsonRpcAttempt === attempt) jsonRpcAttempt = undefined;
+      });
+    jsonRpcAttempt = attempt;
+    jsonRpc = started;
+    jsonRpcOff = new AbortController();
+    void started.then(() => jsonRpcSettled.add(started), () => jsonRpcSettled.add(started));
+    started.then(
+      (m) => {
+        if (jsonRpc !== started) return;
+        jsonRpcOpen = m;
+        log("info", `the JSON RPC module started: ${m.methods.length} methods, its evm_rpc database in memory (${Math.round(monotonic() - t)} ms)`);
+      },
+      (e: unknown) => {
+        if (jsonRpc === started) jsonRpc = undefined;
+        jsonRpcStartError = { at: clock.now(), message: `the JSON RPC module could not start: ${messageOf(e)}` };
+        log("error", jsonRpcStartError.message);
+      },
+    );
+    return started;
+  }
+
+  /** Stops the module: new requests are refused at once (`jsonRpc` is gone); the module ends the requests it is
+   *  answering (they are answered `module-off`) and closes its database. */
+  function stopJsonRpc(): void {
+    const started = jsonRpc;
+    if (started === undefined) return;
+    jsonRpc = undefined;
+    // The calls still waiting for the start are answered `module-off` now.
+    jsonRpcOff?.abort();
+    jsonRpcOff = undefined;
+    jsonRpcPastProblem = jsonRpcOpen?.lastIndexerProblem() ?? jsonRpcPastProblem;
+    jsonRpcOpen = undefined;
+    // A start that has not ended: its attempt closes the module when it comes (`jsonRpcRun`); nothing waits for it.
+    if (!jsonRpcSettled.has(started)) return;
+    const stopping = (async () => {
+      let m: JsonRpcModule;
+      try {
+        m = await started;
+      } catch {
+        return;
+      }
+      try {
+        await m.close();
+        log("info", "the JSON RPC module stopped: its evm_rpc database is closed");
+      } catch (e) {
+        log("warn", `closing the JSON RPC module's database failed: ${messageOf(e)}`);
+      }
+    })();
+    jsonRpcStopping.add(stopping);
+    void stopping.finally(() => jsonRpcStopping.delete(stopping));
+  }
+
+  /** A `jsonrpc` request: the module's answer to `body`, once the boot is ready; refused while the module is off, when
+   *  it is switched off before the answer (`module-off`), and while it answers as many requests as it may (`busy`).
+   *  The bound is applied first, before anything is awaited: a request holds its slot while it waits for the boot and
+   *  for the module's start, until its answer, so no more than {@link JSONRPC_MAX_REQUESTS} requests are ever held. */
+  async function jsonRpcRequest(body: string): Promise<ApiResult> {
+    if (jsonRpcCalls.inFlight >= JSONRPC_MAX_REQUESTS) {
+      jsonRpcCalls.refusedBusy++;
+      throw new HostError("busy", `the JSON RPC module is answering ${JSONRPC_MAX_REQUESTS} requests: try again once one is answered`);
+    }
+    jsonRpcCalls.inFlight++;
+    try {
+      while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
+      await ready();
+      if (!jsonRpcEnabled()) {
+        jsonRpcCalls.refusedOff++;
+        throw new HostError("module-off", "the JSON RPC module is off: switch it on in the Modules section to call its methods");
+      }
+      let m: JsonRpcModule;
+      const run = jsonRpcRun();
+      const off = jsonRpcOff?.signal;
+      try {
+        m = await (off === undefined ? run : unlessSwitchedOff(run, off));
+      } catch (e) {
+        if (e === SWITCHED_OFF) {
+          jsonRpcCalls.refusedOff++;
+          throw new HostError("module-off", "the JSON RPC module was switched off before this request was answered");
+        }
+        jsonRpcCalls.failed++;
+        throw new HostError("internal", `the JSON RPC module could not start: ${messageOf(e)}`);
+      }
+      try {
+        const answer = await m.handle(body);
+        jsonRpcCalls.answered++;
+        return { status: answer.status, headers: { ...answer.headers }, body: answer.body };
+      } catch (e) {
+        if (e instanceof JsonRpcModuleError && e.code === "busy") {
+          jsonRpcCalls.refusedBusy++;
+          throw new HostError("busy", e.message);
+        }
+        if (e instanceof JsonRpcModuleError) {
+          jsonRpcCalls.refusedOff++;
+          throw new HostError("module-off", "the JSON RPC module was switched off before this request was answered");
+        }
+        jsonRpcCalls.failed++;
+        throw e;
+      }
+    } finally {
+      jsonRpcCalls.inFlight--;
+    }
+  }
+
+  /** A `jsonrpc-state` request: the module's state for the JSON RPC tab's status view; while the store is replaced or
+   *  reopened, answered once the new one is in place, as a `jsonrpc` request is. */
+  async function jsonRpcState(): Promise<JsonRpcStateResult> {
+    while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
+    await ready();
+    const pacer = pacerFor(opts.indexerUrl);
+    const queue = pacer?.state() ?? { minIntervalMs: 0, waiting: 0, heldForMs: 0 };
+    let origin = opts.indexerUrl;
+    try {
+      origin = new URL(opts.indexerUrl).origin;
+    } catch {
+      // the URL as given
+    }
+    const problem = jsonRpcOpen?.lastIndexerProblem() ?? null;
+    const lastError = [jsonRpcStartError, jsonRpcPastProblem, problem].filter((x): x is { at: number; message: string } => x !== null).sort((a, b) => b.at - a.at)[0] ?? null;
+    return {
+      enabled: jsonRpcEnabled(),
+      database: jsonRpc !== undefined ? (jsonRpcOpen === undefined ? "starting" : "open") : jsonRpcStopping.size > 0 || jsonRpcAttempt !== undefined ? "closing" : "none",
+      chainId: (opts.jsonRpc?.chainId ?? JSONRPC_CHAIN_ID).toString(),
+      clientVersion: opts.jsonRpc?.clientVersion ?? jsonRpcClientVersion("unknown"),
+      indexerUrl: opts.indexerUrl,
+      methods: { ...jsonRpcMethods },
+      calls: { ...jsonRpcCalls },
+      pacing: { origin, ...queue },
+      lastError: lastError === null ? null : { ...lastError },
+    };
+  }
+
+  /** A `module` request: saves the choice with the settings, then switches the module. The token indexer: a running
+   *  engine follows at once (switched off, the answer comes once its scan has stopped at a block boundary). The JSON RPC
+   *  module: switched off, its requests are refused from the answer on. A choice the browser refuses to save changes
+   *  nothing. */
+  async function setModule(module: ModuleId, enabled: boolean): Promise<HostStatus> {
+    await ready();
+    const next = boundedModules({ ...modules, [module]: enabled });
+    const name = module === "jsonrpc" ? "the JSON RPC module" : "the token indexer";
+    try {
+      await writeSettings(saved ?? { config: opts.defaultStart ?? {}, autoStart: true }, { modules: next });
+    } catch (e) {
+      throw new HostError("settings-failed", `${name}'s switch could not be saved (${messageOf(e)}): nothing was changed`);
+    }
+    modules = next;
+    if (module === "jsonrpc") {
+      if (!enabled) stopJsonRpc();
+      log("info", enabled
+        ? "the JSON RPC module is on: its requests are answered (its evm_rpc database is made at the first one)"
+        : "the JSON RPC module is off: its requests are refused");
+      return status();
+    }
+    await active?.setScanEnabled(enabled);
+    log("info", enabled
+      ? "the token indexer is on: the MIP-0018 scan continues from its cursor"
+      : "the token indexer is off: the MIP-0018 scan stopped at a block boundary; the chain archive keeps syncing");
+    return status();
+  }
+
+  /** The store's schemas, the only ones the Database tab reads. */
+  const STORE_SCHEMAS = [ARCHIVE_SCHEMA, MIP0018_SCHEMA] as const;
+
+  /** The store's archive and range-tables digests, read in one read-only transaction: the loops' statements wait for it
+   *  (one session), so both digests describe one state, also while the engine runs. */
+  async function digest(s: Store): Promise<DigestResult> {
+    const t = monotonic();
+    return s.mip0018.begin("read only", async (tx) => {
+      const sql = tx as unknown as UmbraDBSql;
+      const archive = archiveDigest(await dumpArchive(sql, ARCHIVE_SCHEMA));
+      const { digest: tables, nullElements } = await rangeTables(sql, ARCHIVE_SCHEMA, MIP0018_SCHEMA);
+      return { archive, tables, nullElements, elapsedMs: monotonic() - t };
+    });
+  }
+
+  /**
+   * Saves the configuration that continues an imported archive: the saved source and tuning, the snapshot's first height
+   * as the start (it agrees with the archive, so a start continues at its cursor + 1), no end height, and no automatic
+   * start (an import stops the engine as `stop` does). Fails when it cannot be saved.
+   */
+  async function saveImported(manifest: SnapshotManifest): Promise<void> {
+    const config: StartConfig = { ...(saved?.config ?? opts.defaultStart ?? {}), startHeight: manifest.archive.startHeight ?? manifest.archive.height };
+    delete config.endHeight;
+    const next = { config, autoStart: false };
+    await writeSettings(next, { imported: true });
+    saved = next;
+    storeImported = true;
+  }
+
+  /** Records what the store's open did with a pending import: finished it (its configuration and journal are dealt
+   *  with by the boot), or could not (the store was opened empty). */
+  function noteFinishedImport(opened: OpenedStore): Store {
+    if (opened.imported !== null) finishedImport = opened.imported;
+    if (opened.failure !== null) {
+      importFailure = opened.failure;
+      log("error", `${importing ? "the snapshot" : "an interrupted snapshot import"} could not be loaded and the store was opened empty: ${opened.failure}`);
+    }
+    return opened.store;
+  }
+
+  async function exportStore(): Promise<ExportedSnapshot> {
+    const s = await ready();
+    let out: ExportedSnapshot;
+    try {
+      out = await exportSnapshot(s, { network: opts.network, genesisHash: genesisHash(), appCommit: opts.build?.appCommit ?? null, now: () => clock.now(), monotonic });
+    } catch (e) {
+      if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
+      throw e;
+    }
+    lastExport = snapshotRecord(out.manifest, clock.now(), out.bytes);
+    log("info", `exported a snapshot of ${out.manifest.network} up to ${out.manifest.archive.height} (${out.bytes} bytes; the session was held ${out.timings.holdMs} ms)`);
+    return out;
+  }
+
+  /**
+   * An `import` request (see the module documentation): the trial, then the journal, then the boot again from its store
+   * phase, which finishes the import from the journal. Before the journal is saved nothing has changed (a refusal, or a
+   * journal that cannot be written, leaves the store and a running engine as they were). Once it is saved the import
+   * goes on: a failure after that leaves the store closed and `storeProblem` set (the journal finishes the import at the
+   * next boot, or `reset`, `range` or `import` replaces the store), or, when even the rows could not be loaded, the store
+   * opened empty.
+   */
+  async function importStore(snapshot: Blob): Promise<ImportResult> {
+    const t0 = monotonic();
+    const live = (await storeFailed()) ? undefined : await ready();
+    const running = opts.build?.pgliteVersion ?? null;
+    let prepared: PreparedImport | undefined;
+    try {
+      prepared = await prepareImport(
+        snapshot,
+        {
+          network: opts.network,
+          genesisHash: genesisHash(),
+          schemaVersions: { chain_archive: chainArchiveMigrations.map((m) => m.name), mip0018: mip0018Migrations.map((m) => m.name) },
+          // Checked before the trial when the build knows its PGlite; the trial's store is this build's PGlite in any case.
+          ...(running === null ? {} : { pglite: { version: running, ...(live === undefined || storeInfo === undefined ? {} : { serverVersion: storeInfo.serverVersion }) } }),
+        },
+        { monotonic, trial: opts.snapshotTrial ?? (() => (opts.openStore ?? openStore)("memory://", {})) },
+      );
+    } catch (e) {
+      if (e instanceof SnapshotRefusal) throw new HostError("snapshot-refused", e.message);
+      throw e;
+    }
+    const { manifest, timings } = prepared;
+    const fileBytes = prepared.file.length;
+    const tSwap = monotonic();
+    try {
+      await snapshotFiles.writeJournal(prepared.file);
+    } catch (e) {
+      // A journal that cannot be written leaves the journal on file as it was: an earlier import's journal, kept for the
+      // boot that finishes it, stays.
+      throw new HostError("snapshot-failed", `the import's journal could not be saved (${messageOf(e)}): nothing was changed`);
+    }
+    // The file is the journal now, which the boot reads back: this copy is let go first.
+    prepared = undefined;
+    // A new store a `range` or `reset` left to do (its boot failed) is older than this journal: its mark is cleared, so
+    // the next boot finishes this import. (A worker that ends before that leaves the mark, and the next boot makes that
+    // new store instead: the import was not answered.)
+    const onFile = await settingsStore.load();
+    if (onFile?.newStore === true) {
+      const { newStore: _mark, ...without } = onFile;
+      try {
+        await settingsStore.save(without);
+      } catch (e) {
+        throw new HostError("settings-failed", `the snapshot's journal is saved, but the store replacement a range or reset left to do could not be set aside (${messageOf(e)}): the next boot makes that new store instead`);
+      }
+    }
+    importing = true;
+    try {
+      await rebootStore("open", live).catch((e: unknown) => {
+        if (!(e instanceof HostError)) throw e;
+      });
+    } finally {
+      importing = false;
+    }
+    if (store === undefined)
+      throw new HostError("snapshot-failed", `the snapshot was checked, but the store could not be used after it (it is finished at the next boot, or reset or import again): ${bootState.error ?? "the boot failed"}`);
+    if (importFailure !== undefined) throw new HostError("snapshot-failed", `the snapshot could not be loaded and the store was opened empty: ${importFailure}`);
+    if (finishedImport === undefined) throw new HostError("snapshot-failed", "the import's journal could not be read back: the store was opened as it was");
+    lastImport = snapshotRecord(manifest, clock.now(), fileBytes);
+    log("info", `imported a snapshot of ${manifest.network} up to ${manifest.archive.height} (${fileBytes} bytes)`);
+    const swapMs = Math.round((monotonic() - tSwap) * 10) / 10;
+    return { manifest, timings: { ...timings, swapMs, totalMs: Math.round((monotonic() - t0) * 10) / 10 }, status: await status() };
+  }
+
+  /** Runs start/stop one at a time, in arrival order. */
+  function serial<T>(fn: () => Promise<T>): Promise<T> {
+    const p = lifecycle.then(fn);
+    lifecycle = p.catch(() => {});
+    return p;
+  }
+
+  const fail = (id: number | null, request: RequestType | null, error: ProtocolError): Response =>
+    ({ v: PROTOCOL_VERSION, type: "response", id, request, ok: false, error });
+  const ok = (r: Request, result: unknown): Response =>
+    ({ v: PROTOCOL_VERSION, type: "response", id: r.id, request: r.type, ok: true, result });
+
+  /** Runs `fn` as a request reading the store: after any reopen or snapshot swap in progress, and counted so that they
+   *  wait for it. */
+  async function readingStore<T>(fn: () => Promise<T>): Promise<T> {
+    while (reopening !== undefined || swapping !== undefined) await (reopening ?? swapping);
+    reading++;
+    try {
+      return await fn();
+    } finally {
+      reading--;
+    }
+  }
+
+  async function perform(r: Request): Promise<unknown> {
+    switch (r.type) {
+      case "status":
+        return readingStore(status);
+      case "api":
+        return readingStore(async () => {
+          await ready();
+          return (active ?? idleApi!).handle(r.method, r.target);
+        });
+      case "system":
+        return readingStore(async () => {
+          await ready();
+          return system.system(r);
+        });
+      case "watchdog":
+        return system.watchdog(r);
+      case "export":
+        return serial(() => exportStore());
+      case "import":
+        return serial(() => importStore(r.snapshot));
+      case "start":
+        return serial(() => start(r.config, r.automatic === true));
+      case "range":
+        return serial(() => range(r.startHeight, r.endHeight));
+      case "reset":
+        return serial(() => reset());
+      case "stop":
+        return serial(() => stop());
+      case "digest":
+        return readingStore(async () => digest(await ready()));
+      case "module":
+        return serial(() => setModule(r.module, r.enabled));
+      case "tables":
+        return readingStore(async () => listTables((await ready()).mip0018, STORE_SCHEMAS));
+      case "jsonrpc":
+        return jsonRpcRequest(r.body);
+      case "jsonrpc-state":
+        return jsonRpcState();
+      case "rows":
+        return readingStore(async () => {
+          const s = await ready();
+          try {
+            return await readRows(s.mip0018, STORE_SCHEMAS, r);
+          } catch (e) {
+            if (e instanceof TableRefusal) throw new HostError("bad-request", e.message);
+            throw e;
+          }
+        });
+    }
+  }
+
+  return {
+    boot,
+
+    async receive(raw: unknown): Promise<Response> {
+      let r: Request | undefined;
+      try {
+        const parsed = parseRequest(raw);
+        if (!parsed.ok) return fail(parsed.id, parsed.request, parsed.error);
+        r = parsed.request;
+        return ok(r, await perform(r));
+      } catch (e) {
+        if (e instanceof HostError) return fail(r?.id ?? null, r?.type ?? null, { code: e.code, message: e.message });
+        log("error", `${r?.type ?? "a request"} failed: ${messageOf(e)}`);
+        return fail(r?.id ?? null, r?.type ?? null, { code: "internal", message: messageOf(e) });
+      }
+    },
+
+    onNotice(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+
+    async close(): Promise<void> {
+      system.close();
+      await serial(async () => {
+        await halt();
+        closed = true;
+      });
+      stopJsonRpc();
+      // A module that has started is closed; a start that has not ended is not waited for (its module is closed when
+      // it comes).
+      await Promise.all([...jsonRpcStopping]);
+      await boot();
+      if (store !== undefined) await store.close();
+    },
+  };
+}

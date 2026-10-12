@@ -34,8 +34,9 @@
  *   withdrawal costs at most the rows its identity's current description added.
  */
 import type { ISql } from "postgres";
-import { assertValidSchemaName } from "../../src/postgres/client.js";
+import { assertValidSchemaName } from "../../src/postgres/schema-name.js";
 import { classifyEvent, NAME_SIZE, PAYLOAD_SIZE, zeroExtend } from "../vendor/mip0018/codec/src/index.ts";
+import { bytesEqual, hexToBytes } from "./bytes.ts";
 import { ChainOrderError, type ChainPosition, recordEffects } from "./state.ts";
 
 /** Any postgres.js query function: a client, a reserved connection or a transaction. */
@@ -47,19 +48,19 @@ export interface EventRow {
   block_height: number;
   tx_index: number;
   event_index: number;
-  tx_hash: Buffer | null;
+  tx_hash: Uint8Array | null;
   segment_id: number | null;
   phase: string | null;
-  contract_address: Buffer;
+  contract_address: Uint8Array;
   event_type: string;
   /** Zero-extended to 32 bytes; empty when the observed name was longer (never applied). */
-  name: Buffer;
+  name: Uint8Array;
   /** Zero-extended to 256 bytes; empty when the observed payload was longer (never applied). */
-  payload: Buffer;
+  payload: Uint8Array;
   /** `unresolved`: a `log` op whose logged value the raw transaction does not show; never applied. */
   classification: "accept" | "reject" | "ignore" | "unresolved";
   reason: string | null;
-  domain_sep: Buffer | null;
+  domain_sep: Uint8Array | null;
   kind: number | null;
 }
 
@@ -68,7 +69,7 @@ export class MetadataStoreError extends Error {
   override name = "MetadataStoreError";
 }
 
-const hexBuf = (h: string): Buffer => Buffer.from(h.replace(/^0x/, "").toLowerCase(), "hex");
+const hexBuf = (h: string): Uint8Array => hexToBytes(h.replace(/^0x/, "").toLowerCase());
 
 /**
  * The event-log row of an observed event, classified with the vendored codec (MIP "Event", "Consuming": a shorter
@@ -101,11 +102,11 @@ export function observedEventRow(e: {
     phase: e.phase ?? null,
     contract_address: hexBuf(e.contractAddress),
     event_type: e.type,
-    name: name === undefined ? Buffer.alloc(0) : Buffer.from(name),
-    payload: payload === undefined ? Buffer.alloc(0) : Buffer.from(payload),
+    name: name === undefined ? new Uint8Array(0) : new Uint8Array(name),
+    payload: payload === undefined ? new Uint8Array(0) : new Uint8Array(payload),
     classification: c.result,
     reason: c.result === "accept" ? null : c.reason,
-    domain_sep: c.result === "accept" ? Buffer.from(c.header.domainSep) : null,
+    domain_sep: c.result === "accept" ? new Uint8Array(c.header.domainSep) : null,
     kind: c.result === "accept" ? c.header.kind : null,
   };
 }
@@ -156,19 +157,19 @@ interface StoredAccepted {
   block_height: number | bigint;
   tx_index: number;
   event_index: number;
-  contract_address: Buffer;
+  contract_address: Uint8Array;
   event_type: string;
-  name: Buffer;
-  payload: Buffer;
-  domain_sep: Buffer | null;
+  name: Uint8Array;
+  payload: Uint8Array;
+  domain_sep: Uint8Array | null;
   kind: number | null;
 }
 
-interface IdentityKey { network: string; contract: Buffer; domainSep: Buffer; kind: number }
+interface IdentityKey { network: string; contract: Uint8Array; domainSep: Uint8Array; kind: number }
 
 /** Lists an event as metadata history (`identity` = its identity for an accepted event, `null` for a rejected one). */
 async function listEvent(
-  tx: Queryable, schema: string, row: { network: string; block_height: number | bigint; tx_index: number; event_index: number; contract_address: Buffer },
+  tx: Queryable, schema: string, row: { network: string; block_height: number | bigint; tx_index: number; event_index: number; contract_address: Uint8Array },
   identity: IdentityKey | null,
 ): Promise<void> {
   await tx`
@@ -213,12 +214,12 @@ async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted)
   const at = positionOf(row);
   if (c.result !== "accept")
     throw new MetadataStoreError(`stored event ${JSON.stringify(at)} on ${row.network} is marked accepted but the codec says ${c.result} (${c.reason})`);
-  if (row.domain_sep === null || !row.domain_sep.equals(Buffer.from(c.header.domainSep)) || row.kind !== c.header.kind)
+  if (row.domain_sep === null || !bytesEqual(row.domain_sep, c.header.domainSep) || row.kind !== c.header.kind)
     throw new MetadataStoreError(`stored event ${JSON.stringify(at)} on ${row.network}: its identity columns differ from its payload header`);
   const t = tx(schema);
   const id: IdentityKey = { network: row.network, contract: row.contract_address, domainSep: row.domain_sep, kind: row.kind };
   for (const e of recordEffects(c.records)) {
-    const key = Buffer.from(e.key);
+    const key = new Uint8Array(e.key);
     if (e.op === "delete") {
       const deleted = await tx`
         DELETE FROM ${t}.mip0018_fields
@@ -232,7 +233,7 @@ async function applyAccepted(tx: Queryable, schema: string, row: StoredAccepted)
       INSERT INTO ${t}.mip0018_fields
         (network, contract_address, domain_sep, kind, key, val_type, value, uint_value, usable,
          updated_block, updated_tx, updated_event, updated_record)
-      VALUES (${id.network}, ${id.contract}, ${id.domainSep}, ${id.kind}, ${key}, ${e.valType}, ${Buffer.from(e.value)}, ${uint}, ${usable},
+      VALUES (${id.network}, ${id.contract}, ${id.domainSep}, ${id.kind}, ${key}, ${e.valType}, ${new Uint8Array(e.value)}, ${uint}, ${usable},
               ${at.block}, ${at.tx}, ${at.event}, ${e.record})
       ON CONFLICT (network, contract_address, domain_sep, kind, key) DO UPDATE SET
         val_type = EXCLUDED.val_type, value = EXCLUDED.value, uint_value = EXCLUDED.uint_value, usable = EXCLUDED.usable,
@@ -252,7 +253,7 @@ async function clearIdentity(tx: Queryable, schema: string, id: IdentityKey): Pr
 }
 
 /** Re-applies, in chain order, the stored accepted events of one identity (its rows must be gone already). */
-async function replayIdentity(tx: Queryable, schema: string, network: string, contract: Buffer, domainSep: Buffer, kind: number): Promise<number> {
+async function replayIdentity(tx: Queryable, schema: string, network: string, contract: Uint8Array, domainSep: Uint8Array, kind: number): Promise<number> {
   const events = await tx<StoredAccepted[]>`
     SELECT network, block_height, tx_index, event_index, contract_address, event_type, name, payload, domain_sep, kind
     FROM ${tx(schema)}.mip0018_events
@@ -276,7 +277,7 @@ export async function removeEventsAbove(
   assertValidSchemaName(schema);
   if (!Number.isSafeInteger(height) || height < -1) throw new MetadataStoreError(`height must be an integer ≥ -1, got ${height}`);
   const t = tx(schema);
-  const touched = await tx<{ contract_address: Buffer; domain_sep: Buffer; kind: number }[]>`
+  const touched = await tx<{ contract_address: Uint8Array; domain_sep: Uint8Array; kind: number }[]>`
     SELECT DISTINCT contract_address, domain_sep, kind FROM ${t}.mip0018_events
     WHERE network = ${network} AND block_height > ${height} AND classification = 'accept'
     ORDER BY contract_address, domain_sep, kind`;
@@ -305,7 +306,7 @@ export async function recomputeFields(tx: Queryable, schema: string, network: st
     INSERT INTO ${t}.mip0018_listed_events (network, block_height, tx_index, event_index, contract_address, classification, domain_sep, kind)
     SELECT network, block_height, tx_index, event_index, contract_address, 'reject', NULL, NULL FROM ${t}.mip0018_events
     WHERE network = ${network} AND classification = 'reject'`;
-  const ids = await tx<{ contract_address: Buffer; domain_sep: Buffer; kind: number }[]>`
+  const ids = await tx<{ contract_address: Uint8Array; domain_sep: Uint8Array; kind: number }[]>`
     SELECT DISTINCT contract_address, domain_sep, kind FROM ${t}.mip0018_events
     WHERE network = ${network} AND classification = 'accept' ORDER BY contract_address, domain_sep, kind`;
   let replayedEvents = 0;

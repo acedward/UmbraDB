@@ -167,7 +167,7 @@ describe("by-index block and transaction reads", () => {
       const byHash = vi.fn(async () => ({ transaction: undefined, matchCount: 0 }));
       const methods = registry();
       const ctx = context({
-        db: noDb({ async getTransactionByHash(hash) { return hash.toString("hex") === "cc".repeat(32) ? TX0_ROW : undefined; } }),
+        db: noDb({ async getTransactionByHash(hash) { return Buffer.from(hash).toString("hex") === "cc".repeat(32) ? TX0_ROW : undefined; } }),
         indexer: fakeIndexer({ getBlockByHeight: byHeight, getTransactionByHash: byHash, async getLatestBlock() { return block; } }),
       });
 

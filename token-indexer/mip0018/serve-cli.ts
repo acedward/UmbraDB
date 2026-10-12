@@ -1,7 +1,8 @@
 /**
  * `serve` of the MIP-0018 token indexer: the read-only JSON API (`api.ts`, contract `token-indexer/API.md`) over the
  * existing Postgres and — unless `--api-only` — the MIP-0018 scan loop following the chain archive's cursor, in one
- * process.
+ * process. Both run in the indexer engine (`../engine/engine.ts`); this file parses the arguments, opens the database,
+ * serves the engine's API over `node:http` (`api-node.ts`, with the explorer page) and prints the engine's events.
  *
  *   PG_URL=postgres://… node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet
  *     [--host 127.0.0.1] [--port 10026] [--schema mip0018] [--archive-schema chain_archive] [--api-only]
@@ -36,7 +37,8 @@
 import type { Server } from "node:http";
 import { parseArgs } from "node:util";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
-import { createMip0018Api, listen } from "./api.ts";
+import { createIndexerEngine, type EngineEvent, type IndexerEngine } from "../engine/engine.ts";
+import { createMip0018Server, listen } from "./api-node.ts";
 import type { ScannerState } from "./api-views.ts";
 import { serveUi } from "./ui/page.ts";
 
@@ -59,25 +61,27 @@ export interface ServeHandle {
   host: string;
   port: number;
   server: Server;
+  /** The engine behind the server: the scan loop and the API handler the server answers with. */
+  engine: IndexerEngine;
   scannerState(): ScannerState;
   stop(): Promise<void>;
 }
 
-const MAX_BACKOFF_MS = 60_000;
 /** Smallest `--scan-idle-ms` the CLI accepts (0 made the idle wait and the error back-off a hot loop). */
 export const MIN_SCAN_IDLE_MS = 100;
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const t = setTimeout(done, ms);
-    signal.addEventListener("abort", done, { once: true });
-    function done(): void {
-      clearTimeout(t);
-      signal.removeEventListener("abort", done);
-      resolve();
+/** The engine's events as `serve` prints them: `scan` and `scan-error` lines on `log`, the API's error lines on stderr. */
+function serveLines(log: (line: string) => void, apiLog: (line: string) => void): (e: EngineEvent) => void {
+  return (e) => {
+    if (e.source === "scan" && e.event === "batch") {
+      const r = e.fields;
+      if (r.scannedBlocks > 0) log(JSON.stringify({ event: "scan", from: r.fromHeight, to: r.toHeight, transactions: r.transactions, mints: r.mints, events: r.events }));
+    } else if (e.source === "scan" && e.event === "error") {
+      log(JSON.stringify({ event: "scan-error", error: e.fields.error, failures: e.fields.failures }));
+    } else if (e.source === "api" && e.event === "log") {
+      apiLog(e.fields.line);
     }
-  });
+  };
 }
 
 /** Starts the API (and the scan loop unless `apiOnly`); resolves once the port is bound. */
@@ -87,71 +91,41 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
     throw new RangeError(`scanIdleMs must be a positive integer of milliseconds, got ${o.scanIdleMs}`);
   const log = o.log ?? ((line: string) => process.stdout.write(`${line}\n`));
   const host = o.host ?? "127.0.0.1";
-  const stopper = new AbortController();
-  let state: ScannerState = o.apiOnly === true ? "off" : "following";
-  let loop: Promise<void> = Promise.resolve();
-
-  if (o.apiOnly !== true) {
-    // Loaded only when scanning: the scan needs ledger-v9 (WASM); the API alone does not.
-    const { Mip0018Scanner } = await import("./scan.ts");
-    const scanner = new Mip0018Scanner({
-      sql: o.sql, network: o.network,
-      ...(o.schema === undefined ? {} : { schema: o.schema }),
-      ...(o.archiveSchema === undefined ? {} : { archiveSchema: o.archiveSchema }),
-      ...(o.fromHeight === undefined ? {} : { fromHeight: o.fromHeight }),
-    });
-    await scanner.bootstrap();
-    const idle = o.scanIdleMs ?? 2_000;
-    const batch = o.scanBatch ?? 100;
-    loop = (async () => {
-      let failures = 0;
-      while (!stopper.signal.aborted) {
-        try {
-          const r = await scanner.scanOnce({ maxBlocks: batch });
-          state = "following";
-          failures = 0;
-          if (r.scannedBlocks > 0) {
-            log(JSON.stringify({ event: "scan", from: r.fromHeight, to: r.toHeight, transactions: r.transactions, mints: r.mints, events: r.events }));
-            continue;
-          }
-          await sleep(idle, stopper.signal);
-        } catch (e) {
-          state = "stalled";
-          failures++;
-          log(JSON.stringify({ event: "scan-error", error: e instanceof Error ? e.message : String(e), failures }));
-          await sleep(Math.min(MAX_BACKOFF_MS, idle * 5 ** Math.min(failures - 1, 4)), stopper.signal);
-        }
-      }
-    })();
-  }
-
-  const server = createMip0018Api({
+  const engine = createIndexerEngine({
     sql: o.sql, network: o.network,
     ...(o.schema === undefined ? {} : { schema: o.schema }),
     ...(o.archiveSchema === undefined ? {} : { archiveSchema: o.archiveSchema }),
     ...(o.genesisHash === undefined ? {} : { genesisHash: o.genesisHash }),
-    scannerState: () => state,
-    ui: serveUi, // the explorer page at /ui (it reads only this API)
+    ...(o.apiOnly === true ? {} : {
+      scan: {
+        ...(o.fromHeight === undefined ? {} : { fromHeight: o.fromHeight }),
+        ...(o.scanBatch === undefined ? {} : { batch: o.scanBatch }),
+        ...(o.scanIdleMs === undefined ? {} : { idleMs: o.scanIdleMs }),
+      },
+    }),
+    onEvent: serveLines(log, (line) => process.stderr.write(`${line}\n`)),
   });
+  await engine.start();
+
+  const server = createMip0018Server(engine, serveUi); // the explorer page at /ui (it reads only this API)
   let port: number;
   try {
     port = await listen(server, o.port ?? 10026, host);
   } catch (e) {
-    stopper.abort();
-    await loop;
+    await engine.stop();
     throw e;
   }
-  log(JSON.stringify({ event: "listening", host, port, scanner: state }));
+  log(JSON.stringify({ event: "listening", host, port, scanner: engine.scannerState() }));
   return {
-    host, port, server,
-    scannerState: () => state,
+    host, port, server, engine,
+    scannerState: () => engine.scannerState(),
     async stop() {
-      stopper.abort();
+      const stopped = engine.stop();
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();
       });
-      await loop;
+      await stopped;
     },
   };
 }

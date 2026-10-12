@@ -1,6 +1,6 @@
 import type { ISql, Sql } from "postgres";
 import { StorageError, ValidationError } from "../interfaces/storage-errors.js";
-import { assertValidSchemaName } from "./client.js";
+import { assertValidSchemaName } from "./schema-name.js";
 import { isLockTimeout, isStatementTimeout, translatePostgresError } from "./errors.js";
 import { probeDurability, type DurabilityProbeOptions, type DurabilityWarning } from "./durability-probe.js";
 import * as migration000 from "./migrations/000_schema.js";
