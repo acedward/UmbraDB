@@ -38,7 +38,9 @@
  *   (its navigation never answers) fails with "load of … timed out" at the load's time, counted from before the
  *   navigation is sent; an evaluation whose promise never settles fails at its own bound (`CommandTimeoutError`), and one
  *   that answers after its bound is ignored when the answer comes; a wait on a page whose main thread loops for ever
- *   fails with "timed out waiting for …" at the wait's time; afterwards no command is left waiting.
+ *   fails with "timed out waiting for …" at the wait's time; afterwards no command is left waiting; an evaluation in a
+ *   worker whose script loops for ever, so that the driver's setup of it never answers, fails at the evaluation's own
+ *   bound, the setup included.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
@@ -191,6 +193,12 @@ describe("the Chromium tests' driver", () => {
       } else if (path === "/hello.js") {
         res.writeHead(200, { "content-type": "text/javascript" });
         res.end('postMessage("hi");');
+      } else if (path === "/looping-worker") {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end('<!doctype html><meta charset="utf-8"><title>looping worker</title><script>new Worker("/loop.js");</script>');
+      } else if (path === "/loop.js") {
+        res.writeHead(200, { "content-type": "text/javascript" });
+        res.end("for (;;) {}");
       } else if (path === "/w.js") {
         res.writeHead(200, { "content-type": "text/javascript" });
         res.end(WORKER);
@@ -574,7 +582,7 @@ describe("the Chromium tests' driver", () => {
     }
   }, 120_000);
 
-  it("[[browser.harness.command-bounds]] every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, and nothing is left waiting", async () => {
+  it("[[browser.harness.command-bounds]] every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, and nothing is left waiting; an evaluation in a worker whose setup never answers fails at its own bound", async () => {
     const waiting = browser.waitingCommands;
     // A document request held (paused, never continued): the navigation never answers; the load fails at its time.
     const held = await browser.newPage();
@@ -609,6 +617,15 @@ describe("the Chromium tests' driver", () => {
       await expect(hung.waitFor("window.booted === 'never'", 1_000, "a page that hangs")).rejects.toThrow("timed out waiting for a page that hangs");
       expect(Date.now() - t0).toBeLessThan(5_000);
       expect(own.waitingCommands).toBe(0);
+
+      // A worker whose script loops for ever: the driver's setup of it (its last evaluation) never answers, and an
+      // evaluation in the worker fails at its own bound, the setup included.
+      const looping = await own.newPage({ workers: true });
+      await looping.goto(`${site.origin}/looping-worker`);
+      await arrives("the looping worker's session", () => looping.workerSessions.length > 0);
+      t0 = Date.now();
+      await expect(looping.evalWorker("1 + 1", 1_000)).rejects.toBeInstanceOf(CommandTimeoutError);
+      expect(Date.now() - t0).toBeLessThan(5_000);
     } finally {
       await own.close();
     }

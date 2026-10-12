@@ -20,11 +20,12 @@
  * (OPFS), Web Locks and BroadcastChannel as tabs of one Chrome profile do.
  *
  * Every DevTools command has a bound: the wait it is part of ({@link Page.goto}'s load time, from before the navigation
- * is sent; each evaluation of {@link Page.waitFor}, the time its wait has left; `timeoutMs` of {@link Page.eval} and
- * {@link Page.evalWorker}), else {@link COMMAND_TIMEOUT_MS} (ten minutes). A command with no answer by then fails with
- * {@link CommandTimeoutError} (`waitFor` and `goto` with their own "timed out" errors), is no longer waited for, and its
- * answer, should it come later, is ignored. So a page whose main thread hangs, and answers nothing, ends each wait at its
- * bound.
+ * is sent; each evaluation of {@link Page.waitFor}, the time its wait has left; `timeoutMs` of {@link Page.eval}, and of
+ * {@link Page.evalWorker} for the worker's setup and the evaluation together; the time of {@link Page.crash}), else
+ * {@link COMMAND_TIMEOUT_MS} (ten minutes). A command with no answer by then fails with {@link CommandTimeoutError}
+ * (`waitFor` and `goto` with their own "timed out" errors), is then not waited for, and its answer, should it come later,
+ * is ignored. So a page whose main thread hangs, or a worker whose script never yields, ends each wait at its bound.
+ * {@link Browser.launch}'s `timeoutMs` bounds the browser's start and its DevTools connection together.
  *
  * Failures explain themselves: every page also records the `error` events of the dedicated workers it creates (their
  * message, file, line and column, through a wrapper of the page's `Worker` constructor and a DevTools binding; nothing
@@ -187,6 +188,21 @@ export interface RequestRecord { url: string; method: string; type: string; stat
 export interface WorkerRecord { targetId: string; url: string; running: boolean }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Whether `promise` settles within `ms` (`Infinity`: it is awaited); its timer is cleared once it settles. */
+async function within(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  if (!Number.isFinite(ms)) {
+    await promise.catch(() => { /* settled */ });
+    return true;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<false>((r) => { timer = setTimeout(() => r(false), Math.min(Math.max(0, ms), 2_147_483_647)); });
+  try {
+    return await Promise.race([promise.then(() => true as const, () => true as const), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export interface PageOptions {
   /** Also record the page's dedicated workers (requests, console, log entries, exceptions, CSP violations). */
@@ -613,13 +629,16 @@ export class Page {
   }
 
   /** Evaluates an expression in the page's newest dedicated worker (promises awaited) and returns its JSON value; fails
-   *  with {@link CommandTimeoutError} when it has not answered within `timeoutMs`. */
+   *  with {@link CommandTimeoutError} when the worker's setup and the evaluation have not both answered within
+   *  `timeoutMs`. */
   async evalWorker<T = Json>(expression: string, timeoutMs = COMMAND_TIMEOUT_MS): Promise<T> {
+    const end = Date.now() + timeoutMs;
     const session = this.workerSessions.at(-1);
     if (session === undefined) throw new Error("no worker recorded: open the page with { workers: true }");
-    // Not before the worker's own setup (the CSP listener among it) has been sent and answered.
-    await this.workerSetups.get(session);
-    const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session, timeoutMs);
+    // Not before the worker's own setup (the CSP listener among it) has been sent and answered, within the same bound.
+    const setup = this.workerSetups.get(session);
+    if (setup !== undefined && !(await within(setup, end - Date.now()))) throw new CommandTimeoutError("the worker's setup", timeoutMs);
+    const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session, Math.max(1, end - Date.now()));
     if (r.exceptionDetails !== undefined) throw new Error(`worker evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value as T;
   }
@@ -733,8 +752,8 @@ export class Page {
    * never answers); resolves once DevTools reports the crash.
    */
   async crash(timeoutMs = 10_000): Promise<void> {
-    void this.send("Page.crash").catch(() => { /* the crashed target never answers */ });
     const end = Date.now() + timeoutMs;
+    void this.conn.send("Page.crash", {}, this.sessionId, timeoutMs).catch(() => { /* the crashed target never answers */ });
     while (!this.crashed) {
       if (Date.now() > end) throw new Error("the renderer did not crash");
       await sleep(10);
@@ -793,7 +812,10 @@ export class Browser {
   private readonly pages: Page[] = [];
   private constructor(readonly executable: string, private readonly child: ChildProcess, private readonly conn: Connection, private readonly dir: string) {}
 
+  /** Starts the browser and opens its DevTools connection, both within `timeoutMs`; a launch that fails ends the
+   *  browser it started. */
   static async launch(executable: string, timeoutMs = 60_000): Promise<Browser> {
+    const end = Date.now() + timeoutMs;
     const dir = mkdtempSync(join(tmpdir(), "mip0018-ui-"));
     const child = spawn(executable, [
       "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
@@ -803,21 +825,31 @@ export class Browser {
       `--user-data-dir=${dir}`, "--remote-debugging-port=0", "--window-size=1400,900", "about:blank",
     ], { stdio: ["ignore", "ignore", "pipe"] });
     let err = "";
-    const wsUrl = await new Promise<string>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`the browser did not start within ${timeoutMs} ms: ${err.slice(-2000)}`)), timeoutMs);
-      child.stderr!.on("data", (b: Buffer) => {
-        err += b.toString();
-        const m = /DevTools listening on (ws:\/\/\S+)/.exec(err);
-        if (m !== null) { clearTimeout(t); resolve(m[1]!); }
+    try {
+      const wsUrl = await new Promise<string>((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`the browser did not start within ${timeoutMs} ms: ${err.slice(-2000)}`)), timeoutMs);
+        child.stderr!.on("data", (b: Buffer) => {
+          err += b.toString();
+          const m = /DevTools listening on (ws:\/\/\S+)/.exec(err);
+          if (m !== null) { clearTimeout(t); resolve(m[1]!); }
+        });
+        child.once("exit", (code) => { clearTimeout(t); reject(new Error(`the browser exited (${code}): ${err.slice(-2000)}`)); });
       });
-      child.once("exit", (code) => { clearTimeout(t); reject(new Error(`the browser exited (${code}): ${err.slice(-2000)}`)); });
-    });
-    const ws = new WebSocket(wsUrl);
-    await new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve(), { once: true });
-      ws.addEventListener("error", () => reject(new Error("DevTools WebSocket failed")), { once: true });
-    });
-    return new Browser(executable, child, new Connection(ws), dir);
+      const ws = new WebSocket(wsUrl);
+      const opened = new Promise<void>((resolve, reject) => {
+        ws.addEventListener("open", () => resolve(), { once: true });
+        ws.addEventListener("error", () => reject(new Error("DevTools WebSocket failed")), { once: true });
+      });
+      if (!(await within(opened, end - Date.now()))) {
+        ws.close();
+        throw new Error(`the browser's DevTools connection did not open within ${timeoutMs} ms`);
+      }
+      await opened;
+      return new Browser(executable, child, new Connection(ws), dir);
+    } catch (e) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      throw e;
+    }
   }
 
   /** Sends a DevTools command to the browser. */
