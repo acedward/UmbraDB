@@ -1350,7 +1350,7 @@
     {
       "id": "browser.reopen.stack-depth",
       "file": "token-indexer/test/browser-session.test.ts",
-      "description": "with the count rule off, failures of other kinds do not reopen the store, and the first statement that fails with stack depth limit exceeded (54001, raised on purpose) reopens it at once; the engine continues to the same tables, and the reopen is counted and logged with its reason"
+      "description": "with the count rule off, failures of other kinds do not reopen the store, and the first statement that fails with stack depth limit exceeded (54001, raised on purpose) reopens it at once, although every later statement of that session fails with 54001 too; the engine continues to the same tables, and the reopen is counted and logged with its reason"
     },
     {
       "id": "browser.system.sources",

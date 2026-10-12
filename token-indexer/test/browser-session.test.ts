@@ -18,8 +18,9 @@
  *   the reopen and the failed statements start again from zero.
  * - `[[browser.reopen.stack-depth]]` — with the count rule off, failures of other kinds do not reopen the store, and the
  *   first statement that fails with "stack depth limit exceeded" (SQLSTATE 54001, the error of PGlite's defect, raised
- *   here by the database on purpose so the test does not wait for the defect) reopens it at once: the engine continues
- *   to the same tables, and the reopen is counted and logged with its reason.
+ *   here by the database on purpose so the test does not wait for the defect) reopens it at once, although, as with the
+ *   defect, every later statement of that session fails with 54001 too (only closing PGlite still works): the engine
+ *   continues to the same tables, and the reopen is counted and logged with its reason.
  * - A measurement, not a required test: after how many failed statements PGlite's own defect appears (about 1,870 for
  *   PGlite 0.5.8 in Node; every statement then fails with 54001), printed; when it appears, it must come after the
  *   count rule's 1,000 (the rule reopens first); when it does not appear within 3,000 failed statements (a machine
@@ -33,8 +34,8 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { REOPEN_AFTER_FAILED_STATEMENTS } from "../browser/host.ts";
 import type { HostStatus, SystemResult } from "../browser/protocol.ts";
 import { createPgliteClient } from "../../src/postgres/pglite-sql.js";
-import { monitorSession } from "../browser/session.ts";
-import { ARCHIVE_SCHEMA, MIP0018_SCHEMA } from "../browser/store.ts";
+import { monitorSession, STACK_DEPTH_EXCEEDED } from "../browser/session.ts";
+import { ARCHIVE_SCHEMA, MIP0018_SCHEMA, type Store } from "../browser/store.ts";
 import { rangeTables } from "../dev/range-tables.ts";
 import { percentile } from "../engine/telemetry.ts";
 import { channelClient, IDX, result, testHost, type TestHost, U1, until, untilStatus } from "./helpers/worker-host.ts";
@@ -77,6 +78,29 @@ function u1Reference(): Promise<string> {
     return tablesOf(h);
   })();
   return reference;
+}
+
+/**
+ * PGlite's stack-depth defect on `store`'s database, from the first statement that fails with "stack depth limit
+ * exceeded" (54001) on: every later statement of its session (a `query`, an `exec`, a statement run) fails with that
+ * error too; closing PGlite still works.
+ */
+function failEveryStatementAfterStackDepth(store: Store): void {
+  const db = store.pglite as unknown as Record<"query" | "exec" | "runExclusive", (...args: unknown[]) => Promise<unknown>>;
+  let failure: { message: string; code: string; severity: string } | undefined;
+  for (const method of ["query", "exec", "runExclusive"] as const) {
+    const original = db[method].bind(store.pglite);
+    db[method] = async (...args: unknown[]): Promise<unknown> => {
+      if (failure !== undefined) throw Object.assign(new Error(failure.message), { code: failure.code, severity: failure.severity });
+      try {
+        return await original(...args);
+      } catch (e) {
+        const x = e as { message?: unknown; code?: unknown; severity?: unknown };
+        if (x.code === STACK_DEPTH_EXCEEDED) failure = { message: String(x.message), code: STACK_DEPTH_EXCEEDED, severity: typeof x.severity === "string" ? x.severity : "ERROR" };
+        throw e;
+      }
+    };
+  }
 }
 
 describe("worker session monitor", () => {
@@ -230,7 +254,7 @@ describe("worker reopen", () => {
     expect(await tablesOf(h)).toBe(expected);
   }, 180_000);
 
-  it("[[browser.reopen.stack-depth]] with the count rule off, failures of other kinds do not reopen the store, and the first statement that fails with stack depth limit exceeded (54001, raised on purpose) reopens it at once; the engine continues to the same tables, and the reopen is counted and logged with its reason", async () => {
+  it("[[browser.reopen.stack-depth]] with the count rule off, failures of other kinds do not reopen the store, and the first statement that fails with stack depth limit exceeded (54001, raised on purpose) reopens it at once, although every later statement of that session fails with 54001 too; the engine continues to the same tables, and the reopen is counted and logged with its reason", async () => {
     const expected = await u1Reference();
     const h = newHost({ dataDir: tempDir(), reopenAfterFailedStatements: Number.POSITIVE_INFINITY });
     await result(h.host, "start", { config: { source: { kind: "tape", range: "u1", finalizedHeight: U1.from + 4, advance: { everyMs: 150, by: 2 } }, startHeight: U1.from, ...FAST } });
@@ -238,10 +262,14 @@ describe("worker reopen", () => {
     const first = h.opened[0]!;
     for (let i = 0; i < 50; i++) await first.mip0018`select 1/0`.catch(() => {});
     expect(h.opened, "other failures, with the count rule off").toHaveLength(1);
+    // From the first 54001 on, every statement of this session fails so, as with PGlite's defect: the reopen cannot
+    // rely on the old session answering anything.
+    failEveryStatementAfterStackDepth(first);
     // The database raises the error PGlite's defect gives: the same SQLSTATE and message, through the same session.
     const e = await first.mip0018.unsafe("DO $$ BEGIN RAISE EXCEPTION 'stack depth limit exceeded' USING ERRCODE = '54001'; END $$")
       .then(() => undefined, (x: { code?: string; message?: string }) => x);
     expect(e).toMatchObject({ code: "54001", message: "stack depth limit exceeded" });
+    await expect(first.pglite.query("select 1"), "the old session's database after the first 54001").rejects.toMatchObject({ code: "54001" });
     await until(() => h.opened.length === 2, "the reopen");
     expect(first.pglite.closed).toBe(true);
     await untilStatus(h.host, "the rest of the range", (s) => s.cursors?.sync?.height === U1.to && s.cursors?.scan?.nextHeight === U1.to + 1);
