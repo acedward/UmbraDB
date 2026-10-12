@@ -36,30 +36,36 @@
  * machine's interfaces ({@link networkState}) changed while it ran and the script of a worker the page created failed
  * with `net::ERR_ABORTED`.
  *
- * The rule: the `ready` step always runs, and a step that fails is never loaded again. Once the attempt is seen
- * aborted, the step has {@link READY_SETTLE_MS} (fifteen seconds) more to end:
+ * The rule: the `ready` step always runs, and a step that fails or succeeds is never loaded again. Once the attempt is
+ * seen aborted, the step has {@link READY_SETTLE_MS} (fifteen seconds) more to end:
  * - it fails — it throws, or it sees the page report a failure (a boot that ended "failed"), whatever made it fail: the
  *   attempt's own failure; the step's error is thrown, the attempt's records kept, with one printed line
  *   (`not loaded again`);
  * - it succeeds: the attempt stands, as it is;
- * - it has not ended (its page never got what it waits for): it is abandoned — its abort signal is set and every
- *   DevTools command it sends from then on fails, so it stops before the next attempt, which waits for it (at most ten
- *   seconds); if it fails meanwhile with anything but that ({@link StepAbandonedError}: a command it sent before can
- *   still answer, a boot that ended "failed"), it is a failed step — and otherwise the page is loaded again, as it is
- *   when there is no step, unless the attempt recorded a failure the aborted loads do not explain: an exception, or an
- *   error-level console call or log entry (a CSP violation's report among them), that names none of them; an error
- *   event of a worker whose script was not one of them; a load that failed with another error (`net::ERR_ABORTED`, a
- *   load cancelled, aside); the load itself never ending (its load event never came), unless the document was what the
- *   network aborted. Such an attempt fails like a failed step.
- *   Each attempt runs in the same browser profile (its storage stays), so a failure only a first boot would show is
- *   not repeated by the next attempt: it must be caught in the attempt it happened in.
- * An attempt aborted {@link LOAD_ATTEMPTS} times fails; anything with no abort (a failed step, another load error, a
- * load answered with an error status) fails as it fails. The next attempt starts once the interfaces have stayed the
- * same for three seconds (Chrome passes a change on more than once: a second notice about two seconds after the first
- * fails the requests waiting then too); what the aborted attempt recorded (its requests, console, log entries,
- * exceptions, worker errors and workers) is dropped from the page's lists, its reason and its failures kept in
- * {@link Page.loadRetries} and shown by {@link Page.diagnostics}, and the retry's printed line counts them and shows the
- * first. A step that runs after the page is ready (not in `goto`) is not covered.
+ * - it has not ended (its page has not yet got what it waits for): it is late. It goes on as it is (its DevTools
+ *   commands still reach the page, so it still sees a boot that ends now) until the decision below.
+ * An aborted attempt whose step did not end in time, or that has no step, fails at once if it recorded a failure the
+ * aborted loads do not explain: an exception, or an error-level console call or log entry (a CSP violation's report
+ * among them), that names none of them; an error event of a worker whose script was not one of them; a load that failed
+ * with another error (`net::ERR_ABORTED`, a load cancelled, aside); the load itself never ending (its load event never
+ * came), unless the document was what the network aborted. Such an attempt fails like a failed step. Otherwise it is
+ * decided once the machine's interfaces have stayed the same for three seconds (at most ten; Chrome passes a change on
+ * more than once: a second notice about two seconds after the first fails the requests waiting then too), or as soon as
+ * its late step fails or succeeds. Then the late step's abort signal is set: every DevTools command it sends from then
+ * on fails with {@link StepAbandonedError}, the driver's own error, and it has at most ten seconds more to stop. The
+ * decision, on all that happened until then:
+ * - the late step failed with anything but that error (it saw the page report a failure, or a command it sent before
+ *   answered with one): a failed step — its error thrown, not loaded again;
+ * - the late step succeeded: the page booted, and the attempt stands, as when the step ends in time;
+ * - the attempt recorded a failure the aborted loads do not explain (above): it fails like a failed step;
+ * - otherwise (the step stopped at its signal, it is still running, or there is no step) the page is loaded again.
+ * Each attempt runs in the same browser profile (its storage stays), so a failure only a first boot would show is not
+ * repeated by the next attempt: it must be caught in the attempt it happened in.
+ * An attempt aborted {@link LOAD_ATTEMPTS} times fails, once decided so; anything with no abort (a failed step, another
+ * load error, a load answered with an error status) fails as it fails. What an attempt loaded again recorded (its
+ * requests, console, log entries, exceptions, worker errors and workers) is dropped from the page's lists, its reason
+ * and its failures kept in {@link Page.loadRetries} and shown by {@link Page.diagnostics}, and the retry's printed line
+ * counts them and shows the first. A step that runs after the page is ready (not in `goto`) is not covered.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -326,9 +332,10 @@ export class Page {
 
   /**
    * Loads a URL, waits for its load event, then runs `ready` (the page's own readiness: its engine booted, a view
-   * drawn); an attempt the machine's network aborted is made again only when `ready` could not end (see the module
-   * documentation), at most {@link LOAD_ATTEMPTS} times. `ready` gets the attempt's abort signal: once the attempt is
-   * abandoned it is set, and every DevTools command the step sends from then on fails.
+   * drawn); an attempt the machine's network aborted is made again only when `ready` neither failed nor succeeded by
+   * the decision, after the network settled (see the module documentation), at most {@link LOAD_ATTEMPTS} times.
+   * `ready` gets the attempt's abort signal: it is set at that decision, and every DevTools command the step sends from
+   * then on fails with {@link StepAbandonedError}.
    */
   async goto(url: string, timeoutMs = 30_000, ready?: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
     for (let attempt = 1; ; attempt++) {
@@ -344,8 +351,7 @@ export class Page {
         failure = { error, step: false };
       }
       // The step always runs. Once the attempt is seen aborted it has readySettleMs more to end; if it has not, it is
-      // the abort's (its page never got what it waits for): no longer awaited, and its signal tells it to stop (its
-      // DevTools commands fail from then on).
+      // late: it goes on as it is, still watching the page, and how it ends counts until the decision below.
       const stepper = new AbortController();
       let step: Promise<unknown> | undefined;
       let stuck = false;
@@ -362,13 +368,12 @@ export class Page {
         if (failure !== undefined) throw failure.error;
         return;
       }
-      stepper.abort();
-      // The abandoned step goes on until its next command fails; one already sent can still answer. How it ends counts
-      // until the page is loaded again: a failure that is not the driver's own abandonment is the page's.
-      let lateFailure: { error: unknown } | undefined;
-      const stepEnded = step === undefined ? Promise.resolve() : step.then(() => undefined, (error: unknown) => {
-        if (!(error instanceof StepAbandonedError)) lateFailure = { error };
-      });
+      // How the late step ended: it succeeded, it failed, or it stopped at its signal (the driver's own error).
+      const late: { end?: { kind: "done" } | { kind: "failed"; error: unknown } | { kind: "abandoned" } } = {};
+      const stepEnded = step === undefined || !stuck ? Promise.resolve() : step.then(
+        () => { late.end = { kind: "done" }; },
+        (error: unknown) => { late.end = error instanceof StepAbandonedError ? { kind: "abandoned" } : { kind: "failed", error }; },
+      );
       const last = failure === undefined ? "" : `; the last attempt's error: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`;
       // A failure of the page's own is kept: the step failed (whatever made it fail: it ended), or the attempt recorded
       // what the aborted loads do not explain.
@@ -376,7 +381,7 @@ export class Page {
       const documentAborted = this.navigationError !== undefined && this.environmentalErrors.some((e) => this.navigationError!.includes(e));
       const own = (): string[] => [
         ...(failure?.step === true ? [`the step failed: ${message(failure.error)}`] : []),
-        ...(lateFailure !== undefined ? [`the step failed after it was abandoned: ${message(lateFailure.error)}`] : []),
+        ...(late.end?.kind === "failed" ? [`the step failed late: ${message(late.end.error)}`] : []),
         // The load itself failed (its load event never came): the page's own, unless its document was aborted.
         ...(failure?.step === false && !documentAborted ? [`the load failed: ${message(failure.error)}`] : []),
         ...this.unexplained(marks),
@@ -384,17 +389,25 @@ export class Page {
       const notAgain = (found: string[]): Error => {
         console.error(`browser page ${this.targetId.slice(0, 8)} (${url}): ${reason}, but the attempt also failed on its own (${found.length}: ${found[0]}): not loaded again`);
         if (failure?.step === true) return failure.error as Error;
-        if (lateFailure !== undefined) return lateFailure.error as Error;
+        if (late.end?.kind === "failed") return late.end.error as Error;
         return new Error(`${url}: the page failed on its own while ${reason}: ${found.join("; ")}; not loaded again`);
       };
+      if (own().length > 0) {
+        stepper.abort();
+        throw notAgain(own());
+      }
+      // The decision waits until the machine's network has settled (a change comes as several events: an interface, then
+      // its addresses), or until the late step has failed or succeeded. Then the late step's signal is set (its DevTools
+      // commands fail from then on, so it stops before any next attempt; one already sent can still answer) and it has a
+      // bound to stop. A failure that is not the driver's own is the page's; a success means the page booted.
+      const settledMs = await this.networkSettled(() => late.end !== undefined && late.end.kind !== "abandoned");
+      stepper.abort();
+      await Promise.race([stepEnded, sleep(ABANDONED_STEP_MS)]);
+      // The late step succeeded: the attempt stands, as when the step ends in time.
+      if (late.end?.kind === "done") return;
+      // What arrived meanwhile counts too: the late step's failure, and what the attempt recorded.
       if (own().length > 0) throw notAgain(own());
       if (attempt >= LOAD_ATTEMPTS) throw new Error(`${url}: ${reason}, in each of ${attempt} attempts${last}`);
-      // A change comes as several events (an interface, then its addresses): load again once it has settled, and once the
-      // abandoned step has stopped (or a bound has passed: its commands fail anyway).
-      const settledMs = await this.networkSettled();
-      await Promise.race([stepEnded, sleep(ABANDONED_STEP_MS)]);
-      // What arrived meanwhile counts too.
-      if (own().length > 0) throw notAgain(own());
       const dropped = this.droppedSince(marks);
       this.loadRetries.push({ url, reason, dropped });
       const records = dropped.length === 0 ? "" : `; the aborted attempt's records (kept in the page's report): ${dropped.length}, the first: ${dropped[0]!.slice(0, 200)}`;
@@ -424,12 +437,12 @@ export class Page {
   }
 
   /** Waits until the machine's network state has not changed for {@link NETWORK_SETTLE_MS}, at most
-   *  {@link NETWORK_SETTLE_MAX_MS}; how long it waited. */
-  private async networkSettled(): Promise<number> {
+   *  {@link NETWORK_SETTLE_MAX_MS}, or until `ended()` (read every 100 ms) is true; how long it waited. */
+  private async networkSettled(ended: () => boolean = () => false): Promise<number> {
     const start = Date.now();
     let state = this.networkStateOf();
     let since = start;
-    while (Date.now() - since < NETWORK_SETTLE_MS && Date.now() - start < NETWORK_SETTLE_MAX_MS) {
+    while (!ended() && Date.now() - since < NETWORK_SETTLE_MS && Date.now() - start < NETWORK_SETTLE_MAX_MS) {
       await sleep(100);
       const now = this.networkStateOf();
       if (now !== state) {
@@ -514,7 +527,8 @@ export class Page {
   }
 
   /** How `step` ended: it succeeded, it failed, or — the attempt seen aborted (checked at each event that can show it,
-   *  and every 100 ms) — it had not ended {@link readySettleMs} later (`step` then runs on, unawaited). */
+   *  and every 100 ms) — it had not ended {@link readySettleMs} later (`step` then runs on: {@link goto} keeps its
+   *  outcome until its decision). */
   private settled(step: Promise<unknown>, from: { requests: number; workerErrors: number }, network: { changed(): boolean }): Promise<{ kind: "done" } | { kind: "failed"; error: unknown } | { kind: "stuck" }> {
     step.catch(() => { /* awaited below, or abandoned */ });
     type Ended = { kind: "done" } | { kind: "failed"; error: unknown } | { kind: "stuck" };
