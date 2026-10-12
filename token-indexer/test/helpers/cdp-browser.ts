@@ -126,7 +126,9 @@ export class CommandTimeoutError extends Error {
   }
 }
 
-class Connection {
+/** A DevTools connection over a WebSocket (or any object with its `addEventListener`, `send` and `close`, which is how a
+ *  test drives the pages without a browser). */
+export class Connection {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly listeners = new Map<string, Listener[]>();

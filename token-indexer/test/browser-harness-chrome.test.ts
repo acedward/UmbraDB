@@ -40,13 +40,14 @@
  *   one that answers after its bound is ignored when the answer comes; a command whose parameters cannot be serialized
  *   fails at once, with nothing left waiting for it; a wait on a page whose main thread loops for ever fails with
  *   "timed out waiting for …" at the wait's time; afterwards no command is left waiting; an evaluation in a worker
- *   whose script loops for ever, so that the driver's setup of it never answers, fails at the evaluation's own bound,
- *   the setup included.
+ *   whose script loops for ever fails at its own bound; and, over a DevTools endpoint without a browser that never
+ *   answers the worker's first setup command, an evaluation in that worker fails at its own bound with the setup's
+ *   timeout and is never sent.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Browser, CommandTimeoutError, ENVIRONMENTAL_LOAD_ERRORS, failureReport, findBrowser, LOAD_ATTEMPTS, type Page, type PageOptions, READY_SETTLE_MS } from "./helpers/cdp-browser.ts";
+import { Browser, CommandTimeoutError, Connection, ENVIRONMENTAL_LOAD_ERRORS, failureReport, findBrowser, LOAD_ATTEMPTS, Page, type PageOptions, READY_SETTLE_MS } from "./helpers/cdp-browser.ts";
 import { type LocalServer, serveHandler } from "./helpers/static-site.ts";
 
 const browserExe = findBrowser();
@@ -136,6 +137,29 @@ async function arrives(what: string, check: () => boolean, timeoutMs = 10_000): 
   while (!check()) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/** A DevTools endpoint without a browser, for the driver's real `Connection` and `Page`: it records every command sent,
+ *  answers each with what `answer` gives (`undefined`: never), and can send events. */
+class FakeDevTools {
+  readonly sent: Array<{ id: number; method: string; params: Record<string, unknown>; sessionId?: string }> = [];
+  private readonly listeners = new Map<string, Array<(ev: { data: string }) => void>>();
+  constructor(private readonly answer: (command: { method: string; sessionId?: string }) => unknown) {}
+  addEventListener(type: string, listener: (ev: { data: string }) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+  send(text: string): void {
+    const command = JSON.parse(text) as FakeDevTools["sent"][number];
+    this.sent.push(command);
+    const result = this.answer(command);
+    if (result !== undefined) queueMicrotask(() => this.emit({ id: command.id, result }));
+  }
+  emit(message: unknown): void {
+    for (const l of this.listeners.get("message") ?? []) l({ data: JSON.stringify(message) });
+  }
+  close(): void {
+    for (const l of this.listeners.get("close") ?? []) l({ data: "" });
   }
 }
 
@@ -583,7 +607,7 @@ describe("the Chromium tests' driver", () => {
     }
   }, 120_000);
 
-  it("[[browser.harness.command-bounds]] every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, a command that cannot be serialized fails at once, and nothing is left waiting; an evaluation in a worker whose setup never answers fails at its own bound", async () => {
+  it("[[browser.harness.command-bounds]] every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, a command that cannot be serialized fails at once, and nothing is left waiting; an evaluation in a worker whose setup never answers fails at its own bound, with the setup's timeout, and is never sent", async () => {
     const waiting = browser.waitingCommands;
     // A document request held (paused, never continued): the navigation never answers; the load fails at its time.
     const held = await browser.newPage();
@@ -621,8 +645,8 @@ describe("the Chromium tests' driver", () => {
       expect(Date.now() - t0).toBeLessThan(5_000);
       expect(own.waitingCommands).toBe(0);
 
-      // A worker whose script loops for ever: the driver's setup of it (its last evaluation) never answers, and an
-      // evaluation in the worker fails at its own bound, the setup included.
+      // A worker whose script loops for ever: an evaluation in it fails at its own bound (the driver's setup of the
+      // worker included, should its last evaluation still wait).
       const looping = await own.newPage({ workers: true });
       await looping.goto(`${site.origin}/looping-worker`);
       await arrives("the looping worker's session", () => looping.workerSessions.length > 0);
@@ -631,6 +655,32 @@ describe("the Chromium tests' driver", () => {
       expect(Date.now() - t0).toBeLessThan(5_000);
     } finally {
       await own.close();
+    }
+
+    // No browser: the worker's first setup command is never answered. An evaluation in that worker fails at its own
+    // bound with the setup's timeout, and is never sent.
+    const devtools = new FakeDevTools((c) => {
+      if (c.sessionId === "worker-session" && c.method === "Runtime.enable") return undefined;
+      if (c.method === "Target.createTarget") return { targetId: "page-target" };
+      if (c.method === "Target.attachToTarget") return { sessionId: "page-session" };
+      if (c.method === "Runtime.evaluate") return { result: { value: 2 } };
+      return {};
+    });
+    const connection = new Connection(devtools as unknown as WebSocket);
+    try {
+      const fake = await Page.open(connection, { workers: true });
+      devtools.emit({
+        method: "Target.attachedToTarget", sessionId: "page-session",
+        params: { sessionId: "worker-session", targetInfo: { type: "worker", targetId: "worker-target", url: "http://worker.test/w.js" }, waitingForDebugger: true },
+      });
+      expect(fake.workerSessions).toEqual(["worker-session"]);
+      t0 = Date.now();
+      await expect(fake.evalWorker("1 + 1", 300)).rejects.toThrow("the worker's setup: no answer within 300 ms");
+      expect(Date.now() - t0).toBeLessThan(3_000);
+      expect(devtools.sent.filter((c) => c.sessionId === "worker-session").map((c) => c.method)).toEqual(["Runtime.enable"]);
+      expect(connection.waiting).toBe(1);
+    } finally {
+      connection.close();
     }
   }, 60_000);
 });
