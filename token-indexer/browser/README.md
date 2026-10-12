@@ -659,15 +659,17 @@ PGlite runs every statement synchronously on the worker's thread, so the worker 
   or that failed stays stopped. While `range`, `reset`, `export` or `import` runs the limit is 10
   min. More than 3 restarts within 10 min close the client with `worker-error`.
 - **Reopen.** PGlite 0.5.8 fails every statement with "stack depth limit exceeded" once a database has failed about
-  1,700 statements, until it is reopened. The host counts the statements the database fails and reopens the store at
+  1,700 statements run as its `exec` runs them (the simple protocol), or about 1,870 run as its `query` runs them (the
+  extended protocol), until it is reopened. The host counts the statements the database fails and reopens the store at
   1,000 since it was opened, or at once on the first "stack depth limit exceeded": it holds new requests, stops the
   engine at a full block, lets the requests reading the store end, closes PGlite, opens it again and runs the same
   engine configuration (it continues at the cursors). Closing PGlite waits for the statements in flight: a statement
   queued inside PGlite 0.5.8 when it closes never returns. The required tests check the host's rules with failures
   they cause (1,000 divisions by zero; one error with SQLSTATE 54001 raised by the database); after how many failures
-  the defect itself appears depends on the machine (about 1,870 in Node; not within 3,000 under coverage), so
-  `test/browser-session.test.ts` only measures it: it prints the count, checks that it comes after the rule's 1,000 when
-  the defect appears, and is skipped, saying so, when it does not appear within 3,000.
+  the defect itself appears depends on the machine (with statements run as `query` runs them, as the measurement runs
+  them: about 1,870 in Node, not within 3,000 under coverage), so `../test/browser-session.test.ts` only measures it:
+  it prints the count, checks that it comes after the rule's 1,000 when the defect appears, and is skipped, saying so,
+  when it does not appear within 3,000.
 
 ## System snapshot
 
@@ -713,10 +715,12 @@ statements), **Browser**, **Snapshots** and **Logs** (the last 200 lines, newest
   credentials, JWTs, viewing keys, seed and mnemonic phrases, word by word, under any key spelling) are replaced, whole
   (a JSON member's array or object too, also inside JSON text written as a JSON string, at any depth), in
   every string of the snapshot; a log line is redacted as it is written, before an event's fields become JSON. A text
-  longer than 16,384 characters (a node's error body, for example) is cut to them first; the text is redacted whole,
-  then cut to at most 4,096 characters, never inside a `[redacted]`, saying how many characters were left out (unless
-  it is already a cut text: at most 4,096 characters, then that mark), so the snapshot always validates, a secret the
-  cut falls in is never shown in part, and redaction costs time in proportion to at most 16,384 characters.
+  longer than 16,384 characters (a node's error body, for example) is cut to at most them first, before a whitespace or
+  a double quote, so that no token is cut in two before it is read, and to nothing when it has none (the field then
+  shows only `… [N more characters]`); the text is redacted whole, then cut to at most 4,096 characters, never inside a
+  `[redacted]`, saying how many characters were left out (unless it is already a cut text: at most 4,096 characters,
+  then that mark), so the snapshot always validates, a secret the cut falls in is never shown in part, and redaction
+  costs time in proportion to at most 16,384 characters.
 - Text from the engine (error messages, log lines, URLs) is drawn as text nodes with the explorer's hidden-character
   rules (`visible-text.ts`, the rule of `../mip0018/ui/page.js`): every control, format, private-use, unassigned or
   surrogate code point, line or paragraph separator and default-ignorable character is drawn as a visible mark
