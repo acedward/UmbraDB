@@ -1855,7 +1855,7 @@
     {
       "id": "browser.harness.command-bounds-timing",
       "file": "token-indexer/test/browser-harness-bounds.test.ts",
-      "description": "each bound ends its wait when it says: a command's own bound and the ten-minute default; a load's, from before its navigation is sent; each evaluation of a wait, the wait's remaining time; a worker evaluation's, its setup included, never sent while the setup waits; a crash's, its command forgotten too; a command that cannot be serialized or sent leaves nothing behind; an answer after its bound is ignored; a browser launch's, its start and its DevTools connection together, ending the process"
+      "description": "each bound is still waiting 1 ms before it and has ended at it: a command's own and the ten-minute default; a load's, from before its navigation is sent; each evaluation of a wait, the wait's remaining time; a worker evaluation's, its setup included, never sent while the setup waits; a crash's and its command's; a browser launch's start and DevTools connection together, its process killed, its socket closed and its profile removed; a command that cannot be serialized or sent leaves nothing behind; an answer after its bound is ignored; a real launch that fails ends its process and removes its profile"
     },
     {
       "id": "engine.start-tip.follows",

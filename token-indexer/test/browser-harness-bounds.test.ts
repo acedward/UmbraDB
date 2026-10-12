@@ -1,28 +1,32 @@
 /**
- * The bounds of the Chromium tests' driver (`helpers/cdp-browser.ts`), timed exactly: the driver's own `Connection` and
- * `Page` over a DevTools endpoint without a browser, with fake time; and `Browser.launch` with an executable that is not
- * a browser, in real time.
+ * The bounds of the Chromium tests' driver (`helpers/cdp-browser.ts`), timed exactly with fake time: the driver's own
+ * `Connection` and `Page` over a DevTools endpoint without a browser, and `Browser.launch` with its process and socket
+ * replaced (its `LaunchSeam`); then one real launch of an executable that is not a browser, as a smoke case.
  *
- * - `[[browser.harness.command-bounds-timing]]` — each bound ends its wait when it says, and not 1 ms sooner:
+ * - `[[browser.harness.command-bounds-timing]]` — each bound is still waiting 1 ms before it and has ended at it:
  *   - a command never answered fails with `CommandTimeoutError` at its own bound, else at `COMMAND_TIMEOUT_MS` (ten
  *     minutes), and is then forgotten;
- *   - a load whose navigation is never answered fails at the load's time; one whose navigation answers late and whose
- *     load event never comes fails at the load's time too, counted from before the navigation was sent;
- *   - a wait whose first evaluation answers and whose next one never does fails at the wait's time: each evaluation has
- *     only the time the wait has left;
+ *   - a load whose navigation is never answered, and one whose navigation answers late and whose load event never
+ *     comes, fail at the load's time, counted from before the navigation was sent; a load event ends the load at once;
+ *   - a wait whose next evaluation is never answered, and one whose every evaluation answers "no", fail at the wait's
+ *     time (each evaluation has only the time the wait has left);
  *   - an evaluation in a worker whose first setup command is never answered fails with the setup's timeout at the
  *     evaluation's bound, never sent; one whose setup answers late has only the rest for the evaluation;
- *   - a crash that never comes fails at the crash's time, its `Page.crash` command forgotten then too;
+ *   - a crash that never comes fails at the crash's time, its `Page.crash` command forgotten at that time too; a crash
+ *     event ends it at once;
+ *   - a browser launch whose process never prints its DevTools line fails at the launch's time with the start's error;
+ *     one whose line comes at 2,000 ms and whose DevTools socket never opens fails at the launch's 3,000 ms with the
+ *     connection's error, the socket closed; each kills its process and removes the profile directory it created; one
+ *     whose socket opens resolves then, and closing it ends the process and removes the profile;
  *   - a command that cannot be serialized, or that the socket refuses, fails at once and leaves no timer and nothing
- *     waiting;
- *   - an answer that comes after its command's bound is ignored: nothing throws, and the commands still waiting keep
- *     waiting for their own answers;
- *   - a browser launch whose DevTools line comes late and whose DevTools connection never opens fails at the launch's
- *     time, counted from its start, and one that never prints the line fails at it too; each ends the process it
- *     started.
+ *     waiting; an answer that comes after its command's bound is ignored (nothing throws, and the commands still
+ *     waiting keep waiting for their own answers);
+ *   - a real launch of an executable that never prints the line fails with the start's error, its process ended and
+ *     its profile directory removed.
  */
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo, type Socket } from "node:net";
+import { type ChildProcess, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -39,7 +43,7 @@ type Answer = { result: unknown; after?: number } | "refuse" | undefined;
  *  events and answers of its own. */
 class FakeDevTools {
   readonly sent: Command[] = [];
-  private readonly listeners = new Map<string, Array<(ev: { data: string }) => void>>();
+  protected readonly listeners = new Map<string, Array<(ev: { data: string }) => void>>();
   constructor(private readonly answer: (command: Command) => Answer) {}
   addEventListener(type: string, listener: (ev: { data: string }) => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
@@ -54,10 +58,55 @@ class FakeDevTools {
     else setTimeout(() => this.emit({ id: command.id, result: a.result }), a.after);
   }
   emit(message: unknown): void {
-    for (const l of this.listeners.get("message") ?? []) l({ data: JSON.stringify(message) });
+    this.dispatch("message", JSON.stringify(message));
   }
   close(): void {
-    for (const l of this.listeners.get("close") ?? []) l({ data: "" });
+    this.dispatch("close", "");
+  }
+  protected dispatch(type: string, data: string): void {
+    for (const l of this.listeners.get(type) ?? []) l({ data });
+  }
+}
+
+/** A DevTools socket for `Browser.launch` without a browser: it never answers, and opens when the test says. */
+class FakeSocket extends FakeDevTools {
+  closes = 0;
+  constructor(readonly url: string) {
+    super(() => undefined);
+  }
+  open(): void {
+    this.dispatch("open", "");
+  }
+  override close(): void {
+    this.closes++;
+    super.close();
+  }
+}
+
+/** A browser process for `Browser.launch` without a browser: it prints what the test gives it on stderr, and a kill
+ *  ends it (its exit reported a moment later, as a process's is). */
+class FakeChild extends EventEmitter {
+  readonly stderr = new EventEmitter();
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  readonly kills: string[] = [];
+  constructor(readonly args: string[]) {
+    super();
+  }
+  print(text: string): void {
+    this.stderr.emit("data", Buffer.from(text));
+  }
+  kill(signal: NodeJS.Signals = "SIGTERM"): boolean {
+    this.kills.push(signal);
+    queueMicrotask(() => {
+      this.signalCode = signal;
+      this.emit("exit", null, signal);
+    });
+    return true;
+  }
+  /** The profile directory the launch gave it. */
+  get profile(): string {
+    return this.args.find((a) => a.startsWith("--user-data-dir="))!.slice("--user-data-dir=".length);
   }
 }
 
@@ -77,10 +126,14 @@ function track<T>(promise: Promise<T>): { promise: Promise<T>; settled: () => bo
   return { promise, settled: () => done };
 }
 
-/** Fake time for the timers the driver and the endpoint use, and `Date`. */
-const fakeTime = (): void => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
-};
+/** Advances fake time to 1 ms before `from + bound`, checks that `t` still waits, then to `from + bound` and checks
+ *  that it has ended: no allowance on either side. */
+async function endsExactlyAt(t: { settled: () => boolean }, from: number, bound: number, what: string): Promise<void> {
+  await vi.advanceTimersByTimeAsync(from + bound - 1 - Date.now());
+  expect(t.settled(), `${what}: still waiting at ${bound - 1} ms`).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(t.settled(), `${what}: ended at ${bound} ms`).toBe(true);
+}
 
 const connections: Connection[] = [];
 afterEach(() => {
@@ -101,83 +154,66 @@ async function fakePage(devtools: FakeDevTools, opts: { workers?: boolean } = {}
   return { page: await Page.open(connection, opts), connection };
 }
 
-/** Advances fake time to `ms` after `from` and says whether `t` has settled then. */
-async function settledAt(t: { settled: () => boolean }, from: number, ms: number): Promise<boolean> {
-  await vi.advanceTimersByTimeAsync(from + ms - Date.now());
-  return t.settled();
-}
-
-/** Whether the process `pid` has ended, waited for at most 3 s (real time). */
-async function ended(pid: number): Promise<boolean> {
-  const end = Date.now() + 3_000;
-  for (;;) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return true;
-    }
-    if (Date.now() > end) return false;
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
-
 describe("the Chromium tests' driver, timed", () => {
-  it("[[browser.harness.command-bounds-timing]] each bound ends its wait when it says: a command's own bound and the ten-minute default; a load's, from before its navigation is sent; each evaluation of a wait, the wait's remaining time; a worker evaluation's, its setup included, never sent while the setup waits; a crash's, its command forgotten too; a command that cannot be serialized or sent leaves nothing behind; an answer after its bound is ignored; a browser launch's, its start and its DevTools connection together, ending the process", async () => {
+  it("[[browser.harness.command-bounds-timing]] each bound is still waiting 1 ms before it and has ended at it: a command's own and the ten-minute default; a load's, from before its navigation is sent; each evaluation of a wait, the wait's remaining time; a worker evaluation's, its setup included, never sent while the setup waits; a crash's and its command's; a browser launch's start and DevTools connection together, its process killed, its socket closed and its profile removed; a command that cannot be serialized or sent leaves nothing behind; an answer after its bound is ignored; a real launch that fails ends its process and removes its profile", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+
     // A command's own bound, and the default.
-    fakeTime();
     {
       const devtools = new FakeDevTools((c) => (c.method.startsWith("Test.") ? undefined : { result: {} }));
       const connection = connect(devtools);
       let t0 = Date.now();
       const own = track(connection.send("Test.never", {}, undefined, 250));
-      expect(await settledAt(own, t0, 249), "a command's bound: waiting at 249 ms").toBe(false);
-      expect(await settledAt(own, t0, 250), "a command's bound: ended at 250 ms").toBe(true);
+      await endsExactlyAt(own, t0, 250, "a command's bound");
       await expect(own.promise).rejects.toThrow(new CommandTimeoutError("Test.never", 250).message);
       await expect(own.promise).rejects.toBeInstanceOf(CommandTimeoutError);
       expect(connection.waiting, "forgotten at its bound").toBe(0);
       expect(COMMAND_TIMEOUT_MS).toBe(600_000);
       t0 = Date.now();
       const unbounded = track(connection.send("Test.neverDefault"));
-      expect(await settledAt(unbounded, t0, COMMAND_TIMEOUT_MS - 1), "the default: waiting 1 ms before ten minutes").toBe(false);
-      expect(await settledAt(unbounded, t0, COMMAND_TIMEOUT_MS), "the default: ended at ten minutes").toBe(true);
+      await endsExactlyAt(unbounded, t0, COMMAND_TIMEOUT_MS, "the default");
       await expect(unbounded.promise).rejects.toThrow("Test.neverDefault: no answer within 600000 ms");
       expect(connection.waiting).toBe(0);
     }
 
-    // A load whose navigation is never answered, and one whose navigation answers after 600 ms and whose load event
-    // never comes: both fail at the load's 1,000 ms (the load's check runs every 50 ms), counted from before the send.
-    for (const navigation of [undefined, { result: { frameId: "frame" }, after: 600 }]) {
+    // Loads of 1,000 ms: the navigation never answered; the navigation answered at 600 ms and no load event — both end
+    // at 1,000 ms, counted from before the send; the navigation answered at 100 ms and the load event at 300 ms — the
+    // load ends at 300 ms.
+    for (const [navigation, loadEventAt] of [[undefined, null], [{ result: { frameId: "frame" }, after: 600 }, null], [{ result: { frameId: "frame" }, after: 100 }, 300]] as const) {
       const devtools = new FakeDevTools(pageAnswers((c) => (c.method === "Page.navigate" ? navigation : "default")));
       const { page } = await fakePage(devtools);
       const t0 = Date.now();
       const load = track(page.goto("http://page.test/", 1_000));
-      const what = navigation === undefined ? "a navigation never answered" : "a navigation answered at 600 ms";
-      expect(await settledAt(load, t0, 999), `${what}: waiting at 999 ms`).toBe(false);
-      expect(await settledAt(load, t0, 1_050), `${what}: ended by 1,050 ms`).toBe(true);
+      if (loadEventAt !== null) {
+        setTimeout(() => devtools.emit({ method: "Page.loadEventFired", sessionId: "page-session", params: {} }), loadEventAt);
+        await endsExactlyAt(load, t0, loadEventAt, "a load whose load event comes at 300 ms");
+        await expect(load.promise).resolves.toBeUndefined();
+        continue;
+      }
+      await endsExactlyAt(load, t0, 1_000, navigation === undefined ? "a navigation never answered" : "a navigation answered at 600 ms");
       await expect(load.promise).rejects.toThrow("load of http://page.test/ timed out");
     }
 
-    // A wait whose first evaluation answers "false" and whose next one, sent 100 ms later, is never answered: that
-    // evaluation has the 900 ms the wait has left, so the wait fails at its 1,000 ms.
-    {
+    // Waits: the first evaluation answers "no" and the next one, sent 100 ms later, never answers — it has the 900 ms
+    // the wait has left, so the wait ends at its 1,000 ms; every evaluation answers "no" — a 950 ms wait ends at 950 ms.
+    for (const [never, timeoutMs] of [[true, 1_000], [false, 950]] as const) {
       let evaluations = 0;
       const devtools = new FakeDevTools(pageAnswers((c) => {
         if (c.method !== "Runtime.evaluate") return "default";
         evaluations++;
-        return evaluations === 1 ? { result: { result: { value: false } } } : undefined;
+        return evaluations > 1 && never ? undefined : { result: { result: { value: false } } };
       }));
       const { page } = await fakePage(devtools);
       const t0 = Date.now();
-      const wait = track(page.waitFor("window.ready", 1_000, "the page"));
-      expect(await settledAt(wait, t0, 999), "a wait: waiting at 999 ms").toBe(false);
-      expect(await settledAt(wait, t0, 1_000), "a wait: ended at 1,000 ms").toBe(true);
+      const wait = track(page.waitFor("window.ready", timeoutMs, "the page"));
+      await endsExactlyAt(wait, t0, timeoutMs, never ? "a wait whose second evaluation never answers" : "a wait answered no every time");
       await expect(wait.promise).rejects.toThrow("timed out waiting for the page");
-      expect(evaluations).toBe(2);
+      if (never) expect(evaluations).toBe(2);
     }
 
-    // A worker evaluation: the worker's first setup command never answered — the evaluation fails with the setup's
-    // timeout at its own bound and is never sent; the setup answered at 200 ms and the evaluation never — it fails at
-    // its 300 ms, the evaluation having the 100 ms left.
+    // Worker evaluations of 300 ms: the worker's first setup command never answered — the setup's timeout at 300 ms, the
+    // evaluation never sent; the setup answered at 200 ms and the evaluation never — it ends at 300 ms, the evaluation
+    // having the 100 ms left.
     for (const setupAnswer of [undefined, { result: {}, after: 200 }]) {
       const devtools = new FakeDevTools(pageAnswers((c) => {
         if (c.sessionId !== "worker-session") return "default";
@@ -193,9 +229,7 @@ describe("the Chromium tests' driver, timed", () => {
       expect(page.workerSessions).toEqual(["worker-session"]);
       const t0 = Date.now();
       const evaluation = track(page.evalWorker("1 + 1", 300));
-      const what = setupAnswer === undefined ? "a setup never answered" : "a setup answered at 200 ms";
-      expect(await settledAt(evaluation, t0, 299), `${what}: waiting at 299 ms`).toBe(false);
-      expect(await settledAt(evaluation, t0, 300), `${what}: ended at 300 ms`).toBe(true);
+      await endsExactlyAt(evaluation, t0, 300, setupAnswer === undefined ? "a setup never answered" : "a setup answered at 200 ms");
       const sentToWorker = devtools.sent.filter((c) => c.sessionId === "worker-session");
       if (setupAnswer === undefined) {
         await expect(evaluation.promise).rejects.toThrow("the worker's setup: no answer within 300 ms");
@@ -207,23 +241,72 @@ describe("the Chromium tests' driver, timed", () => {
       }
     }
 
-    // A crash that never comes (no answer, no crash event): it fails at its 500 ms (checked every 10 ms), and its
-    // `Page.crash` command is forgotten at 500 ms too; one whose crash event comes at 100 ms ends then.
+    // A crash of 500 ms that never comes (no answer, no crash event): it ends at 500 ms, and its `Page.crash` command
+    // is forgotten at 500 ms too; one whose crash event comes at 100 ms ends then.
     {
       const devtools = new FakeDevTools(pageAnswers((c) => (c.method === "Page.crash" ? undefined : "default")));
       const { page, connection } = await fakePage(devtools);
       let t0 = Date.now();
       const crash = track(page.crash(500));
-      expect(await settledAt(crash, t0, 499), "a crash: waiting at 499 ms").toBe(false);
-      expect(connection.waiting, "its command waiting at 499 ms").toBe(1);
-      expect(await settledAt(crash, t0, 510), "a crash: ended by 510 ms").toBe(true);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(crash.settled(), "a crash: still waiting at 499 ms").toBe(false);
+      expect(connection.waiting, "its command still waiting at 499 ms").toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(crash.settled(), "a crash: ended at 500 ms").toBe(true);
+      expect(connection.waiting, "its command forgotten at 500 ms").toBe(0);
       await expect(crash.promise).rejects.toThrow("the renderer did not crash");
-      expect(connection.waiting, "its command forgotten at the crash's bound").toBe(0);
       t0 = Date.now();
       const crashing = track(page.crash(500));
       setTimeout(() => devtools.emit({ method: "Inspector.targetCrashed", sessionId: "page-session", params: {} }), 100);
-      expect(await settledAt(crashing, t0, 110), "a crash event at 100 ms: ended by 110 ms").toBe(true);
+      await endsExactlyAt(crashing, t0, 100, "a crash event at 100 ms");
       await expect(crashing.promise).resolves.toBeUndefined();
+    }
+
+    // Browser launches, the process and socket replaced: one whose process never prints its DevTools line (1,000 ms);
+    // one whose line comes at 2,000 ms and whose socket never opens (3,000 ms); one whose line comes at 100 ms and whose
+    // socket opens at 200 ms.
+    for (const [lineAt, opensAt, timeoutMs] of [[null, null, 1_000], [2_000, null, 3_000], [100, 200, 3_000]] as const) {
+      const children: FakeChild[] = [];
+      const sockets: FakeSocket[] = [];
+      const seam = {
+        spawn: (_e: string, args: string[]): ChildProcess => {
+          const c = new FakeChild(args);
+          children.push(c);
+          return c as unknown as ChildProcess;
+        },
+        socket: (url: string): WebSocket => {
+          const s = new FakeSocket(url);
+          sockets.push(s);
+          if (opensAt !== null) setTimeout(() => s.open(), opensAt - lineAt!);
+          return s as unknown as WebSocket;
+        },
+      };
+      const t0 = Date.now();
+      const launch = track(Browser.launch("not-a-browser", timeoutMs, seam));
+      const child = children[0]!;
+      expect(existsSync(child.profile), "the launch's profile directory").toBe(true);
+      if (lineAt !== null) setTimeout(() => child.print("DevTools listening on ws://127.0.0.1:9/devtools/browser/fake\n"), lineAt);
+      if (opensAt !== null) {
+        await endsExactlyAt(launch, t0, opensAt, "a launch whose socket opens at 200 ms");
+        const browser = await launch.promise;
+        expect(sockets.map((s) => s.url)).toEqual(["ws://127.0.0.1:9/devtools/browser/fake"]);
+        const closing = browser.close();
+        await vi.advanceTimersByTimeAsync(5_000);
+        await closing;
+        expect(child.kills).toEqual(["SIGKILL"]);
+        expect(existsSync(child.profile), "its profile removed when it closes").toBe(false);
+        continue;
+      }
+      await endsExactlyAt(launch, t0, timeoutMs, lineAt === null ? "a launch that never prints its line" : "a launch whose socket never opens");
+      if (lineAt === null) {
+        await expect(launch.promise).rejects.toThrow("the browser did not start within 1000 ms");
+        expect(sockets, "no socket opened").toEqual([]);
+      } else {
+        await expect(launch.promise).rejects.toThrow("the browser's DevTools connection did not open within 3000 ms");
+        expect(sockets.map((s) => [s.url, s.closes]), "the socket closed").toEqual([["ws://127.0.0.1:9/devtools/browser/fake", 1]]);
+      }
+      expect(child.kills, "its process killed").toEqual(["SIGKILL"]);
+      expect(existsSync(child.profile), "its profile removed").toBe(false);
     }
 
     // A command that cannot be serialized, and one the socket refuses: each fails at once, with no timer and nothing
@@ -245,7 +328,7 @@ describe("the Chromium tests' driver, timed", () => {
       const t0 = Date.now();
       const late = track(connection.send("Test.late", {}, undefined, 100));
       const waiting = track(connection.send("Test.waiting", {}, undefined, 10_000));
-      expect(await settledAt(late, t0, 100)).toBe(true);
+      await endsExactlyAt(late, t0, 100, "a command's bound");
       await expect(late.promise).rejects.toBeInstanceOf(CommandTimeoutError);
       expect(connection.waiting, "only the command still waiting").toBe(1);
       const lateId = devtools.sent.find((c) => c.method === "Test.late")!.id;
@@ -259,53 +342,28 @@ describe("the Chromium tests' driver, timed", () => {
     }
     vi.useRealTimers();
 
-    // A browser launch, in real time, with an executable that is not a browser: it records its process id, prints the
-    // DevTools line after `lineAfterMs` (never: null) and records when it did, the line pointing at an endpoint that
-    // accepts the connection but never answers the WebSocket handshake, and ends by itself after 30 s (so a failed run
-    // leaves no process behind). The margins are a second or more either way, for a slow machine.
-    const held: Socket[] = [];
-    const endpoint = createServer((s) => { held.push(s); });
-    await new Promise<void>((r) => endpoint.listen(0, "127.0.0.1", () => r()));
+    // A real launch of an executable that is not a browser and never prints the DevTools line (it ends by itself after
+    // 30 s, so a failed run leaves no process): the start's error, its process ended, its profile removed. No timing is
+    // asserted here; the test's own timeout is the watchdog.
     const dir = mkdtempSync(join(tmpdir(), "umbradb-not-a-browser-"));
     try {
-      const notABrowser = (name: string, lineAfterMs: number | null): { path: string; pid: () => number; lineAt: () => number } => {
-        const path = join(dir, `${name}.cjs`);
-        const pidFile = join(dir, `${name}.pid`);
-        const lineFile = join(dir, `${name}.line`);
-        const line = `DevTools listening on ws://127.0.0.1:${(endpoint.address() as AddressInfo).port}/devtools/browser/fake\n`;
-        writeFileSync(path, [
-          "#!/usr/bin/env node",
-          `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
-          lineAfterMs === null ? "" : `setTimeout(() => { process.stderr.write(${JSON.stringify(line)}); require("node:fs").writeFileSync(${JSON.stringify(lineFile)}, String(Date.now())); }, ${lineAfterMs});`,
-          "setTimeout(() => process.exit(0), 30000);",
-        ].join("\n"));
-        chmodSync(path, 0o755);
-        return { path, pid: () => Number(readFileSync(pidFile, "utf8")), lineAt: () => Number(readFileSync(lineFile, "utf8")) };
+      const path = join(dir, "silent.cjs");
+      writeFileSync(path, ["#!/usr/bin/env node", "setTimeout(() => process.exit(0), 30000);"].join("\n"));
+      chmodSync(path, 0o755);
+      const started: Array<{ child: ChildProcess; args: string[] }> = [];
+      const realSpawn = (e: string, args: string[]): ChildProcess => {
+        const child = spawn(e, args, { stdio: ["ignore", "ignore", "pipe"] });
+        started.push({ child, args });
+        return child;
       };
-      // The DevTools line at about 2,000 ms: the connection has only the rest of the launch's 3,000 ms, so the launch
-      // ends at 3,000 ms, at least a second before the line's time plus 3,000 ms (where a connection given the whole
-      // 3,000 ms would end).
-      const late = notABrowser("late-line", 2_000);
-      let t0 = Date.now();
-      await expect(Browser.launch(late.path, 3_000)).rejects.toThrow("the browser's DevTools connection did not open within 3000 ms");
-      const endedAt = Date.now();
-      let took = endedAt - t0;
-      expect(took, "the launch's own 3,000 ms").toBeGreaterThanOrEqual(2_990);
-      expect(took, "counted from the launch's start").toBeLessThan(4_000);
-      expect(endedAt, "not from the DevTools line").toBeLessThan(late.lineAt() + 3_000 - 1_000);
-      expect(await ended(late.pid()), "the process it started ended").toBe(true);
-      // No DevTools line at all: the launch's own 1,000 ms (the upper bound only guards against a launch that never ends).
-      const silent = notABrowser("no-line", null);
-      t0 = Date.now();
-      await expect(Browser.launch(silent.path, 1_000)).rejects.toThrow("the browser did not start within 1000 ms");
-      took = Date.now() - t0;
-      expect(took).toBeGreaterThanOrEqual(990);
-      expect(took).toBeLessThan(2_500);
-      expect(await ended(silent.pid()), "the process it started ended").toBe(true);
+      await expect(Browser.launch(path, 1_000, { spawn: realSpawn })).rejects.toThrow("the browser did not start within 1000 ms");
+      const { child, args } = started[0]!;
+      if (child.exitCode === null && child.signalCode === null) await new Promise((r) => child.once("exit", r));
+      expect(child.signalCode, "its process ended by the launch").toBe("SIGKILL");
+      const profile = args.find((a) => a.startsWith("--user-data-dir="))!.slice("--user-data-dir=".length);
+      expect(existsSync(profile), "its profile removed").toBe(false);
     } finally {
-      for (const s of held) s.destroy();
-      await new Promise<void>((r) => endpoint.close(() => r()));
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, 20_000);
 });
