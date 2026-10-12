@@ -1850,7 +1850,7 @@
     {
       "id": "browser.harness.command-bounds",
       "file": "token-indexer/test/browser-harness-chrome.test.ts",
-      "description": "every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, and nothing is left waiting; an evaluation in a worker whose setup never answers fails at its own bound"
+      "description": "every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, a command that cannot be serialized fails at once, and nothing is left waiting; an evaluation in a worker whose setup never answers fails at its own bound"
     },
     {
       "id": "engine.start-tip.follows",

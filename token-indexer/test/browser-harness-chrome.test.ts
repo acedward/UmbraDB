@@ -36,11 +36,12 @@
  *   DevTools commands fail) before the page is loaded again, so its action runs once, on the attempt that is kept.
  * - `[[browser.harness.command-bounds]]` — every DevTools command has a bound: a load whose document request is held
  *   (its navigation never answers) fails with "load of … timed out" at the load's time, counted from before the
- *   navigation is sent; an evaluation whose promise never settles fails at its own bound (`CommandTimeoutError`), and one
- *   that answers after its bound is ignored when the answer comes; a wait on a page whose main thread loops for ever
- *   fails with "timed out waiting for …" at the wait's time; afterwards no command is left waiting; an evaluation in a
- *   worker whose script loops for ever, so that the driver's setup of it never answers, fails at the evaluation's own
- *   bound, the setup included.
+ *   navigation is sent; an evaluation whose promise never settles fails at its own bound (`CommandTimeoutError`), and
+ *   one that answers after its bound is ignored when the answer comes; a command whose parameters cannot be serialized
+ *   fails at once, with nothing left waiting for it; a wait on a page whose main thread loops for ever fails with
+ *   "timed out waiting for …" at the wait's time; afterwards no command is left waiting; an evaluation in a worker
+ *   whose script loops for ever, so that the driver's setup of it never answers, fails at the evaluation's own bound,
+ *   the setup included.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
@@ -582,7 +583,7 @@ describe("the Chromium tests' driver", () => {
     }
   }, 120_000);
 
-  it("[[browser.harness.command-bounds]] every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, and nothing is left waiting; an evaluation in a worker whose setup never answers fails at its own bound", async () => {
+  it("[[browser.harness.command-bounds]] every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, a command that cannot be serialized fails at once, and nothing is left waiting; an evaluation in a worker whose setup never answers fails at its own bound", async () => {
     const waiting = browser.waitingCommands;
     // A document request held (paused, never continued): the navigation never answers; the load fails at its time.
     const held = await browser.newPage();
@@ -603,6 +604,8 @@ describe("the Chromium tests' driver", () => {
     await expect(page.eval("new Promise((r) => setTimeout(() => r(1), 1_000))", 200)).rejects.toThrow(/Runtime\.evaluate: no answer within 200 ms/u);
     await new Promise((r) => setTimeout(r, 1_500));
     expect(await page.eval("1 + 1")).toBe(2);
+    // A command whose parameters cannot be serialized fails at once; nothing waits for it.
+    await expect(page.send("Runtime.evaluate", { expression: "1", value: 1n })).rejects.toBeInstanceOf(TypeError);
     expect(browser.waitingCommands).toBe(waiting);
     await page.close();
 

@@ -154,11 +154,19 @@ class Connection {
     });
   }
   /** Sends a command; it fails with {@link CommandTimeoutError} when it has no answer within `timeoutMs` (default
-   *  {@link COMMAND_TIMEOUT_MS}; `Infinity`: no bound), and is then forgotten. */
+   *  {@link COMMAND_TIMEOUT_MS}; `Infinity`: no bound), and is then forgotten. A command that cannot be serialized or
+   *  sent fails at once, and nothing waits for it. */
   send(method: string, params: Json = {}, sessionId?: string, timeoutMs = COMMAND_TIMEOUT_MS): Promise<Json> {
     if (STEPS.getStore()?.some((s) => s.aborted) === true)
       return Promise.reject(new StepAbandonedError(method));
     const id = this.nextId++;
+    // Serialized first: parameters that cannot be (a BigInt) fail the command before anything waits for it.
+    let message: string;
+    try {
+      message = JSON.stringify(sessionId === undefined ? { id, method, params } : { id, method, params, sessionId });
+    } catch (e) {
+      return Promise.reject(e);
+    }
     return new Promise((resolve, reject) => {
       const bound = Number.isFinite(timeoutMs) ? Math.min(Math.max(0, timeoutMs), 2_147_483_647) : undefined;
       const timer = bound === undefined ? undefined : setTimeout(() => {
@@ -167,7 +175,14 @@ class Connection {
       // The bound never keeps the process alive by itself.
       if (typeof timer === "object" && timer !== null && "unref" in timer) timer.unref();
       this.pending.set(id, { resolve, reject, method, timer });
-      this.ws.send(JSON.stringify(sessionId === undefined ? { id, method, params } : { id, method, params, sessionId }));
+      try {
+        this.ws.send(message);
+      } catch (e) {
+        // Not sent (the connection is closing): nothing waits for it.
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(e as Error);
+      }
     });
   }
   /** How many commands wait for their answer. */
