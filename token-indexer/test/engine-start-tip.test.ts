@@ -22,7 +22,7 @@
  *   never at the stale one.
  * - `[[engine.start-tip.follows]]` — the archive and scan heights follow the finalized tip for 10 minutes, in simulated
  *   time: the recorded IDX range with a finalized tip that rises one block every 6 s of the manual clock (Midnight's
- *   block time; the live Stagenet runs saw about one every 8.7 s, so this is the faster case), the engine with the browser's settings (20 heights per sync batch, 10 blocks per scan step) and the
+ *   block time), the engine with the browser's settings (20 heights per sync batch, 10 blocks per scan step) and the
  *   engine's own waits (10 s at the tip for the sync, 2 s for the scan), for 10 simulated minutes: the archive starts
  *   at the tip and every time both loops wait, the archive is within the blocks one sync wait lets pass (2) and the
  *   scan within that of the archive; at the end both are at the tip, with every height archived once.
