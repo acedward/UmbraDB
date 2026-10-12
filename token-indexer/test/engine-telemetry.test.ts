@@ -853,7 +853,7 @@ describe("system snapshot schema and redaction", () => {
     }
   });
 
-  it("[[engine.telemetry.redaction-cut-secrets]] a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads (also with no whitespace near it), show nothing of themselves; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark", () => {
+  it("[[engine.telemetry.redaction-cut-secrets]] a secret the cut falls in is never shown in part: a Bearer or Basic credential, a URL's user name and password, a key-like path segment, a viewing key, a key=value and a JWT straddling the 4,096th character at every offset from 0 to 20, or the 16,384 characters redaction reads (also with no whitespace near it, or with the last whitespace or double quote 2,000 characters before it: all before that kept), show nothing of themselves, not four characters in a row; and a text whose redacted start sits just over 4,096 characters keeps that start, never only the mark", () => {
     const forms: Array<[string, string, string, RegExp]> = [
       ["Bearer ", "AbCdEfGh1234567890secretTOKEN", " tail", /AbCd|secretTOKEN/u],
       ["Basic ", "QWxhZGRpbjpvcGVuc2VzYW1l", " tail", /QWxh/u],
@@ -879,22 +879,45 @@ describe("system snapshot schema and redaction", () => {
       }
     }
     // No whitespace near the 16,384th character: the text is never cut inside a token before it is read, whatever
-    // redaction does to what comes first (here a long value it shortens to `[redacted]`).
+    // redaction does to what comes first (here a long value it shortens to `[redacted]`). Nothing of a secret is shown:
+    // no four characters of it in a row, in what is kept before the mark.
     const value = ["abcdefghij", "0123456789"].join("");
-    const glued: Array<[string, RegExp]> = [
-      [";https://aliceSecret@host.example/x", /alice/u],
-      [";https://alice:s3cretpassw0rd@host.example/x", /alice|s3cr/u],
-      [";Bearer AbCdEfGh1234567890secretTOKEN", /AbCd|secretTOKEN/u],
-      [`;token=${value}`, /abcdefgh/u],
-      [`;{"token":"${value}"}`, /abcdefgh/u],
-      [`;apiKey:${value}`, /abcdefgh/u],
+    const glued: Array<[string, string[]]> = [
+      [";https://aliceSecret@host.example/x", ["aliceSecret"]],
+      [";https://alice:s3cretpassw0rd@host.example/x", ["alice", "s3cretpassw0rd"]],
+      [";Bearer AbCdEfGh1234567890secretTOKEN", ["AbCdEfGh1234567890secretTOKEN"]],
+      [`;token=${value}`, [value]],
+      [`;{"token":"${value}"}`, [value]],
+      [`;apiKey:${value}`, [value]],
     ];
-    for (const [tail, shows] of glued) {
-      for (let at = 0; at <= 40; at += 4) {
-        const text = `token=${"v".repeat(15_000)};${"z".repeat(1_363 - tail.length + 36 + at)}${tail}`;
+    /** The parts of `secrets` four characters long that `out` shows before its mark. */
+    const shown = (out: string, secrets: readonly string[]): string[] => {
+      const kept = out.replace(/… \[\d+ more characters\]$/u, "");
+      return secrets.flatMap((secret) => [...secret].map((_, i) => secret.slice(i, i + 4)).filter((part) => part.length === 4 && kept.includes(part)));
+    };
+    // The raw cut at 16,384 characters falls at each character of the tail in turn: the tail's first `at` are within.
+    for (const [tail, secrets] of glued) {
+      for (let at = 0; at < tail.length; at++) {
+        const text = `token=${"v".repeat(15_000)};${"z".repeat(1_377 - at)}${tail}`;
         const out = redactText(text);
-        expect(out, `${tail} ${at}`).not.toMatch(shows);
+        expect(shown(out, secrets), `${tail} ${at}`).toEqual([]);
         expect(redactText(out), `${tail} ${at}`).toBe(out);
+      }
+    }
+    // The text's last whitespace or double quote 2,000 characters before the raw cut at 16,384, and the same tails
+    // across the cut: the text is cut before that character, so everything before it is kept (what redaction leaves).
+    for (const separator of [" ", '"']) {
+      for (const [tail, secrets] of glued.filter(([t]) => !/[\s"]/u.test(t))) {
+        for (let at = 0; at < tail.length; at++) {
+          const before = `token=${"v".repeat(14_000)};${"z".repeat(377)}`;
+          const text = `${before}${separator}${"y".repeat(1_999 - at)}${tail}`;
+          expect(before.length, "where the separator is").toBe(16_384 - 2_000);
+          const out = redactText(text);
+          const where = `${JSON.stringify(separator)} ${tail} ${at}`;
+          expect(out, where).toBe(`token=[redacted];${"z".repeat(377)}… [${text.length - before.length} more characters]`);
+          expect(shown(out, secrets), where).toEqual([]);
+          expect(redactText(out), where).toBe(out);
+        }
       }
     }
     // Short secrets at the start, each longer once redacted, then filler up to just over 4,096 characters once
