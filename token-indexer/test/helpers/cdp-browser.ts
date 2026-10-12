@@ -56,9 +56,11 @@
  * decision, on all that happened until then:
  * - the late step failed with anything but that error (it saw the page report a failure, or a command it sent before
  *   answered with one): a failed step — its error thrown, not loaded again;
- * - the late step succeeded: the page booted, and the attempt stands, as when the step ends in time;
+ * - the late step succeeded before its signal was set: the page booted, and the attempt stands, as when the step ends
+ *   in time;
  * - the attempt recorded a failure the aborted loads do not explain (above): it fails like a failed step;
- * - otherwise (the step stopped at its signal, it is still running, or there is no step) the page is loaded again.
+ * - otherwise the page is loaded again: the step stopped at its signal (it ended once the signal was set, with that
+ *   error or by returning, which shows nothing of the page), it is still running, or there is no step.
  * Each attempt runs in the same browser profile (its storage stays), so a failure only a first boot would show is not
  * repeated by the next attempt: it must be caught in the attempt it happened in.
  * An attempt aborted {@link LOAD_ATTEMPTS} times fails, once decided so; anything with no abort (a failed step, another
@@ -332,10 +334,11 @@ export class Page {
 
   /**
    * Loads a URL, waits for its load event, then runs `ready` (the page's own readiness: its engine booted, a view
-   * drawn); an attempt the machine's network aborted is made again only when `ready` neither failed nor succeeded by
-   * the decision, after the network settled (see the module documentation), at most {@link LOAD_ATTEMPTS} times.
-   * `ready` gets the attempt's abort signal: it is set at that decision, and every DevTools command the step sends from
-   * then on fails with {@link StepAbandonedError}.
+   * drawn); an attempt the machine's network aborted is made again only when `ready` neither failed nor succeeded
+   * before its signal was set, at the decision after the network settled (see the module documentation), at most
+   * {@link LOAD_ATTEMPTS} times. `ready` gets the attempt's abort signal: it is set at that decision, and every DevTools
+   * command the step sends from then on fails with {@link StepAbandonedError}; a step that returns once it is set has
+   * not shown the page ready.
    */
   async goto(url: string, timeoutMs = 30_000, ready?: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
     for (let attempt = 1; ; attempt++) {
@@ -368,10 +371,11 @@ export class Page {
         if (failure !== undefined) throw failure.error;
         return;
       }
-      // How the late step ended: it succeeded, it failed, or it stopped at its signal (the driver's own error).
+      // How the late step ended: it succeeded before its signal was set, it failed, or it stopped at its signal (it
+      // ended once the signal was set, with the driver's own error or by returning, which shows nothing of the page).
       const late: { end?: { kind: "done" } | { kind: "failed"; error: unknown } | { kind: "abandoned" } } = {};
       const stepEnded = step === undefined || !stuck ? Promise.resolve() : step.then(
-        () => { late.end = { kind: "done" }; },
+        () => { late.end = stepper.signal.aborted ? { kind: "abandoned" } : { kind: "done" }; },
         (error: unknown) => { late.end = error instanceof StepAbandonedError ? { kind: "abandoned" } : { kind: "failed", error }; },
       );
       const last = failure === undefined ? "" : `; the last attempt's error: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`;
@@ -399,11 +403,12 @@ export class Page {
       // The decision waits until the machine's network has settled (a change comes as several events: an interface, then
       // its addresses), or until the late step has failed or succeeded. Then the late step's signal is set (its DevTools
       // commands fail from then on, so it stops before any next attempt; one already sent can still answer) and it has a
-      // bound to stop. A failure that is not the driver's own is the page's; a success means the page booted.
+      // bound to stop. A failure that is not the driver's own is the page's; a success before the signal means the page
+      // booted.
       const settledMs = await this.networkSettled(() => late.end !== undefined && late.end.kind !== "abandoned");
       stepper.abort();
       await Promise.race([stepEnded, sleep(ABANDONED_STEP_MS)]);
-      // The late step succeeded: the attempt stands, as when the step ends in time.
+      // The late step succeeded before its signal was set: the attempt stands, as when the step ends in time.
       if (late.end?.kind === "done") return;
       // What arrived meanwhile counts too: the late step's failure, and what the attempt recorded.
       if (own().length > 0) throw notAgain(own());
