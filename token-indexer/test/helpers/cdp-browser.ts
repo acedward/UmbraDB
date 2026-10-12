@@ -19,6 +19,13 @@
  * Every page opens as a new tab of the same browser profile (the default browser context), so pages share storage
  * (OPFS), Web Locks and BroadcastChannel as tabs of one Chrome profile do.
  *
+ * Every DevTools command has a bound: the wait it is part of ({@link Page.goto}'s load time, from before the navigation
+ * is sent; each evaluation of {@link Page.waitFor}, the time its wait has left; `timeoutMs` of {@link Page.eval} and
+ * {@link Page.evalWorker}), else {@link COMMAND_TIMEOUT_MS} (ten minutes). A command with no answer by then fails with
+ * {@link CommandTimeoutError} (`waitFor` and `goto` with their own "timed out" errors), is no longer waited for, and its
+ * answer, should it come later, is ignored. So a page whose main thread hangs, and answers nothing, ends each wait at its
+ * bound.
+ *
  * Failures explain themselves: every page also records the `error` events of the dedicated workers it creates (their
  * message, file, line and column, through a wrapper of the page's `Worker` constructor and a DevTools binding; nothing
  * else in the page changes), printed as they happen; and when a test of a file that uses this module fails, what every
@@ -91,7 +98,7 @@ export function findBrowser(env: NodeJS.ProcessEnv = process.env): string | unde
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = any;
-interface Pending { resolve: (v: Json) => void; reject: (e: Error) => void; method: string }
+interface Pending { resolve: (v: Json) => void; reject: (e: Error) => void; method: string; timer: ReturnType<typeof setTimeout> | undefined }
 type Listener = (params: Json, sessionId: string | undefined) => void;
 
 /** The abort signals of the `ready` steps the current code runs in (see {@link Page.goto}): a DevTools command sent from
@@ -106,6 +113,18 @@ export class StepAbandonedError extends Error {
   }
 }
 
+/** How long a DevTools command may go unanswered when its caller states no bound: ten minutes, longer than any single
+ *  command or evaluation of the tests (the longest, an in-page loop of API requests, ends within four minutes). */
+export const COMMAND_TIMEOUT_MS = 600_000;
+
+/** The error of a DevTools command that had no answer within its bound (the page's main thread may hang). */
+export class CommandTimeoutError extends Error {
+  constructor(method: string, ms: number) {
+    super(`${method}: no answer within ${ms} ms`);
+    this.name = "CommandTimeoutError";
+  }
+}
+
 class Connection {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -114,9 +133,11 @@ class Connection {
     ws.addEventListener("message", (ev: MessageEvent) => {
       const msg = JSON.parse(String(ev.data)) as Json;
       if (typeof msg.id === "number") {
+        // An answer that comes after its command's bound finds nothing here: ignored.
         const p = this.pending.get(msg.id);
         if (p === undefined) return;
         this.pending.delete(msg.id);
+        clearTimeout(p.timer);
         if (msg.error !== undefined) p.reject(new Error(`${p.method}: ${JSON.stringify(msg.error)}`));
         else p.resolve(msg.result);
         return;
@@ -124,18 +145,33 @@ class Connection {
       for (const l of this.listeners.get(msg.method) ?? []) l(msg.params, msg.sessionId);
     });
     ws.addEventListener("close", () => {
-      for (const p of this.pending.values()) p.reject(new Error(`${p.method}: DevTools connection closed`));
+      for (const p of this.pending.values()) {
+        clearTimeout(p.timer);
+        p.reject(new Error(`${p.method}: DevTools connection closed`));
+      }
       this.pending.clear();
     });
   }
-  send(method: string, params: Json = {}, sessionId?: string): Promise<Json> {
+  /** Sends a command; it fails with {@link CommandTimeoutError} when it has no answer within `timeoutMs` (default
+   *  {@link COMMAND_TIMEOUT_MS}; `Infinity`: no bound), and is then forgotten. */
+  send(method: string, params: Json = {}, sessionId?: string, timeoutMs = COMMAND_TIMEOUT_MS): Promise<Json> {
     if (STEPS.getStore()?.some((s) => s.aborted) === true)
       return Promise.reject(new StepAbandonedError(method));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
+      const bound = Number.isFinite(timeoutMs) ? Math.min(Math.max(0, timeoutMs), 2_147_483_647) : undefined;
+      const timer = bound === undefined ? undefined : setTimeout(() => {
+        if (this.pending.delete(id)) reject(new CommandTimeoutError(method, bound));
+      }, bound);
+      // The bound never keeps the process alive by itself.
+      if (typeof timer === "object" && timer !== null && "unref" in timer) timer.unref();
+      this.pending.set(id, { resolve, reject, method, timer });
       this.ws.send(JSON.stringify(sessionId === undefined ? { id, method, params } : { id, method, params, sessionId }));
     });
+  }
+  /** How many commands wait for their answer. */
+  get waiting(): number {
+    return this.pending.size;
   }
   on(method: string, l: Listener): void {
     const ls = this.listeners.get(method) ?? [];
@@ -339,7 +375,7 @@ export class Page {
    * before its signal was set, at the decision after the network settled (see the module documentation), at most
    * {@link LOAD_ATTEMPTS} times. `ready` gets the attempt's abort signal: it is set at that decision, and every DevTools
    * command the step sends from then on fails with {@link StepAbandonedError}; a step that returns once it is set has
-   * not shown the page ready.
+   * not shown the page ready. Each load (its navigation sent, then its load event) has `timeoutMs`.
    */
   async goto(url: string, timeoutMs = 30_000, ready?: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
     for (let attempt = 1; ; attempt++) {
@@ -429,14 +465,20 @@ export class Page {
     }
   }
 
-  /** Navigates to `url` and waits for its load event. */
+  /** Navigates to `url` and waits for its load event, both within `timeoutMs` from before the navigation is sent. */
   private async load(url: string, timeoutMs: number): Promise<void> {
     this.url = url;
     this.navigationError = undefined;
     const before = this.loads;
-    const r = (await this.conn.send("Page.navigate", { url }, this.sessionId)) as { errorText?: string };
-    if (r.errorText !== undefined && r.errorText !== "") this.navigationError = r.errorText;
     const end = Date.now() + timeoutMs;
+    let r: { errorText?: string };
+    try {
+      r = (await this.conn.send("Page.navigate", { url }, this.sessionId, timeoutMs)) as { errorText?: string };
+    } catch (e) {
+      if (e instanceof CommandTimeoutError) throw new Error(`load of ${url} timed out`);
+      throw e;
+    }
+    if (r.errorText !== undefined && r.errorText !== "") this.navigationError = r.errorText;
     while (this.loads === before) {
       if (Date.now() > end) throw new Error(`load of ${url} timed out`);
       await sleep(50);
@@ -562,31 +604,40 @@ export class Page {
     });
   }
 
-  /** Evaluates an expression in the page (promises awaited) and returns its JSON value. */
-  async eval<T = Json>(expression: string): Promise<T> {
-    const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, this.sessionId);
+  /** Evaluates an expression in the page (promises awaited) and returns its JSON value; fails with
+   *  {@link CommandTimeoutError} when it has not answered within `timeoutMs`. */
+  async eval<T = Json>(expression: string, timeoutMs = COMMAND_TIMEOUT_MS): Promise<T> {
+    const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, this.sessionId, timeoutMs);
     if (r.exceptionDetails !== undefined) throw new Error(`evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value as T;
   }
 
-  /** Evaluates an expression in the page's newest dedicated worker (promises awaited) and returns its JSON value. */
-  async evalWorker<T = Json>(expression: string): Promise<T> {
+  /** Evaluates an expression in the page's newest dedicated worker (promises awaited) and returns its JSON value; fails
+   *  with {@link CommandTimeoutError} when it has not answered within `timeoutMs`. */
+  async evalWorker<T = Json>(expression: string, timeoutMs = COMMAND_TIMEOUT_MS): Promise<T> {
     const session = this.workerSessions.at(-1);
     if (session === undefined) throw new Error("no worker recorded: open the page with { workers: true }");
     // Not before the worker's own setup (the CSP listener among it) has been sent and answered.
     await this.workerSetups.get(session);
-    const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session);
+    const r = await this.conn.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, session, timeoutMs);
     if (r.exceptionDetails !== undefined) throw new Error(`worker evaluate failed: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value as T;
   }
 
-  /** Polls an expression until it is truthy. */
+  /** Polls an expression until it is truthy, for at most `timeoutMs`: each evaluation has the time the wait has left. */
   async waitFor(expression: string, timeoutMs = 30_000, what = expression): Promise<void> {
     const end = Date.now() + timeoutMs;
     for (;;) {
-      if (await this.eval<boolean>(`Boolean(${expression})`)) return;
-      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
-      await sleep(100);
+      let truthy: boolean;
+      try {
+        truthy = await this.eval<boolean>(`Boolean(${expression})`, Math.max(1, end - Date.now()));
+      } catch (e) {
+        if (e instanceof CommandTimeoutError) throw new Error(`timed out waiting for ${what}`);
+        throw e;
+      }
+      if (truthy) return;
+      if (Date.now() >= end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(Math.min(100, end - Date.now()));
     }
   }
 
@@ -772,6 +823,11 @@ export class Browser {
   /** Sends a DevTools command to the browser. */
   send(method: string, params: Json = {}): Promise<Json> {
     return this.conn.send(method, params);
+  }
+
+  /** How many DevTools commands (of the browser and its pages) wait for their answer. */
+  get waitingCommands(): number {
+    return this.conn.waiting;
   }
 
   async version(): Promise<string> {

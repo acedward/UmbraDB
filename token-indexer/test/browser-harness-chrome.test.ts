@@ -34,11 +34,16 @@
  *   what the aborted attempt recorded is kept in the page's report and counted in the printed line; an image aborted is
  *   no reason to load again; a step still waiting when the network has settled gets its abort signal and stops (its
  *   DevTools commands fail) before the page is loaded again, so its action runs once, on the attempt that is kept.
+ * - `[[browser.harness.command-bounds]]` — every DevTools command has a bound: a load whose document request is held
+ *   (its navigation never answers) fails with "load of … timed out" at the load's time, counted from before the
+ *   navigation is sent; an evaluation whose promise never settles fails at its own bound (`CommandTimeoutError`), and one
+ *   that answers after its bound is ignored when the answer comes; a wait on a page whose main thread loops for ever
+ *   fails with "timed out waiting for …" at the wait's time; afterwards no command is left waiting.
  *
  * Needs a browser: `MIP0018_UI_BROWSER` / `CHROME_BIN`, the Playwright image's Chromium, or Chrome on PATH.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Browser, ENVIRONMENTAL_LOAD_ERRORS, failureReport, findBrowser, LOAD_ATTEMPTS, type Page, type PageOptions, READY_SETTLE_MS } from "./helpers/cdp-browser.ts";
+import { Browser, CommandTimeoutError, ENVIRONMENTAL_LOAD_ERRORS, failureReport, findBrowser, LOAD_ATTEMPTS, type Page, type PageOptions, READY_SETTLE_MS } from "./helpers/cdp-browser.ts";
 import { type LocalServer, serveHandler } from "./helpers/static-site.ts";
 
 const browserExe = findBrowser();
@@ -568,4 +573,44 @@ describe("the Chromium tests' driver", () => {
       printed.mockRestore();
     }
   }, 120_000);
+
+  it("[[browser.harness.command-bounds]] every DevTools command has a bound: a load whose navigation never answers fails at the load's time, an evaluation that never answers at its own, and a wait on a page whose main thread hangs at the wait's; an answer that comes after its bound is ignored, and nothing is left waiting", async () => {
+    const waiting = browser.waitingCommands;
+    // A document request held (paused, never continued): the navigation never answers; the load fails at its time.
+    const held = await browser.newPage();
+    held.onEvent("Fetch.requestPaused", () => { /* never continued */ });
+    await held.send("Fetch.enable", { patterns: [{ urlPattern: "*/held-document*" }] });
+    let t0 = Date.now();
+    await expect(held.goto(`${site.origin}/held-document`, 1_000)).rejects.toThrow(/load of .*\/held-document timed out/u);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    await held.close();
+
+    // An evaluation whose promise never settles fails at its bound; one that answers after its bound is ignored then,
+    // and the page answers the next one.
+    const page = await browser.newPage();
+    await page.goto(`${site.origin}/picture`);
+    t0 = Date.now();
+    await expect(page.eval("new Promise(() => {})", 500)).rejects.toBeInstanceOf(CommandTimeoutError);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    await expect(page.eval("new Promise((r) => setTimeout(() => r(1), 1_000))", 200)).rejects.toThrow(/Runtime\.evaluate: no answer within 200 ms/u);
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect(await page.eval("1 + 1")).toBe(2);
+    expect(browser.waitingCommands).toBe(waiting);
+    await page.close();
+
+    // A page whose main thread loops for ever (in a browser of its own, closed after): it answers nothing, and a wait on
+    // it fails at its time.
+    const own = await Browser.launch(browserExe!);
+    try {
+      const hung = await own.newPage();
+      await hung.goto(`${site.origin}/picture`);
+      await hung.eval("setTimeout(() => { for (;;) {} }, 0), true");
+      t0 = Date.now();
+      await expect(hung.waitFor("window.booted === 'never'", 1_000, "a page that hangs")).rejects.toThrow("timed out waiting for a page that hangs");
+      expect(Date.now() - t0).toBeLessThan(5_000);
+      expect(own.waitingCommands).toBe(0);
+    } finally {
+      await own.close();
+    }
+  }, 60_000);
 });
