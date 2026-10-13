@@ -2,10 +2,10 @@
 
 The reference case files in `../mip0018-cases/` (verbatim, SHA-256 checked) are written against MIP-0018 at `274a84f`.
 UmbraDB implements [MIP-0018](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md) as merged from [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372),
-whose rule "Keys MUST be valid UTF-8" (Testing R5) changes one recorded event: case C07's step A3c (height 714956,
+whose rule "Keys MUST be valid UTF-8" (Testing R5) decides one recorded event differently: case C07's step A3c (height 714956,
 contract `23aa27cb…`), an event whose only record has the non-UTF-8 key `ff 6b 65 79`. The reference accepts it;
 UmbraDB rejects it whole (reason `invalid-utf8`). Its rule that only defined keys are served and make a token exist
-(MIP "Keys") changes what a contract's activity lists: C07's steps A2a (714891) and A2b (714907) are accepted, but each
+(MIP "Keys") also decides what a contract's activity lists: C07's steps A2a (714891) and A2b (714907) are accepted, but each
 sets only an undefined key while the identity does not exist yet, so they are not its metadata history.
 
 | File | Replaces | What differs from the reference file |

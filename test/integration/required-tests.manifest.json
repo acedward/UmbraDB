@@ -550,7 +550,7 @@
     {
       "id": "mip0018.ui.browser-images",
       "file": "token-indexer/test/mip0018-ui-browser.test.ts",
-      "description": "MIP Common fields / Security considerations and the owner's image rules in a real browser: verified → the image from /v1/images/{id}; unverified → the image with a visible 'not verified' warning; mismatch → a warning, no image and no link; not-image → a warning, no image; unreachable and not yet checked → a neutral note; an unusable image drawn as unusable; the URL is plain text, never a link; only this origin's checked bytes are requested; CSP img-src 'self' refuses an image from another origin or a data: URI; the list draws no image."
+      "description": "MIP Common fields / Security considerations and the page's image rules in a real browser: verified → the image from /v1/images/{id}; unverified → the image with a visible 'not verified' warning; mismatch → a warning, no image and no link; not-image → a warning, no image; unreachable and not yet checked → a neutral note; an unusable image drawn as unusable; the URL is plain text, never a link; only this origin's checked bytes are requested; CSP img-src 'self' refuses an image from another origin or a data: URI; the list draws no image."
     },
     {
       "id": "mip0018.cases.stop-heights",

@@ -17,7 +17,7 @@ const hex = (h: string): Uint8Array => Uint8Array.from(Buffer.from(h, "hex"));
 describe("MIP-0018 classification: keys MUST be valid UTF-8", () => {
   it("[[mip0018.classify.utf8-keys]] a non-UTF-8 key rejects the whole event (invalid-utf8 at that record) where the vendored codec alone accepts it; NUL and multi-byte keys stay accepted; the codec's own rejections pass through unchanged; every UmbraDB path classifies through the wrapper", () => {
     // The vendored codec accepts a non-UTF-8 key (it checks values only): the negative control the wrapper exists for.
-    // A re-vendored codec that enforces the rule fails this line — then the wrapper's own check can go.
+    // A codec that enforces the rule itself fails this line; the wrapper's own check is then redundant.
     const one = misc([record.utf8(hex("ff6b6579"), "ok")]);
     expect(classifyEvent(one).result).toBe("accept");
     expect(classifyMip0018Event(one)).toEqual({ result: "reject", reason: "invalid-utf8", offset: 33 });

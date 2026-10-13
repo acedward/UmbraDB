@@ -1,9 +1,9 @@
 # UmbraDB's own MIP-0018 vector versions
 
 The vendored vectors (`token-indexer/vendor/mip0018/vectors/`) are written against MIP-0018 at `274a84f`. UmbraDB
-implements [MIP-0018](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md) as merged from [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372), which
-adds "Keys MUST be valid UTF-8" (Testing R5: invalid UTF-8 in a key rejects the event). This folder holds UmbraDB's own
-version of each vendored vector whose expected result that rule changes; `token-indexer/mip0018/run-vectors.ts` runs
+implements [MIP-0018](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md) as merged from [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372), whose
+rule "Keys MUST be valid UTF-8" (Testing R5: invalid UTF-8 in a key rejects the event) the vendored text does not have.
+This folder holds UmbraDB's own version of each vendored vector whose expected result differs under that rule; `token-indexer/mip0018/run-vectors.ts` runs
 it instead of the vendored file with the same id, so every id runs exactly once.
 
 | Id | Event | Vendored expectation | UmbraDB's expectation |

@@ -6,8 +6,8 @@
  * Expected classifications: the reference repository's case files (`deployments/stagenet/cases/C07/expect/<step>.json`
  * and `C08/expect/emit-two.json`: result and reason per event; `cases/{C07,C08}/expected.json`: `counts`;
  * `cases/IDX/index/index-state.json`: the 35 events named `mip-0018:token-metadata[v1]` with position, result, reason
- * and payload — the accepted and rejected positions are listed below), except where MIP-0018 as merged from PR #372 changes
- * them: C07's step A3c (714956), a record with the non-UTF-8 key `ff 6b 65 79`, is rejected (`invalid-utf8`; MIP "Keys":
+ * and payload — the accepted and rejected positions are listed below), except where the pinned MIP-0018 text expects
+ * otherwise: C07's step A3c (714956), a record with the non-UTF-8 key `ff 6b 65 79`, is rejected (`invalid-utf8`; MIP "Keys":
  * keys MUST be valid UTF-8), so C07 has 8 accepted and 10 rejected events. The C10 payload is MIP Appendix A (A1).
  */
 import { Event, Transaction } from "@midnightntwrk/ledger-v9";

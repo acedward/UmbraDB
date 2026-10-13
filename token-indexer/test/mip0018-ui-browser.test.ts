@@ -811,7 +811,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
     await expectCleanConsole(page2, /\/activity(\?|$)|\/v1\/identities\//);
   }, 300_000);
 
-  it("[[mip0018.ui.browser-images]] token images as the owner's rules say: verified → the image from /v1/images/{id}; unverified → the image and a visible \"not verified\" warning; mismatch → a warning, no image and no link; not-image → a warning, no image; unreachable and not yet checked → a neutral note; an unusable image → \"unusable\" in the common fields; the URL is plain text on every view, never a link; only this origin's checked bytes load (CSP img-src 'self' blocks any other source); the list draws no image", async () => {
+  it("[[mip0018.ui.browser-images]] token images by status: verified → the image from /v1/images/{id}; unverified → the image and a visible \"not verified\" warning; mismatch → a warning, no image and no link; not-image → a warning, no image; unreachable and not yet checked → a neutral note; an unusable image → \"unusable\" in the common fields; the URL is plain text on every view, never a link; only this origin's checked bytes load (CSP img-src 'self' blocks any other source); the list draws no image", async () => {
     const db = await fresh("uiimages");
     const I = "1a".repeat(32);
     const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");

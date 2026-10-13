@@ -1,7 +1,7 @@
 /**
  * MIP-0018 vector conformance through UmbraDB's pure adapter: the vendored runner core, unchanged, over the vendored
  * vectors minus the ids UmbraDB keeps its own versions of, then over those own versions (`mip0018/vectors-umbradb/`:
- * the vectors whose expectation MIP-0018 as merged from PR #372 changes) — in process and through the real runner CLI and
+ * the vectors whose expectation differs under the pinned MIP-0018 text) — in process and through the real runner CLI and
  * adapter process.
  */
 import { spawnSync } from "node:child_process";

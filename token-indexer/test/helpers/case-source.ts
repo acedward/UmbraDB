@@ -68,7 +68,7 @@ export function caseCopyProblems(): string[] {
   return problems;
 }
 
-/** UmbraDB's own expectations where MIP-0018 as merged from PR #372 changes a reference case file (`fixtures/mip0018-cases-umbradb/`). */
+/** UmbraDB's own expectations where the pinned MIP-0018 text expects otherwise than a reference case file (`fixtures/mip0018-cases-umbradb/`). */
 export const UMBRADB_CASES_DIR = new URL("../fixtures/mip0018-cases-umbradb/", import.meta.url);
 
 /** A case expectation: UmbraDB's own file when it has one, else the reference copy. */
