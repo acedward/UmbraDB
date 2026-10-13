@@ -166,8 +166,8 @@ vectors and the vector runner of [`midnight-experiments/mip-0018`](https://githu
 @ `e8295792d9363be37ff2f7f716c740fcdf3f195e` (Apache-2.0; `LICENSE`, `NOTICE`). `vendor/mip0018/SOURCE.md` lists every
 file with its SHA-256; `[[mip0018.vendor.provenance]]` fails on any changed, missing or unlisted file. The vendored
 files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`). Every vendored vector runs through
-both adapters, except where MIP-0018 as merged from PR #372 changes its expectation: UmbraDB then runs its own version with
-the same id (`mip0018/vectors-umbradb/`, see its README; today A3c, a non-UTF-8 key). Likewise for the Stagenet cases
+both adapters, except where the pinned MIP-0018 text expects otherwise: UmbraDB then runs its own version with the same
+id (`mip0018/vectors-umbradb/`, see its README: A3c, a non-UTF-8 key). Likewise for the Stagenet cases
 (`test/fixtures/mip0018-cases-umbradb/`: C07's non-UTF-8-key event).
 
 Other copies: the explorer's Outfit font and icon come from the explorer in acedward/UmbraDB PR #19 (`NOTICE`, OFL

@@ -164,7 +164,7 @@ describe("defined keys (MIP Keys)", () => {
     expect(s.identities()).toEqual([]);
     expect(s.groups()).toEqual([]);
     expect([...s.storedFields(ref(3))!.keys()].map((k) => Buffer.from(k, "hex").toString()).sort()).toEqual(["foo", "k"]);
-    // Without the standard in the registry (the MIPs' registry is empty today), `k` is never served.
+    // Without the standard in the registry (the MIPs' registry is empty), `k` is never served.
     const plain = new MetadataState();
     emitter(plain)(3, [record.utf8("standards", S), record.utf8("k", "v")]);
     expect(keys(plain, ref(3))).toEqual(["standards"]);

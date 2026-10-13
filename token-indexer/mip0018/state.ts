@@ -15,7 +15,7 @@
  *   deletes its field; a Null for a field without a value has no effect.
  * - Keys: every key is stored, but a key is served only when it is DEFINED — a common-field key (`name`, `symbol`,
  *   `decimals`, `standards`, `image`, `image_sha256`) or a key of a standard the identity currently declares in a
- *   usable `standards` (`STANDARD_KEYS`; no MIP defines keys today). An identity exists only while a defined key has a
+ *   usable `standards` (`STANDARD_KEYS`; empty: no MIP defines such keys). An identity exists only while a defined key has a
  *   value; without one it is absent from every listing, lookup and group, even when undefined keys remain. Dropping a
  *   standard from `standards` stops its keys counting. A later record of a defined key describes it again.
  * - Reorganization (S4): every classified event is retained per network; `rollbackTo` drops the events above a block
@@ -68,7 +68,7 @@ export const IMAGE_SHA256_BYTES = 32;
  * currently declares; an event carrying such a key is still valid, and what is stored is up to the consumer.
  */
 export type StandardKeys = ReadonlyMap<string, ReadonlySet<string>>;
-/** The keys standards define. No MIP defines keys today; a MIP that does adds its identifier and keys here. */
+/** The keys standards define: empty, as no MIP defines such keys; a MIP that does adds its identifier and keys here. */
 export const STANDARD_KEYS: StandardKeys = new Map();
 
 /** Every key some standard of `standardKeys` defines: the keys whose served status a `standards` change can flip. */
@@ -324,7 +324,7 @@ export class MetadataState {
 
   private readonly standardKeys: StandardKeys;
 
-  /** `standardKeys`: the keys standards define (default: the MIPs' registry, empty today; tests pass synthetic ones). */
+  /** `standardKeys`: the keys standards define (default: the MIPs' registry, which is empty; tests pass synthetic ones). */
   constructor(standardKeys: StandardKeys = STANDARD_KEYS) {
     this.standardKeys = standardKeys;
   }
