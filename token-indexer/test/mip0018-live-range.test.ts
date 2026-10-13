@@ -5,7 +5,7 @@
  * `fixtures/live-range/stagenet-714485-715183.json`. This test replays the tape through the same sync service and
  * scanner (no network) and requires the same digest for every table of both schemas — archive and `mip0018` (blocks,
  * transactions, blobs, cursor, events, fields, withdrawals, listed events, mints, sightings, actions, activity,
- * built-in rows, scan cursor).
+ * built-in rows, scan cursor, image cache — empty: the scan never fetches images, only `serve`'s image fetcher does).
  *
  * Kill-and-resume is covered on fixtures by `[[archive.sync.resume-kill-identical]]`, `[[mip0018.scan.resume-identical]]`
  * and `[[mip0018.activity.kill-resume]]`.
@@ -48,7 +48,8 @@ describe("recorded live range = fixture replay", () => {
     expect(new Set(Object.values(RECORDED.comparison.sha256)).size).toBe(1);
     expect(Object.values(RECORDED.comparison.sha256)[0]).toBe(RECORDED.liveTables.sha256);
     expect(Object.keys(RECORDED.comparison.sha256).sort()).toEqual(["liveUninterrupted", "replay"]);
-    expect(Object.keys(RECORDED.liveTables.tables)).toHaveLength(37);
+    expect(Object.keys(RECORDED.liveTables.tables)).toHaveLength(38);
+    expect(RECORDED.liveTables.tables["mip0018.mip0018_images"]?.rows).toBe(0); // the live run fetched no image
     const { from, to } = RECORDED.range;
 
     const archive = "replay_archive";
@@ -80,6 +81,7 @@ describe("recorded live range = fixture replay", () => {
       "mip0018.mip0018_activity", "mip0018.mip0018_builtin_tokens", "mip0018.mip0018_scan", "mip0018.mip0018_listed_events"])
       expect(digest.tables[t]?.rows, t).toBeGreaterThan(0);
     expect(digest.tables["mip0018.mip0018_withdrawals"]?.rows).toBe(0); // C06 deletes one key at a time: never a whole withdrawal
+    expect(digest.tables["mip0018.mip0018_images"]?.rows).toBe(0); // the scan never fetches an image
 
     // Negative control: one changed field value is reported for exactly that table.
     await sql`UPDATE ${sql("replay_mip")}.mip0018_fields SET value = value || '\\x00'::bytea

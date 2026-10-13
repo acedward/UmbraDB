@@ -1,7 +1,7 @@
 {
   "format": "umbradb-mip0018-live-range/1",
   "$comment": "The recorded result of a live sync and scan of Stagenet blocks 714485-715183 with this repository's programs (chain-archive-sync/sync-cli.ts, then token-indexer/mip0018/scan-cli.ts; polite defaults), written from the outputs of token-indexer/dev/live-range-check.ts: one uninterrupted live run and a replay of the recorded tape through the same programs, compared table by table (token-indexer/dev/range-tables.ts: every table of both schemas, wall-clock columns and the verifier_key_observations.id surrogate key excluded); the two are identical. liveTables holds the live run's per-table digests. Request counts come from the fetch-meter preload (token-indexer/dev/fetch-meter.ts). Checked in CI by token-indexer/test/mip0018-live-range.test.ts.",
-  "recordedAt": "2026-10-03",
+  "recordedAt": "2026-10-13",
   "network": "stagenet",
   "genesisHash": "0x2f76825abc239fecf6107c9df99016de57037b451ae57a4394b76c8cf53a9491",
   "range": {
@@ -24,24 +24,24 @@
   "runs": {
     "liveUninterrupted": {
       "sync": {
-        "ms": 469584,
+        "ms": 437481,
         "runs": [
           {
-            "startedAt": "2026-10-03T14:18:06.176Z",
-            "ms": 469583,
+            "startedAt": "2026-10-13T15:34:33.839Z",
+            "ms": 437480,
             "exit": 0,
             "signal": null
           }
         ],
         "programCounters": {
           "batches": 4,
-          "retries": 2,
+          "retries": 0,
           "throttled": 0,
-          "backoffLines": 2,
+          "backoffLines": 0,
           "loopErrors": 0
         },
         "requests": {
-          "total": 2111,
+          "total": 2109,
           "byHostAndOperation": {
             "rpc.stagenet.shielded.tools": {
               "chain_getFinalizedHead": 4,
@@ -50,23 +50,22 @@
               "chain_getBlock": 699
             },
             "indexer.stagenet.shielded.tools": {
-              "block": 705
+              "block": 703
             }
           },
           "statuses": {
-            "200": 2109,
-            "error:TimeoutError": 2
+            "200": 2109
           },
           "throttledAnswers": 0,
-          "nonSuccessAnswers": 2
+          "nonSuccessAnswers": 0
         }
       },
       "scan": {
-        "ms": 4823,
+        "ms": 7207,
         "runs": [
           {
-            "startedAt": "2026-10-03T14:25:55.760Z",
-            "ms": 4823,
+            "startedAt": "2026-10-13T15:41:51.320Z",
+            "ms": 7207,
             "exit": 0,
             "signal": null
           }
@@ -79,11 +78,11 @@
     "replay": {
       "source": "test/integration/fixtures/stagenet-archive/stagenet-714485-715183.tape.json.br via the local fake chain",
       "sync": {
-        "ms": 5022,
+        "ms": 7722,
         "requests": 2109
       },
       "scan": {
-        "ms": 4394
+        "ms": 7263
       }
     }
   },
@@ -92,8 +91,8 @@
       "liveUninterrupted=replay": true
     },
     "sha256": {
-      "liveUninterrupted": "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c",
-      "replay": "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c"
+      "liveUninterrupted": "ce7b05332faa6ed768929bad16535a1f8e3523c1423e11329e29b19365b5710c",
+      "replay": "ce7b05332faa6ed768929bad16535a1f8e3523c1423e11329e29b19365b5710c"
     }
   },
   "liveTables": {
@@ -280,15 +279,15 @@
         ]
       },
       "mip0018._migrations": {
-        "rows": 4,
-        "sha256": "47748b19d0fce6c7cf5668454ac9510ab6724fe3a65f373bc046bdf75b5e264a",
+        "rows": 5,
+        "sha256": "38ca2805d03be1975f38836f80e4df6004305606b1cf12fb920252f866778a40",
         "excluded": [
           "applied_at (wall clock)"
         ]
       },
       "mip0018.mip0018_activity": {
         "rows": 46,
-        "sha256": "5d872864484e0c8348cf2b4b4cbb2f5a299db4cd07cebb5a90e6bf13d1256ee2",
+        "sha256": "7b1d08e532f76ac90755a1d12b79f35feac3efd4aee34824d8f5e456be79b60e",
         "excluded": []
       },
       "mip0018.mip0018_builtin_tokens": {
@@ -308,17 +307,25 @@
       },
       "mip0018.mip0018_events": {
         "rows": 49,
-        "sha256": "93afd2b9d7b6bf54b7edb61498ee703b35d365e2dd2490f0802bd9d9896f399e",
+        "sha256": "946463594cfa0416f68f6246c60739f7925365fa5a56865e633d1ef7e1ddf960",
         "excluded": []
       },
       "mip0018.mip0018_fields": {
-        "rows": 47,
-        "sha256": "5cae91e3059e2ca29a30c005beba609b3d0fab3b3c71f6fd59ac66d4179170a0",
+        "rows": 46,
+        "sha256": "f7ac285ff51a381d7e244a543b9e405adc2f83f98e53d51c9bb85c0eafaa9d03",
         "excluded": []
       },
+      "mip0018.mip0018_images": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "excluded": [
+          "checked_at (wall clock)",
+          "next_attempt_at (wall clock)"
+        ]
+      },
       "mip0018.mip0018_listed_events": {
-        "rows": 35,
-        "sha256": "590276fbf134e6f5455529a289729a2283f4943b2912c3bbce2aeed0da81dc19",
+        "rows": 33,
+        "sha256": "f8de38ed8561a581ed7914011527a5774943a6771f11575427d8544d3ddd990b",
         "excluded": []
       },
       "mip0018.mip0018_mints": {
@@ -337,6 +344,6 @@
         "excluded": []
       }
     },
-    "sha256": "af6583d03da69ffd52a31fd89e663fe7892cf45aaf7234d9fc213c335dbc832c"
+    "sha256": "ce7b05332faa6ed768929bad16535a1f8e3523c1423e11329e29b19365b5710c"
   }
 }
