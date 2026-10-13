@@ -1,10 +1,10 @@
 /**
- * The MIP-0018 conformance table: `token-indexer/CONFORMANCE.md` maps every MUST/SHOULD of MIP-0018 at `274a84f` to
- * UmbraDB tests or "not applicable". This file keeps the table honest:
+ * The MIP-0018 conformance table: `token-indexer/CONFORMANCE.md` maps every MUST/SHOULD of the pinned MIP-0018 text
+ * (`main @ eb94bc1`, as merged from PR #372) to UmbraDB tests or "not applicable". This file keeps the table honest:
  *
  * - `[[mip0018.conformance.table]]` — the rows are exactly the MIP's requirements (a SHA-256 of the extracted list),
  *   every row is resolved, and every test id, vector and path the table cites exists;
- * - `[[mip0018.conformance.no-network-no-code]]` — the static half of C-024 / C-031: the indexer's runtime code and the
+ * - `[[mip0018.conformance.no-network-no-code]]` — the static half of C-027 / C-034: the indexer's runtime code and the
  *   vendored codec contain no network client, no dynamic code and no child process (so no `standards` identifier can
  *   make it run code), except ONE module: the background image fetcher (`image-fetcher.ts`), the only code that may
  *   resolve names and open connections, held to its own exact allowlist;
@@ -19,16 +19,19 @@ import { describe, expect, it } from "vitest";
 const ROOT = new URL("../../", import.meta.url).pathname;
 const DOC = readFileSync(join(ROOT, "token-indexer/CONFORMANCE.md"), "utf8");
 
+/** The pinned MIP text: `midnightntwrk/midnight-improvement-proposals` `mips/mip-0018-on-chain-token-metadata.md`. */
+const MIP_COMMIT = "eb94bc182221cd937a84ed66a5f903b060f165ab";
+const MIP_SHA256 = "8d4204e7aa24428faa44740ba99612f5556f628347c50e38903e4bea83f17245";
+
 /**
  * SHA-256 of the MIP's requirement list, `JSON.stringify([[id, section, level, text], …])` with Markdown links reduced
- * to their text, `\|` unescaped and whitespace collapsed. Computed from the pinned MIP text
- * (`mip-0018-on-chain-token-metadata.md` @ `274a84f221bcfc17e4b73e2c8b32fd8c028ea092`, SHA-256 `e64fe142…058d8b`) with
- * the reference implementation's extraction rule (`midnight-experiments/mip-0018` `tools/lib/requirements.mjs` @
- * `daec1f1`: every sentence or table row containing MUST or SHOULD outside code blocks, RFC 2119 boilerplate excluded,
- * numbered C-001…). 36 rows. Re-pin the MIP → recompute this value and the table.
+ * to their text, `\|` unescaped and whitespace collapsed. Computed from the pinned MIP text ({@link MIP_COMMIT}, file
+ * SHA-256 {@link MIP_SHA256}) with the reference implementation's extraction rule (`midnight-experiments/mip-0018`
+ * `tools/lib/requirements.mjs` @ `e829579`: every sentence or table row containing MUST or SHOULD outside code blocks,
+ * RFC 2119 boilerplate excluded, numbered C-001…). 40 rows. Re-pin the MIP → recompute this value and the table.
  */
-const REQUIREMENTS_SHA256 = "c5795004bb00485a677fc65512b9c18aeba0df9fdc4827aab6f33bcd79de1270";
-const REQUIREMENT_ROWS = 36;
+const REQUIREMENTS_SHA256 = "de86b83bb1c84c39326207a45306a3d22c9349961038b781f90ec3c18fb01495";
+const REQUIREMENT_ROWS = 40;
 
 /**
  * Pending ids: a row may cite a test that does not exist yet as `[[id]]`† and list its id here; the check below fails as
@@ -162,13 +165,13 @@ function closureOf(entry: string, read: (f: string) => string = (f) => readFileS
 }
 
 describe("MIP-0018 conformance table", () => {
-  it("[[mip0018.conformance.table]] CONFORMANCE.md lists exactly the 36 MUST/SHOULD requirements of MIP 274a84f, each covered by existing tests or not applicable with a reason; every cited test id, vector and path exists", () => {
+  it("[[mip0018.conformance.table]] CONFORMANCE.md lists exactly the 40 MUST/SHOULD requirements of the pinned MIP-0018 text (main @ eb94bc1), each covered by existing tests or not applicable with a reason; every cited test id, vector and path exists", () => {
     const rs = rows();
     expect(rs.map((r) => r.id)).toEqual(Array.from({ length: REQUIREMENT_ROWS }, (_, i) => `C-${String(i + 1).padStart(3, "0")}`));
     const list = rs.map((r) => [r.id, normalize(r.section), r.level, normalize(unlink(r.text))]);
     expect(createHash("sha256").update(JSON.stringify(list)).digest("hex")).toBe(REQUIREMENTS_SHA256);
-    expect(DOC).toContain("274a84f221bcfc17e4b73e2c8b32fd8c028ea092");
-    expect(DOC).toContain("e64fe1429b9f7589077f1323572cf5c3ffa90c7c96690242a9e76d2658058d8b");
+    expect(DOC).toContain(`midnight-improvement-proposals@${MIP_COMMIT}`);
+    expect(DOC).toContain(MIP_SHA256);
 
     // Every row resolved; the summary line says the same.
     for (const r of rs) {
@@ -224,7 +227,7 @@ describe("MIP-0018 conformance table", () => {
     expect(paths).toBeGreaterThan(3);
   }, 60_000);
 
-  it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-024, C-031: no URI is fetched, no identifier runs code); the check catches each forbidden form; every module the runtime loads, through its relative import closure, is on an exact allowlist (node:crypto, node:fs, node:http, node:util, postgres, zod, @midnightntwrk/ledger-v9) — package clients such as axios, undici or got and socket/process modules are refused; the one exception is the image fetcher, the only module allowed an HTTP client and name resolution, TCP and TLS (node:dns/promises, node:net, node:tls, exactly), still refused everything else; a network import anywhere else is refused", () => {
+  it("[[mip0018.conformance.no-network-no-code]] the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (C-027, C-034: no identifier makes it fetch or run code, and only the image fetcher fetches a URI); the check catches each forbidden form; every module the runtime loads, through its relative import closure, is on an exact allowlist (node:crypto, node:fs, node:http, node:util, postgres, zod, @midnightntwrk/ledger-v9) — package clients such as axios, undici or got and socket/process modules are refused; the one exception is the image fetcher, the only module allowed an HTTP client and name resolution, TCP and TLS (node:dns/promises, node:net, node:tls, exactly), still refused everything else; a network import anywhere else is refused", () => {
     // Positive controls: every forbidden form is caught, the allowed forms are not.
     const caught = [
       "await fetch(url)", "http.request(opts)", "https.get(u)", 'import { request } from "node:http";', 'import { spawn } from "node:child_process";',

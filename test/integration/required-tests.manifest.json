@@ -580,12 +580,12 @@
     {
       "id": "mip0018.conformance.table",
       "file": "token-indexer/test/mip0018-conformance.test.ts",
-      "description": "token-indexer/CONFORMANCE.md lists exactly the 36 MUST/SHOULD requirements of MIP 274a84f (SHA-256 of the extracted list), each covered or not applicable with a reason; every cited test id, vector and path exists."
+      "description": "token-indexer/CONFORMANCE.md lists exactly the 40 MUST/SHOULD requirements of the pinned MIP-0018 text, main @ eb94bc1 (SHA-256 of the extracted list), each covered or not applicable with a reason; every cited test id, vector and path exists."
     },
     {
       "id": "mip0018.conformance.no-network-no-code",
       "file": "token-indexer/test/mip0018-conformance.test.ts",
-      "description": "the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (MIP C-024, C-031); positive controls for every forbidden form; every module loaded through the runtime's relative import closure is on an exact allowlist, with negative controls (axios, undici, got, node:net, child_process, dynamic package imports, a path into node_modules); the one exception is the image fetcher, held to its own exact allowlist (node:dns/promises, node:net, node:tls added) and to an HTTP client import and socket modules as its only network forms; network imports anywhere else are refused."
+      "description": "the indexer's runtime code and the vendored codec contain no network client, no dynamic code and no child process (MIP C-027, C-034); positive controls for every forbidden form; every module loaded through the runtime's relative import closure is on an exact allowlist, with negative controls (axios, undici, got, node:net, child_process, dynamic package imports, a path into node_modules); the one exception is the image fetcher, held to its own exact allowlist (node:dns/promises, node:net, node:tls added) and to an HTTP client import and socket modules as its only network forms; network imports anywhere else are refused."
     },
     {
       "id": "mip0018.scan.hostile-entry-points",
