@@ -19,7 +19,7 @@ Authority: MIP-0018 as in [PR #372](https://github.com/midnightntwrk/midnight-im
 | Rule | Meaning |
 |---|---|
 | Heights only | Positions are block heights and indexes; no wall-clock time is served. |
-| Never fetches | The API never fetches a URI or any remote content (a type-4 URI value is served as text only). No origins model. |
+| Never fetches | The API never fetches a URI or any remote content (a type-4 URI value is served as text only). Token images are fetched by `serve`'s background image fetcher, never during a request; the API serves the fetcher's cached result (see [Images](#images)). No origins model. |
 | Bytes | Every byte string is lowercase hex without `0x` (`"hex"`). A text view (`"text"` / `"utf8"`) is added only where the bytes are valid UTF-8 and the type says text; an integer view (`"integer"`, a decimal string) only for type-2 values. Values are never re-interpreted as another type (MIP "Value types"). |
 | Lengths | `name` and `symbol` are served as their first 64 and 12 characters (grapheme clusters, UAX #29): the indexer cuts them before storing (MIP "Common fields"), so lists, details, groups and marks all use the cut value; a cut value is usable. |
 | No defaults | A common field that was never set, or whose current value is unusable, is `null` in `common`; no default such as 0 or 18 decimals. |
@@ -129,7 +129,8 @@ the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
   "minted": null,
   "firstSeen": null, "evidence": [],
   "mark": { "mark": "ok", "reasons": [], "reasonCount": 0, "missing": [], "tags": [] },
-  "note": null
+  "note": null,
+  "image": { "url": "https://example.org/agld.png", "status": "verified", "imageUrl": "/v1/images/3f0a…9c1e" }
 }
 ```
 
@@ -141,6 +142,20 @@ the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
 
 `kindName` (MIP-0018 token kinds): 1 `shielded-utxo` and 2 `unshielded-utxo` (contract-issued UTXO tokens, with a color),
 3 `contract-token` (a token represented by contract logic; no color).
+
+`image` (TokenSummary and IdentityDetail): the identity's usable `image`, see **Image**; `null` when it has none
+(NIGHT, DUST and seen rows always `null`).
+
+**Image** — `{ "url": "https://example.org/acme.png", "status": "verified", "imageUrl": "/v1/images/3f0a…9c1e" }`:
+
+| Field | Meaning |
+|---|---|
+| `url` | The `image` value (a type-4 URI) as plain text — never a link to follow |
+| `status` | `pending` (not checked yet), `verified` (`image_sha256` set and the content's SHA-256 equal), `unverified` (no usable `image_sha256`), `mismatch` (`image_sha256` set and the content's SHA-256 differs), `not-image` (not a PNG, JPEG, GIF or WebP file by its magic bytes — SVG and HTML included), `unreachable` (no content could be fetched; retried) |
+| `imageUrl` | Same-origin path of the checked bytes (`/v1/images/{id}`) — only for `verified` and `unverified`, else `null`. Content whose SHA-256 differs from `image_sha256` is never stored or served |
+
+`image` is usable when it is a type-4 URI; `image_sha256` when it is type-0 bytes of exactly 32 bytes — otherwise the
+image counts as having no hash (`unverified` at best).
 
 **IdentityDetail** — one token identity:
 
@@ -157,7 +172,8 @@ the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
   "commonFields": [ Field, … ],
   "fields": [ Field, … ], "fieldCount": 3, "fieldsNextCursor": null,
   "group": { "symbol": { "hex": "414344", "utf8": "ACD" }, "memberCount": 3, "members": [ … 3 members … ] },
-  "mark": { "mark": "ok", "reasons": [], "reasonCount": 0, "missing": [], "tags": [] }
+  "mark": { "mark": "ok", "reasons": [], "reasonCount": 0, "missing": [], "tags": [] },
+  "image": null
 }
 ```
 
@@ -167,8 +183,36 @@ page through `/v1/identities/…?cursor=` (`null` on the last). `commonFields` =
 present (`name`, `symbol`, `decimals`, `standards`), so a client can draw an unusable common field without paging.
 
 A minted identity without defined fields (never described, withdrawn, or described only by undefined keys): `described: false`, `common` all `null`, `commonFields: []`,
-`fields: []`, `fieldCount: 0`, `group: null`, `mark` from its contract's rejections and unresolved logs only
+`fields: []`, `fieldCount: 0`, `group: null`, `image: null`, `mark` from its contract's rejections and unresolved logs only
 (`incorrect`, `unresolved` or `none`).
+
+## Images
+
+`serve` runs a background image fetcher next to the scan loop (never with `--api-only`; `--no-image-fetch` turns it
+off). It is the only part of the indexer that makes outbound requests, and it fetches only the `image` of identities
+that exist, under these precautions (`token-indexer/mip0018/image-fetcher.ts`):
+
+| Precaution | Rule |
+|---|---|
+| Schemes | `http:` and `https:` only; a URL with a user name or password is refused; no cookies, credentials or `Referer` are sent |
+| Addresses | The host name is resolved once and every resolved address is checked; unspecified, loopback, private (RFC 1918, RFC 4193), shared (CGNAT), link-local, multicast, documentation, benchmarking, reserved and cloud-metadata addresses are refused, IPv4 and IPv6 (IPv4-mapped, NAT64 and 6to4 addresses are checked as their IPv4 address; only IPv6 global unicast is allowed) |
+| Connection | To the address that was checked (a second DNS answer cannot change it); TLS verifies the certificate against the host name |
+| Redirects | At most 3; each target is checked like the first URL |
+| Size and time | 2 MiB per image (a larger `Content-Length` or body is cut); 5 s to resolve and connect; 15 s for the answer; only a `200` answer with no content encoding is content |
+| Rate | One request per second per host name and per address; at most 4 fetches at once |
+| Retries | `unreachable` is retried with back-off (1 minute doubling up to 24 hours); `verified` is final; the other results are checked again after 24 hours. A failed re-check keeps the earlier result |
+
+Results are cached per (`url`, `image_sha256`) in `mip0018_images`; identities naming the same image share one check.
+
+### `GET /v1/images/{id}`
+
+The checked bytes of a `verified` or `unverified` image; `{id}` is their SHA-256 (64 hex digits), as given in
+`imageUrl`. Not JSON: the body is the image. Headers: `content-type` = the raster type its magic bytes show
+(`image/png`, `image/jpeg`, `image/gif`, `image/webp`), `x-content-type-options: nosniff`,
+`content-security-policy: sandbox; default-src 'none'`, `cache-control: public, max-age=31536000, immutable` (the id is
+the content's hash), `cross-origin-resource-policy: same-origin`, `referrer-policy: no-referrer`. A malformed id is a
+400, an unknown id (or one of `mismatch` / `not-image` content, which is never stored) a 404, both as the JSON error
+envelope.
 
 ## Endpoints
 
@@ -354,8 +398,9 @@ contract.
 ```sh
 # 1. archive a range (or follow the tip): chain-archive-sync
 ARCHIVE_PG=postgres://… NET=stagenet node --import tsx chain-archive-sync/sync-cli.ts --from 714485 --to 715183
-# 2. serve: scans the archive (following its cursor) and answers the API
-PG_URL=postgres://… node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet [--port 10026] [--host 127.0.0.1]
+# 2. serve: scans the archive (following its cursor), fetches token images in the background and answers the API
+PG_URL=postgres://… node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet [--port 10026] [--host 127.0.0.1] [--no-image-fetch]
 ```
 
-See the header of `serve-cli.ts` for every flag and environment variable (`--api-only`, schemas, genesis).
+See the header of `serve-cli.ts` for every flag and environment variable (`--api-only`, `--no-image-fetch`, schemas,
+genesis).

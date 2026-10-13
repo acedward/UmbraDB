@@ -1,11 +1,11 @@
 /**
  * `serve` of the MIP-0018 token indexer: the read-only JSON API (`api.ts`, contract `token-indexer/API.md`) over the
- * existing Postgres and — unless `--api-only` — the MIP-0018 scan loop following the chain archive's cursor, in one
- * process.
+ * existing Postgres and — unless `--api-only` — the MIP-0018 scan loop following the chain archive's cursor and the
+ * background image fetcher (`image-fetcher.ts`), in one process.
  *
  *   PG_URL=postgres://… node --import tsx token-indexer/mip0018/serve-cli.ts --network stagenet
  *     [--host 127.0.0.1] [--port 10026] [--schema mip0018] [--archive-schema chain_archive] [--api-only]
- *     [--from <height>] [--scan-batch 100] [--scan-idle-ms 2000] [--genesis 0x…]
+ *     [--from <height>] [--scan-batch 100] [--scan-idle-ms 2000] [--genesis 0x…] [--no-image-fetch]
  *
  * The chain archive is filled by `chain-archive-sync/sync-cli.ts` (finalized blocks, `--from/--to` ranges or the
  * tip); `serve` scans what is archived and answers the API. The scan loop runs in the serving process by default, so
@@ -13,9 +13,11 @@
  * scanner of the same network (another `serve`, or `scan-cli.ts`) fails instead of interleaving. A scan error (an
  * undecodable transaction stops the scan at its block) is logged and retried with back-off while the API keeps
  * serving; `/v1/status` reports `scanner: stalled`. `--api-only` runs no scan and no migration (read-only; the schema
- * must exist). The API answers at most 8 requests at once (503 `BUSY` beyond), below the connection pool's 10, so API
- * load cannot take every connection from the scan loop of the same process; a public deployment can also serve from
- * `--api-only` replicas.
+ * must exist). The image fetcher — the only part of the indexer that makes outbound requests — fetches the `image` of
+ * each token identity under the precautions in its header and caches the result for the API; it runs with the scan
+ * loop (never with `--api-only`), and `--no-image-fetch` turns it off. The API answers at most 8 requests at once
+ * (503 `BUSY` beyond), below the connection pool's 10, so API load cannot take every connection from the scan loop and
+ * the image fetcher of the same process; a public deployment can also serve from `--api-only` replicas.
  *
  * | Flag | Environment | Default |
  * |---|---|---|
@@ -29,15 +31,17 @@
  * | `--from` | `START_HEIGHT` | the archive's first height (first scan only) |
  * | `--scan-batch` | — | `100` blocks per scan step |
  * | `--scan-idle-ms` | — | `2000` (wait at the archive's tip; also the base of the error back-off, ×5 up to 60 s); 100 to 3 600 000 — below 100 ms the loop would poll the database and the log in a hot loop |
+ * | `--no-image-fetch` | — | off: the image fetcher runs with the scan loop |
  *
- * Logs one JSON line per event on stdout (`listening`, `scan`, `scan-error`, `stopped`). SIGINT/SIGTERM stop the
- * loop and the server and exit 0.
+ * Logs one JSON line per event on stdout (`listening`, `scan`, `scan-error`, `image`, `image-fetch-error`,
+ * `stopped`). SIGINT/SIGTERM stop the loop, the image fetcher and the server and exit 0.
  */
 import type { Server } from "node:http";
 import { parseArgs } from "node:util";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { createMip0018Api, listen } from "./api.ts";
 import type { ScannerState } from "./api-views.ts";
+import type { ImageFetcher, ImageFetcherConfig } from "./image-fetcher.ts";
 import { serveUi } from "./ui/page.ts";
 
 export interface ServeOptions {
@@ -52,6 +56,8 @@ export interface ServeOptions {
   fromHeight?: number;
   scanBatch?: number;
   scanIdleMs?: number;
+  /** The background image fetcher (runs with the scan loop): `false` = off; else its limits and seams. */
+  imageFetch?: false | ImageFetcherConfig;
   log?: (line: string) => void;
 }
 
@@ -90,6 +96,7 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
   const stopper = new AbortController();
   let state: ScannerState = o.apiOnly === true ? "off" : "following";
   let loop: Promise<void> = Promise.resolve();
+  let fetcher: ImageFetcher | undefined;
 
   if (o.apiOnly !== true) {
     // Loaded only when scanning: the scan needs ledger-v9 (WASM); the API alone does not.
@@ -101,6 +108,12 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
       ...(o.fromHeight === undefined ? {} : { fromHeight: o.fromHeight }),
     });
     await scanner.bootstrap();
+    if (o.imageFetch !== false) {
+      // Loaded only here: the image fetcher is the only module that uses the network; the scan and the API never load it.
+      const { ImageFetcher } = await import("./image-fetcher.ts");
+      fetcher = new ImageFetcher({ sql: o.sql, network: o.network, ...(o.schema === undefined ? {} : { schema: o.schema }), log, ...(o.imageFetch ?? {}) });
+      fetcher.start();
+    }
     const idle = o.scanIdleMs ?? 2_000;
     const batch = o.scanBatch ?? 100;
     loop = (async () => {
@@ -139,9 +152,10 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
   } catch (e) {
     stopper.abort();
     await loop;
+    await fetcher?.stop();
     throw e;
   }
-  log(JSON.stringify({ event: "listening", host, port, scanner: state }));
+  log(JSON.stringify({ event: "listening", host, port, scanner: state, images: fetcher === undefined ? "off" : "on" }));
   return {
     host, port, server,
     scannerState: () => state,
@@ -152,6 +166,7 @@ export async function serve(o: ServeOptions): Promise<ServeHandle> {
         server.closeAllConnections();
       });
       await loop;
+      await fetcher?.stop();
     },
   };
 }
@@ -176,6 +191,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
       "api-only": { type: "boolean", default: false },
       "scan-batch": { type: "string" },
       "scan-idle-ms": { type: "string" },
+      "no-image-fetch": { type: "boolean", default: false },
     },
     strict: true,
   });
@@ -198,6 +214,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env,
       port: intOption(values.port ?? env.MIP0018_API_PORT, "--port", 65_535) ?? 10026,
       archiveSchema: values["archive-schema"] ?? env.ARCHIVE_SCHEMA ?? "chain_archive",
       apiOnly: values["api-only"],
+      ...(values["no-image-fetch"] ? { imageFetch: false as const } : {}),
       ...(genesis === undefined ? {} : { genesisHash: genesis }),
       ...(from === undefined ? {} : { fromHeight: from }),
       ...(batch === undefined ? {} : { scanBatch: Math.max(1, batch) }),

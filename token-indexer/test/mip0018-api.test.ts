@@ -72,8 +72,8 @@ async function walk(base: string, path: string, limit: number): Promise<{ items:
 }
 
 const keysOf = (o: object): string[] => Object.keys(o).sort();
-const SUMMARY_KEYS = ["color", "contractAddress", "decimals", "described", "domainSep", "evidence", "firstSeen", "id", "kind", "kindName", "mark", "minted", "name", "note", "source", "symbol"];
-const DETAIL_KEYS = ["color", "common", "commonFields", "contractAddress", "described", "domainSep", "fieldCount", "fields", "fieldsNextCursor", "group", "kind", "kindName", "mark", "minted", "network"];
+const SUMMARY_KEYS = ["color", "contractAddress", "decimals", "described", "domainSep", "evidence", "firstSeen", "id", "image", "kind", "kindName", "mark", "minted", "name", "note", "source", "symbol"];
+const DETAIL_KEYS = ["color", "common", "commonFields", "contractAddress", "described", "domainSep", "fieldCount", "fields", "fieldsNextCursor", "group", "image", "kind", "kindName", "mark", "minted", "network"];
 const MARK_KEYS = ["mark", "missing", "reasonCount", "reasons", "tags", "unresolved"];
 const FIELD_KEYS = ["key", "updatedAt", "usable", "valType", "valTypeName", "value"];
 const EVENT_KEYS = ["classification", "contractAddress", "eventIndex", "height", "phase", "reason", "segment", "txHash", "txIndex"];

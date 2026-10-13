@@ -14,7 +14,8 @@
  *   (`api-views.ts`), and at most `maxConcurrentRequests` requests run at once (default 8, below the connection pool's
  *   10, so the scan loop of the same `serve` process always gets a connection); beyond that a request is answered at
  *   once with 503 `BUSY` and `Retry-After: 1`.
- * - Never fetches a URI or anything remote; heights only.
+ * - Never fetches a URI or anything remote (token images are fetched by the background fetcher of `serve`; the API
+ *   serves its cached results: `/v1/images/{id}` answers raster bytes, not JSON); heights only.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -41,6 +42,7 @@ import {
   tokensPage,
   type ViewContext,
 } from "./api-views.ts";
+import { ImageBody, imageBody } from "./images.ts";
 
 export const MAX_LIMIT = 500;
 export const DEFAULT_LIMIT = 100;
@@ -180,7 +182,12 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
     }
     inFlight++;
     void handle(req).finally(() => { inFlight--; }).then(
-      (body) => send(res, 200, body, head),
+      (body) => {
+        if (body instanceof ImageBody) {
+          res.writeHead(200, body.headers());
+          res.end(head ? undefined : body.bytes);
+        } else send(res, 200, body, head);
+      },
       (error: unknown) => {
         const e = toApiError(error);
         if (res.headersSent) {
@@ -298,6 +305,10 @@ export function createMip0018Api(opts: Mip0018ApiOptions): Server {
           return lookup(ctx, color, held);
         },
       };
+    }
+    if (a === "images" && s.length === 2) {
+      const id = hex32(b!, "image id");
+      return { params: [], run: async (ctx) => orNotFound(await imageBody(ctx.sql, ctx.schema, id), "no image with this id") };
     }
     if (a === "events" && s.length === 1)
       return {
