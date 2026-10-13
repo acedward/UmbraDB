@@ -129,3 +129,13 @@ button#now { background: var(--accent); border-color: var(--accent); color: var(
 button#now:hover:enabled { background: #0000c4; border-color: #0000c4; }
 .val { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 .foot { padding: 0 28px 28px; color: var(--dim); font-size: 12px; max-width: 120ch; }
+/* A token's image: only this origin's checked bytes (img-src 'self'), boxed and scaled down; its status in words
+   beside it, a warning in the warning colours; the URL as text. */
+.imgbox { display: grid; gap: 8px; justify-items: start; }
+.imgbox img.logo { display: block; max-width: 128px; max-height: 128px; width: auto; height: auto; object-fit: contain;
+  background: var(--md-white); border: 1px solid var(--line); padding: 4px; }
+.img-msg { font-size: 13px; color: var(--dim); }
+.img-ok { color: var(--tag-described-fg); }
+.img-warn { color: var(--tag-observed-fg); font-weight: 600; padding: 4px 8px; border: 1px solid var(--tag-observed-bd);
+  background: var(--tag-observed-bg); }
+.img-url { overflow-wrap: anywhere; font-size: 13px; }

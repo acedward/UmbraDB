@@ -2,7 +2,8 @@
 
 One document at `GET /ui`, served by the token indexer's own process (`serve()` in `../serve-cli.ts` passes `serveUi`
 to the API server as its `ui` hook), reading **only** the read-only JSON API of the same origin (`../../API.md`). No
-database access, no other origin, no URI ever fetched.
+database access, no other origin, no URI value ever fetched by the page; a token's image is loaded only from this
+origin's `/v1/images/{id}` (bytes the indexer's image fetcher checked).
 
 | File | Role |
 |---|---|
@@ -23,15 +24,15 @@ The Midnight style (the look of the explorer in acedward/UmbraDB PR #19): Outfit
 one blue (`#0000fe`), the header with the Midnight wordmark, a rule and the title, tab navigation and a status strip;
 grey panel sections with small dim headings; tables with hover rows (NIGHT/DUST rows tinted); kind chips (shielded-utxo
 purple, unshielded-utxo blue, contract-token teal dashed, seen violet dashed); hex shortened head…tail, whole in the tooltip,
-copied on click; monospaced heights, amounts and hex. The page has no origins model, no URI links or resolver, no
-external links and no wall-clock time.
+copied on click; monospaced heights, amounts and hex; a token's image boxed at most 128 px with its status beside it.
+The page has no origins model, no URI links or resolver, no external links and no wall-clock time.
 
 ## Routes
 
 | Hash | View | API reads |
 |---|---|---|
 | `#/` | token list: NIGHT, DUST, every minted or described identity, seen colors | `/v1/tokens` (pages of 100, "load more") |
-| `#/token/<contract>/<domainSep>/<kind>` | one identity: heading, identity, common fields, current fields, symbol group, mark, activity, the contract's events | `/v1/identities/…`, `/v1/tokens/{color}/activity` or `/v1/contracts/{address}/activity`, `/v1/events?contract=` |
+| `#/token/<contract>/<domainSep>/<kind>` | one identity: heading, image, identity, common fields, current fields, symbol group, mark, activity, the contract's events | `/v1/identities/…`, `/v1/tokens/{color}/activity` or `/v1/contracts/{address}/activity`, `/v1/events?contract=`; the image from the identity's `image.imageUrl` (`/v1/images/{id}`) |
 | `#/color/<color>` | a color: NIGHT (built-in), a minted color's identities and related kind-3, or a seen color; activity | `/v1/tokens/{color}`, `/v1/tokens/{color}/activity` |
 | `#/builtin/DUST` | DUST (no color) | `/v1/tokens?limit=2` |
 | `#/contract/<address>` | identities, symbol groups, activity, events | `/v1/contracts/{address}/tokens`, `/v1/contracts/{address}/activity`, `/v1/events?contract=` |
@@ -60,9 +61,24 @@ drops a read that finishes after the route moved.
   "load more fields"; the identity's `fieldCount` is shown), 20 rejection reasons per tooltip; lists of 100 rows per
   page, "load more" up to 50 pages; a group shows the API's first 100 members and its member count; the contract view
   merges the groups of the token pages it read.
-- **No fetch, no link from data.** A URI value (type 4) is text, labelled as never fetched; the only links are the
-  page's own hash routes, built from validated 32-byte hex. Nothing is loaded from any other origin
-  (`default-src 'none'`, `connect-src 'self'`, `img-src 'self'`, `font-src 'self'`).
+- **No fetch, no link from data.** A URI value (type 4) is text, never a link; the only links are the page's own hash
+  routes, built from validated 32-byte hex. Nothing is loaded from any other origin (`default-src 'none'`,
+  `connect-src 'self'`, `img-src 'self'`, `font-src 'self'`).
+- **Token images** (MIP "Common fields" `image` / `image_sha256`, "Security considerations": off-chain content). The
+  identity view draws the API's `image` object, and only on that view (list rows draw no image):
+
+  | `status` | Drawn |
+  |---|---|
+  | `verified` | the image (`<img>` from `imageUrl`) and "✓ verified" |
+  | `unverified` | the image and a visible warning "⚠ not verified" (no usable `image_sha256`: nothing ties the content to the token, and its host can change it) |
+  | `mismatch` | the warning "⚠ not displayed: … does not match the token's image_sha256"; no image, no link |
+  | `not-image` | the warning "⚠ not displayed: … not a PNG, JPEG, GIF or WebP image"; no image |
+  | `unreachable`, `pending` | a neutral note; no image |
+
+  The URL is always plain text ("URL (text, not a link)"). The only image source the script ever sets is the API's
+  `imageUrl`, and only when it is this origin's `/v1/images/{64 hex}`; the bytes behind it are raster only, served
+  with `nosniff` and a sandbox CSP, so an image cannot run a script. An unusable `image` is drawn as "unusable — no
+  value shown" in the common fields.
 - **No fallback.** A common field whose current value is unusable is drawn as "unusable — no value shown"; an absent
   one as "not set" (no default decimals); `decimals` and amounts in display units come from the API.
 - **Claims, not curation.** Names and symbols are shown with the contract they belong to; `standards` tags are
@@ -77,11 +93,14 @@ require-trusted-types-for 'script'; trusted-types 'none'` — the two hashes are
 
 - `token-indexer/test/mip0018-ui-page.test.ts` — `[[mip0018.ui.page-guard]]` (the served document parses, its CSP
   hashes are its blocks' bytes, the script compiles — with a stray-backtick negative control —, pure ASCII, no handler
-  or style attribute, no external reference, no markup sink/clock/other network client in the script) and
+  or style attribute, no external reference, no markup sink/clock/other network client in the script, one image
+  source: the checked `imageUrl`) and
   `[[mip0018.ui.static-routes]]`. No database, no browser.
 - `token-indexer/test/mip0018-ui-browser.test.ts` — a real headless Chromium/Chrome over the DevTools protocol
   (`token-indexer/test/helpers/cdp-browser.ts`, no npm dependency): `[[mip0018.ui.browser-routes]]`,
-  `[[mip0018.ui.browser-activity-shape]]`, `[[mip0018.ui.browser-hostile-text]]`, `[[mip0018.ui.browser-withdrawn]]`.
+  `[[mip0018.ui.browser-activity-shape]]`, `[[mip0018.ui.browser-hostile-text]]`, `[[mip0018.ui.browser-withdrawn]]`,
+  `[[mip0018.ui.browser-bounded]]`, `[[mip0018.ui.browser-images]]` (every image status, the warnings, no link, CSP
+  `img-src 'self'` refusing other sources in the browser).
   It needs a browser: `MIP0018_UI_BROWSER` or `CHROME_BIN`, the Chromium of the Playwright image, or Chrome on `PATH`
   (GitHub's ubuntu runners have it). Locally, run the tests in the Playwright image as the host user:
 

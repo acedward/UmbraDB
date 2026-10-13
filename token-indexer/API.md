@@ -29,7 +29,7 @@ Authority: MIP-0018 as in [PR #372](https://github.com/midnightntwrk/midnight-im
 | Events carry no values | The event endpoint serves position, contract, classification and reason only — never an event's name, payload, header (`domainSep`, `kind`) or decoded values. Only MIP-0018-named events (`accept`, `reject`) and `unresolved` logs are served; other `Misc` events (`ignore`) are not. |
 | Marks | `mark` is decided by one function (`state.ts` `tokenMark`): `ok` (✓) usable `name`, `symbol` and `decimals`, no rejected MIP-0018 event and no unresolved log from the token's contract; `partial` (⚠) one of the three missing or unusable; `incorrect` (⚠) the contract has a rejected MIP-0018 event (reasons listed in chain order); `unresolved` (⚠) the contract has no rejected event but has an `unresolved` log — a `log` op whose value the raw transaction does not show, so it may have published, renamed or withdrawn metadata this indexer cannot read (reason `unresolved-log`); `none` no metadata, no rejected event and no unresolved log. Precedence: `incorrect`, `unresolved`, then the identity's own fields. Usable `standards` identifiers are returned as `tags` (self-declared, never proof). Current state only. |
 | Groups | Symbol groups as the MIP defines them: identities of one contract with the same usable `symbol` bytes; only groups of two or more members. |
-| Bounded cost | How many keys an identity has, how many events a contract rejected and how many identities share a symbol are chosen by whoever calls the contract. No answer grows with them: list rows and marks read only the four common keys and a rejection count plus the first 100 reasons; an identity's fields come in keyset pages (`fieldCount` counts them); a group lists its first 100 members (`memberCount` counts them); an entry point is served as at most its first 128 bytes; an activity page reads only the rows it serves, never a withdrawn identity's hidden metadata transactions; at most 8 requests run at once (503 `BUSY` beyond, `Retry-After: 1`). |
+| Bounded cost | How many keys an identity has, how many events a contract rejected and how many identities share a symbol are chosen by whoever calls the contract. No answer grows with them: list rows and marks read only the six common-field keys and a rejection count plus the first 100 reasons; an identity's fields come in keyset pages (`fieldCount` counts them); a group lists its first 100 members (`memberCount` counts them); an entry point is served as at most its first 128 bytes; an activity page reads only the rows it serves, never a withdrawn identity's hidden metadata transactions; at most 8 requests run at once (503 `BUSY` beyond, `Retry-After: 1`). |
 | NIGHT / DUST | Protocol tokens, outside MIP-0018; served as built-in rows with no mark. NIGHT's color is 32 zero bytes; DUST has no color. |
 
 ### Errors
@@ -108,8 +108,8 @@ parsed list, `[]` for an empty value).
 ```
 
 `key.utf8` is `null` when the key is not valid UTF-8. `valTypeName`: 0 `bytes` (hex only), 1 `utf8` (`text`),
-2 `uint` (`integer`), 3 `json` (`text`), 4 `uri` (`text`; never fetched). `usable` is `true`/`false` for the four
-common keys and `null` for any other key.
+2 `uint` (`integer`), 3 `json` (`text`), 4 `uri` (`text`; never fetched by the API). `usable` is `true`/`false` for the six
+common-field keys and `null` for any other key.
 
 **Group** — `{ "symbol": { "hex": "414344", "utf8": "ACD" }, "memberCount": 3, "members": [ { "domainSep": "6d69…", "kind": 1 }, … ] }`:
 the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
@@ -157,6 +157,19 @@ the first 100 members by `(domainSep, kind)`; `memberCount` counts them all.
 `image` is usable when it is a type-4 URI; `image_sha256` when it is type-0 bytes of exactly 32 bytes — otherwise the
 image counts as having no hash (`unverified` at best).
 
+How a client shows it (the explorer page does exactly this):
+
+| `status` | Show |
+|---|---|
+| `verified` | The image from `imageUrl` |
+| `unverified` | The image from `imageUrl` with a visible "not verified" warning: without `image_sha256` nothing ties the content to the token, and its host can change it at any time |
+| `mismatch` | A warning; no image and no link (MIP "Common fields": content whose SHA-256 differs from `image_sha256` MUST NOT be displayed) |
+| `not-image` | A warning: the URL does not serve a PNG, JPEG, GIF or WebP image; no image |
+| `unreachable`, `pending` | A neutral note; no image |
+
+`url` is always plain text, never a link. Only `imageUrl` (this origin) is ever loaded; a page can hold that with a
+Content-Security-Policy of `img-src 'self'`.
+
 **IdentityDetail** — one token identity:
 
 ```json
@@ -179,8 +192,9 @@ image counts as having no hash (`unverified` at best).
 
 `fields` is ONE keyset page of the current defined fields in key byte order (default 100, `limit` up to 500; a key
 never moves, so pages are stable while the scan writes); `fieldCount` counts all of them; `fieldsNextCursor` reads the next
-page through `/v1/identities/…?cursor=` (`null` on the last). `commonFields` = the current rows of the common keys
-present (`name`, `symbol`, `decimals`, `standards`), so a client can draw an unusable common field without paging.
+page through `/v1/identities/…?cursor=` (`null` on the last). `commonFields` = the current rows of the common-field keys
+present (`name`, `symbol`, `decimals`, `standards`, `image`, `image_sha256`), so a client can draw an unusable common field
+without paging.
 
 A minted identity without defined fields (never described, withdrawn, or described only by undefined keys): `described: false`, `common` all `null`, `commonFields: []`,
 `fields: []`, `fieldCount: 0`, `group: null`, `image: null`, `mark` from its contract's rejections and unresolved logs only

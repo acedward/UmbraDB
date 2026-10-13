@@ -20,6 +20,7 @@ import type { Queryable } from "./fields.ts";
 import {
   COMMON_KEY_HEX,
   displayAmount,
+  IMAGE_KEY_HEX,
   type Field,
   type GroupableIdentity,
   type IdentityRef,
@@ -220,11 +221,12 @@ export async function chainEvents(
 //
 // How many keys an identity carries, how many identities share a symbol and how many events a contract has rejected
 // are chosen by whoever calls that contract. The API therefore never reads all of them: list rows and marks read only
-// the four common keys, rejections as a count plus the first reasons, an identity's fields one keyset page at a time,
+// the six common-field keys, rejections as a count plus the first reasons, an identity's fields one keyset page at a time,
 // a group as a member count plus the first members. Every query below is an index range scan bounded by its LIMIT
 // (or an index-only count).
 
-const COMMON_KEY_BYTES: readonly Buffer[] = [COMMON_KEY_HEX.name, COMMON_KEY_HEX.symbol, COMMON_KEY_HEX.decimals, COMMON_KEY_HEX.standards].map(buf);
+/** The keys of the MIP's common fields: `name`, `symbol`, `decimals`, `standards`, `image`, `image_sha256`. */
+const COMMON_KEY_BYTES: readonly Buffer[] = [...Object.values(COMMON_KEY_HEX), ...Object.values(IMAGE_KEY_HEX)].map(buf);
 const FIELD_COLUMNS = (sql: Queryable) => sql`
   f.contract_address, f.domain_sep, f.kind, f.key, f.val_type, f.value, f.uint_value::text AS uint_value, f.usable,
   f.updated_block, f.updated_tx, f.updated_event, f.updated_record`;
@@ -248,7 +250,10 @@ export const identityKeyOf = (k: IdentityKey): string => `${k.contractAddress}/$
 /** What a list row and a mark need of an identity: its common fields only, and whether it exists (has a defined field). */
 export interface IdentityCommon { described: boolean; fields: Map<string, Field> }
 
-/** The common fields (`name`, `symbol`, `decimals`, `standards`) and the described flag of each given identity. */
+/**
+ * The common fields (`name`, `symbol`, `decimals`, `standards`, `image`, `image_sha256`) and the described flag of
+ * each given identity.
+ */
 export async function identityCommons(
   sql: Queryable, network: string, keys: readonly IdentityKey[], schema = MIP0018_SCHEMA,
 ): Promise<Map<string, IdentityCommon>> {
@@ -269,7 +274,7 @@ export async function identityCommons(
     FROM unnest(${cs}::text[], ${ds}::text[], ${ks}::text[]::int[]) AS i(c, d, k)
     JOIN ${s}.mip0018_fields f
       ON f.network = ${network} AND f.contract_address = decode(i.c, 'hex') AND f.domain_sep = decode(i.d, 'hex') AND f.kind = i.k
-     AND f.key IN (${COMMON_KEY_BYTES[0]!}, ${COMMON_KEY_BYTES[1]!}, ${COMMON_KEY_BYTES[2]!}, ${COMMON_KEY_BYTES[3]!}) AND f.defined
+     AND f.key = ANY(${sql.array([...COMMON_KEY_BYTES], 17)}::bytea[]) AND f.defined
     ORDER BY f.contract_address, f.domain_sep, f.kind, f.updated_block, f.updated_tx, f.updated_event, f.updated_record`;
   for (const r of rows) out.get(identityKeyOf({ contractAddress: toHex(r.contract_address), domainSep: toHex(r.domain_sep), kind: r.kind }))!.fields.set(toHex(r.key), fieldOf(r));
   return out;

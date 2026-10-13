@@ -953,20 +953,22 @@ describe("MIP-0018 read-only API", () => {
     expect(rawY).not.toContain("\\u202e");
   }, 240_000);
 
-  it("[[mip0018.api.undefined-keys]] MIP Keys: the API serves defined keys only — an identity with only an undefined key is in no list, lookup or contract view (404); a described identity's fields, fieldCount and commonFields leave its undefined keys out; a minted identity with only undefined keys reads as never described", async () => {
+  it("[[mip0018.api.undefined-keys]] MIP Keys: the API serves defined keys only — an identity with only an undefined key is in no list, lookup, color, group, activity, event or contract view and answers 404; its metadata transaction is not listed as activity; a described identity's fields, fieldCount and commonFields leave its undefined keys out; a minted identity with only undefined keys reads as never described (no metadata transaction in its color's activity)", async () => {
     const db = await fresh("undefkeys");
     const X = "a9".repeat(32);
     const ONLY = "0a".repeat(32);
     const BOTH = "0b".repeat(32);
     const MINT = "0c".repeat(32);
-    await putSyntheticBlocks(db.sql, db.archive, NET, 400, [[
-      call(X, [
-        v1Log(ONLY, 3, [record.utf8("foo", "x")]),
-        v1Log(BOTH, 3, [record.utf8("name", "Both"), record.utf8("foo", "secret-undefined-value"), record.utf8("symbol", "BTH")]),
-        v1Log(MINT, 1, [record.utf8("foo", "x")]),
-      ], { shieldedMints: [[MINT, "5"]] }),
-    ]]);
-    const s = scanner(db, { decode: decodeSynthetic });
+    // One transaction per identity, so a metadata transaction listed for the wrong one would show (activity rows come
+    // from the synthetic activity transactions).
+    const archived = (t: SynthTxA): SynthArchivedTx => ({ tx: t as unknown as SynthArchivedTx["tx"], result: "success", segments: null });
+    const tx = (hash: string, logs: SynthLog[], shieldedMints?: Array<[string, string]>): SynthArchivedTx =>
+      archived({ hash, intents: [{ segment: 1, calls: [{ address: X, entryPoint: "meta", guaranteed: { logs: logs.map((l) => l.data), ...(shieldedMints ? { shieldedMints } : {}) } }] }] });
+    const txBoth = tx("b1".repeat(32), [v1Log(BOTH, 3, [record.utf8("name", "Both"), record.utf8("foo", "secret-undefined-value"), record.utf8("symbol", "BTH")])]);
+    const txOnly = tx("b2".repeat(32), [v1Log(ONLY, 3, [record.utf8("foo", "x")])]);
+    const txMint = tx("b3".repeat(32), [v1Log(MINT, 1, [record.utf8("foo", "x")])], [[MINT, "5"]]);
+    await putSyntheticBlocks(db.sql, db.archive, NET, 400, [[txBoth, txOnly, txMint]]);
+    const s = scanner(db, syntheticSeams);
     await s.bootstrap();
     await scanAll(s);
     const base = await startApi(db);
@@ -977,13 +979,60 @@ describe("MIP-0018 read-only API", () => {
     const list = (await ok(base, "/v1/tokens?limit=500")).items as Json[];
     expect(list.filter((t) => t.contractAddress === X).map((t) => [t.domainSep, t.kind, t.described])).toEqual([[BOTH, 3, true], [MINT, 1, false]]);
     const minted = await ok(base, `/v1/identities/${X}/${MINT}/1`);
-    expect([minted.described, minted.fields, minted.fieldCount, minted.mark.mark]).toEqual([false, [], 0, "none"]);
+    expect([minted.described, minted.fields, minted.fieldCount, minted.commonFields, minted.mark.mark, minted.image]).toEqual([false, [], 0, [], "none", null]);
     const contract = await ok(base, `/v1/contracts/${X}/tokens`);
     expect(JSON.stringify(contract)).not.toContain(ONLY);
-    for (const path of ["/v1/tokens?limit=500", `/v1/identities/${X}/${BOTH}/3`, `/v1/contracts/${X}/tokens`, `/v1/events?contract=${X}`])
-      expect((await get(base, path)).text, path).not.toContain(Buffer.from("secret-undefined-value").toString("hex"));
+    // Activity: only the existing identity's metadata transaction is listed; the mint stays a mint.
+    const meta = (rows: Json[]) => rows.filter((r) => r.role === "metadata-event").map((r) => r.txHash);
+    expect(meta((await ok(base, `/v1/contracts/${X}/activity?limit=500`)).items)).toEqual([txBoth.tx.hash]);
+    const color = tokenColor(MINT, X);
+    const colorActivity = (await ok(base, `/v1/tokens/${color}/activity?limit=500`)).items as Json[];
+    expect(colorActivity.map((r) => [r.role, r.txHash])).toContainEqual(["mint", txMint.tx.hash]);
+    expect(meta(colorActivity)).toEqual([txBoth.tx.hash]); // the minting contract's listed metadata transactions only
+    expect((await ok(base, `/v1/lookup/${color}?held=shielded`)).identity).toMatchObject({ domainSep: MINT, kind: 1, described: false });
+    // Everything a client can reach: ONLY's domainSep and the undefined value appear nowhere.
+    const c = await crawl(base, [X], [`/v1/tokens/${color}`, `/v1/events?tx=${txOnly.tx.hash}`]);
+    expect([...c].filter(([, r]) => r.text.includes(ONLY)).map(([p]) => p)).toEqual([]);
+    expect(mentions(c, "secret-undefined-value")).toEqual([]);
     const stored = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ${db.sql(db.mip)}.mip0018_fields WHERE NOT defined`;
     expect(stored[0]!.n).toBe(3); // stored, never served
+  }, 120_000);
+
+  it("[[mip0018.api.lengths]] MIP Common fields: the API serves name and symbol as their first 64 / 12 characters (grapheme clusters) everywhere — list rows, the contract view, the identity's common, commonFields and fields, its color, the lookup and the groups (two 15-character symbols that share their first 12 characters form one group); the full values appear in no answer", async () => {
+    const db = await fresh("lengths");
+    const X = "1e".repeat(32);
+    const DS = "1f".repeat(32);
+    const DS2 = "20".repeat(32);
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";
+    const name = `${"N".repeat(63)}${family}${"tail"}${"x".repeat(2)}`; // 70 characters; the cut keeps the family emoji whole
+    const cutName = `${"N".repeat(63)}${family}`;
+    await putSyntheticBlocks(db.sql, db.archive, NET, 300, [[
+      call(X, [
+        v1Log(DS, 1, [record.utf8("name", name), record.utf8("symbol", "ACMEDOLLARUSONE"), record.uint("decimals", 2)]),
+        v1Log(DS2, 3, [record.utf8("name", "Short"), record.utf8("symbol", "ACMEDOLLARUSTWO")]),
+      ], { shieldedMints: [[DS, "7"]] }),
+    ]]);
+    const s = scanner(db, { decode: decodeSynthetic });
+    await s.bootstrap();
+    await scanAll(s);
+    const base = await startApi(db);
+    const color = tokenColor(DS, X);
+    const rows = ((await ok(base, "/v1/tokens?limit=500")).items as Json[]).filter((t) => t.contractAddress === X);
+    expect(rows.map((t) => [t.kind, t.name, t.symbol])).toEqual([[1, cutName, "ACMEDOLLARUS"], [3, "Short", "ACMEDOLLARUS"]]);
+    expect(((await ok(base, `/v1/contracts/${X}/tokens`)).items as Json[]).map((t) => [t.name, t.symbol])).toEqual([[cutName, "ACMEDOLLARUS"], ["Short", "ACMEDOLLARUS"]]);
+    const id = await ok(base, `/v1/identities/${X}/${DS}/1`);
+    expect([id.common.name, id.common.symbol, id.mark.mark]).toEqual([cutName, "ACMEDOLLARUS", "ok"]);
+    const texts = (fs: Json[]) => fs.map((f) => [f.key.utf8, f.value.text ?? f.value.integer, f.usable]);
+    expect(texts(id.commonFields)).toEqual([["name", cutName, true], ["symbol", "ACMEDOLLARUS", true], ["decimals", "2", true]]);
+    expect(texts(id.fields)).toEqual([["decimals", "2", true], ["name", cutName, true], ["symbol", "ACMEDOLLARUS", true]]);
+    expect([id.group.symbol.utf8, id.group.memberCount, id.group.members.map((m: Json) => [m.domainSep, m.kind])]).toEqual(["ACMEDOLLARUS", 2, [[DS, 1], [DS2, 3]]]);
+    const groups = (await ok(base, `/v1/contracts/${X}/tokens`)).groups as Json[];
+    expect(groups.map((g) => [g.symbol.utf8, g.memberCount])).toEqual([["ACMEDOLLARUS", 2]]);
+    expect((await ok(base, `/v1/lookup/${color}?held=shielded`)).identity.common.name).toBe(cutName);
+    const c = await crawl(base, [X], [`/v1/tokens/${color}`, `/v1/lookup/${color}?held=shielded`]);
+    expect(c.size).toBeGreaterThan(8);
+    for (const full of [name, "ACMEDOLLARUSONE", "ACMEDOLLARUSTWO", "tailxx"]) expect(mentions(c, full), full).toEqual([]);
+    expect(mentions(c, "ACMEDOLLARUS").length).toBeGreaterThan(0); // positive control: the cut value is served
   }, 120_000);
 
   it("[[mip0018.api.errors]] error envelope: 400 for malformed hex, kinds outside 1–3, malformed paths and parameters; 404 for unknown routes, colors, identities and contracts; 405 with Allow for other methods; 503 when the database cannot be read; never the input or internal details; HEAD answers headers only", async () => {

@@ -208,6 +208,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
     const ENDPOINTS = [
       /^\/v1\/status$/, /^\/v1\/tokens$/, /^\/v1\/tokens\/[0-9a-f]{64}$/, /^\/v1\/identities\/[0-9a-f]{64}\/[0-9a-f]{64}\/[123]$/,
       /^\/v1\/contracts\/[0-9a-f]{64}\/tokens$/, /^\/v1\/events$/, /^\/v1\/tokens\/[0-9a-f]{64}\/activity$/, /^\/v1\/contracts\/[0-9a-f]{64}\/activity$/,
+      /^\/v1\/images\/[0-9a-f]{64}$/,
     ];
     const paths: string[] = [];
     for (const r of page.requests) {
@@ -806,5 +807,130 @@ describe("MIP-0018 explorer page in a real browser", () => {
     expect(z.view.includes(Z) || z.view.includes("z".repeat(32)) || z.attrs.some((a) => a.includes(Z))).toBe(false);
     expectOnlyApiCalls(page2, sbase);
     await expectCleanConsole(page2, /\/activity(\?|$)|\/v1\/identities\//);
+  }, 300_000);
+
+  it("[[mip0018.ui.browser-images]] token images as the owner's rules say: verified → the image from /v1/images/{id}; unverified → the image and a visible \"not verified\" warning; mismatch → a warning, no image and no link; not-image → a warning, no image; unreachable and not yet checked → a neutral note; an unusable image → \"unusable\" in the common fields; the URL is plain text on every view, never a link; only this origin's checked bytes load (CSP img-src 'self' blocks any other source); the list draws no image", async () => {
+    const db = await fresh("uiimages");
+    const I = "1a".repeat(32);
+    const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+    const GIF = Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64");
+    const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>window.__pwned=3</script></svg>');
+    const OTHER = Buffer.concat([PNG, Buffer.from("replaced")]);
+    const sha = (b: Uint8Array): Buffer => createHash("sha256").update(b).digest();
+    const url = (n: string): string => `https://img.example/${n}`;
+    const ds = (n: number): string => n.toString(16).padStart(2, "0").repeat(32);
+    const tok = (n: number, name: string, image: MetadataRecord[]) =>
+      v1Log(ds(n), 3, [record.utf8("name", name), record.utf8("symbol", `IM${n}`), record.uint("decimals", 0), ...image]);
+    await putSyntheticBlocks(db.sql, db.archive, NET, 700, [[call(I, [
+      tok(1, "Verified", [record.uri("image", url("v.png")), record.bytes("image_sha256", sha(PNG))]),
+      tok(2, "Unverified", [record.uri("image", url("u.gif"))]),
+      tok(3, "Mismatch", [record.uri("image", url("m.png")), record.bytes("image_sha256", Buffer.alloc(32, 7))]),
+      tok(4, "Not an image", [record.uri("image", url("x.svg"))]),
+      tok(5, "Unreachable", [record.uri("image", url("gone.png"))]),
+      tok(6, "Pending", [record.uri("image", url("later.png"))]),
+      tok(7, "Text image", [record.utf8("image", url("t.png"))]),
+      tok(8, "No image", []),
+    ])]]);
+    const s = scanner(db, { decode: decodeSynthetic });
+    await s.bootstrap();
+    await scanAll(s);
+    // The fetcher's results as it records them (its own tests cover how it gets them); no row = not checked yet.
+    const t = db.sql`${db.sql(db.mip)}.mip0018_images`;
+    const checked = new Date();
+    for (const row of [
+      { url: Buffer.from(url("v.png")), image_sha256: sha(PNG), status: "verified", content_type: "image/png", content_sha256: sha(PNG), size: PNG.length, bytes: PNG, checked_at: checked },
+      { url: Buffer.from(url("u.gif")), image_sha256: Buffer.alloc(0), status: "unverified", content_type: "image/gif", content_sha256: sha(GIF), size: GIF.length, bytes: GIF, checked_at: checked },
+      { url: Buffer.from(url("m.png")), image_sha256: Buffer.alloc(32, 7), status: "mismatch", content_sha256: sha(OTHER), size: OTHER.length, checked_at: checked },
+      { url: Buffer.from(url("x.svg")), image_sha256: Buffer.alloc(0), status: "not-image", content_sha256: sha(SVG), size: SVG.length, checked_at: checked },
+      { url: Buffer.from(url("gone.png")), image_sha256: Buffer.alloc(0), status: "unreachable", reason: "http-404", attempts: 1, checked_at: checked },
+    ]) await db.sql`INSERT INTO ${t} ${db.sql(row)}`;
+    const base = await serveDb(db);
+    const page = await browser.newPage();
+    await page.goto(`${base}/ui`);
+    await page.waitFor("document.body.getAttribute('data-route') === 'list' && document.body.getAttribute('data-state') === 'ready'");
+    expect(await page.eval<number>("document.querySelectorAll('img').length")).toBe(0); // the list draws no image
+
+    const IMG = `(() => {
+      const box = document.querySelector('#image .imgbox');
+      const msg = box ? box.querySelector('.img-msg') : null;
+      const kv = {};
+      for (const k of document.querySelectorAll('.kv .k')) kv[k.innerText] = k.nextElementSibling.innerText;
+      return { status: box ? box.getAttribute('data-image-status') : null, kind: msg ? msg.getAttribute('data-image-msg') : null,
+        msg: msg ? msg.innerText : null, url: box ? box.querySelector('.img-url').innerText : null,
+        imgs: [...document.images].map((i) => ({ src: i.getAttribute('src'), w: i.naturalWidth, h: i.naturalHeight })),
+        anchors: [...document.querySelectorAll('a')].map((a) => [a.getAttribute('href'), a.innerText]),
+        common: { image: kv.image, image_sha256: kv.image_sha256 } };
+    })()`;
+    interface ImgSnap { status: string | null; kind: string | null; msg: string | null; url: string | null; imgs: Array<{ src: string; w: number; h: number }>; anchors: Array<[string, string]>; common: { image: string; image_sha256: string } }
+    const view = async (n: number, images: number): Promise<{ snap: Snap; img: ImgSnap }> => {
+      const snap = await visit(page, `#/token/${I}/${ds(n)}/3`);
+      await page.waitFor(`document.images.length === ${images} && [...document.images].every((i) => i.complete && i.naturalWidth > 0)`, 30_000, `images of ${n}`);
+      const img = await page.eval<ImgSnap>(IMG);
+      for (const [href, text] of img.anchors) {
+        expect(href, text).toMatch(/^#\//); // the page's own routes only
+        expect(text).not.toContain("img.example");
+      }
+      expect(snap.hrefs.some((h) => h.includes("img.example"))).toBe(false);
+      return { snap, img };
+    };
+    const URL_TEXT = (n: string) => `URL (text, not a link) ${url(n)}`;
+
+    const v = await view(1, 1);
+    expect([v.img.status, v.img.kind, v.img.url]).toEqual(["verified", "ok", URL_TEXT("v.png")]);
+    expect(v.img.msg).toBe("\u2713 verified: the image's SHA-256 equals the token's image_sha256");
+    expect(v.img.imgs).toEqual([{ src: `/v1/images/${sha(PNG).toString("hex")}`, w: 1, h: 1 }]);
+    expect(v.snap.view).not.toContain("not verified");
+    expect(v.img.common.image).toBe(`verified${url("v.png")}`);
+    expect(v.img.common.image_sha256).toBe(`${sha(PNG).toString("hex")}  (32 bytes)`);
+    await shot(page, "token-image-verified.png");
+
+    const u = await view(2, 1);
+    expect([u.img.status, u.img.kind, u.img.url]).toEqual(["unverified", "warning", URL_TEXT("u.gif")]);
+    expect(u.img.msg).toBe("\u26a0 not verified: the token sets no usable image_sha256, so nothing ties this image to the token, and its host can change it at any time");
+    expect(u.img.imgs).toEqual([{ src: `/v1/images/${sha(GIF).toString("hex")}`, w: 1, h: 1 }]);
+    expect(u.img.common.image_sha256).toBe("not set");
+    await shot(page, "token-image-unverified.png");
+
+    const m = await view(3, 0);
+    expect([m.img.status, m.img.kind, m.img.url, m.img.imgs]).toEqual(["mismatch", "warning", URL_TEXT("m.png"), []]);
+    expect(m.img.msg).toBe("\u26a0 not displayed: the content at this URL does not match the token's image_sha256 (it may have been replaced)");
+    expect(m.snap.attrs.some((a) => a.includes(sha(OTHER).toString("hex")) || a.includes("/v1/images/"))).toBe(false);
+    await shot(page, "token-image-mismatch.png");
+
+    const x = await view(4, 0);
+    expect([x.img.status, x.img.kind, x.img.url, x.img.imgs]).toEqual(["not-image", "warning", URL_TEXT("x.svg"), []]);
+    expect(x.img.msg).toBe("\u26a0 not displayed: the URL does not serve a PNG, JPEG, GIF or WebP image");
+
+    const r = await view(5, 0);
+    expect([r.img.status, r.img.kind, r.img.msg, r.img.url, r.img.imgs]).toEqual(["unreachable", "note", "no image: the indexer could not fetch it; it tries again later", URL_TEXT("gone.png"), []]);
+    const p = await view(6, 0);
+    expect([p.img.status, p.img.kind, p.img.msg, p.img.url, p.img.imgs]).toEqual(["pending", "note", "no image yet: the indexer has not checked it", URL_TEXT("later.png"), []]);
+    for (const neutral of [r, p]) expect(neutral.snap.view).not.toMatch(/\u26a0 not (verified|displayed)/);
+
+    // An image that is text, not a URI, is unusable: no image section, "unusable" in the common fields and the fields
+    // table, its value drawn nowhere; no image key at all: "not set".
+    const ti = await view(7, 0);
+    expect([ti.img.status, ti.img.common.image]).toEqual([null, "unusable \u2014 no value shown"]);
+    expect(ti.snap.text).not.toContain(url("t.png"));
+    const ni = await view(8, 0);
+    expect([ni.img.status, ni.img.common.image, ni.img.common.image_sha256]).toEqual([null, "not set", "not set"]);
+
+    // Requests: the page's assets, the API, and exactly the two checked images of this origin; never the image host.
+    const paths = expectOnlyApiCalls(page, base);
+    expect(new Set(paths.filter((x) => x.startsWith("/v1/images/")))).toEqual(new Set([`/v1/images/${sha(PNG).toString("hex")}`, `/v1/images/${sha(GIF).toString("hex")}`]));
+    expect(page.requests.some((q) => q.url.includes("img.example"))).toBe(false);
+    expect(await page.eval<Json>("window.__pwned === undefined ? null : window.__pwned")).toBeNull();
+    await expectCleanConsole(page);
+
+    // CSP img-src 'self': an image from anywhere else is refused by the browser (reported as a violation).
+    const outcome = await page.eval<string[]>(`Promise.all(["http://127.0.0.1:9/x.png", "data:image/gif;base64,${GIF.toString("base64")}"].map((src) => new Promise((done) => {
+      const i = document.createElement("img");
+      i.onload = () => done("loaded " + src.slice(0, 5));
+      i.onerror = () => done("refused " + src.slice(0, 5));
+      i.src = src;
+    })))`);
+    expect(outcome).toEqual(["refused http:", "refused data:"]);
+    await page.waitFor("window.__cspViolations.length >= 2");
+    expect((await page.eval<string[]>("window.__cspViolations")).map((x) => x.split(" ")[0])).toEqual(["img-src", "img-src"]);
   }, 300_000);
 });

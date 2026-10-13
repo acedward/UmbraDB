@@ -723,7 +723,7 @@ describe("MIP-0018 token images", () => {
     expect(rows.map((r) => [r.status, r.content])).toEqual([1, 2, 3].map((n) => ["unverified", sha(pngN(100 + n))]));
   }, 120_000);
 
-  it("[[mip0018.images.endpoint]] GET /v1/images/{id} serves only verified and unverified raster bytes by their SHA-256, with the detected Content-Type, nosniff, a sandbox CSP and an immutable Cache-Control (HEAD: headers only); mismatch and not-image content, unknown ids and stored bytes whose type no longer matches are 404, a malformed id 400; token list, contract and identity JSON carry image { url (text), status, imageUrl (same-origin, only when displayable) } — pending until checked, null without a usable image; serve() runs the fetcher with the scan loop (never with --api-only or --no-image-fetch)", async () => {
+  it("[[mip0018.images.endpoint]] GET /v1/images/{id} serves only verified and unverified raster bytes by their SHA-256, with the detected Content-Type, nosniff, a sandbox CSP and an immutable Cache-Control (HEAD: headers only); mismatch and not-image content, unknown ids and stored bytes whose type no longer matches are 404, a malformed id 400; token list, contract and identity JSON carry image { url (text), status, imageUrl (same-origin, only when displayable) } — pending until checked, null without a usable image — and the identity's commonFields carry the image keys; serve() runs the fetcher with the scan loop (never with --api-only or --no-image-fetch)", async () => {
     const db = await fresh("api");
     const cases: Array<[number, MetadataRecord[]]> = [
       [1, img("http://img.test/ok.png", createHash("sha256").update(PNG).digest())],
@@ -770,6 +770,12 @@ describe("MIP-0018 token images", () => {
     expect(Object.fromEntries(contract.items.map((i) => [parseInt(i.domainSep, 16), i.image]))).toEqual(expected);
     for (const [n, image] of Object.entries(expected))
       expect((await json(`/v1/identities/${C}/${ds(Number(n))}/3`)).image, n).toEqual(image);
+    // The image keys are common fields: commonFields carries them (usable or not), so a client never pages for them.
+    const common = async (n: number) => ((await json(`/v1/identities/${C}/${ds(n)}/3`)).commonFields as Array<{ key: { utf8: string }; usable: boolean }>)
+      .map((f) => [f.key.utf8, f.usable]);
+    expect(await common(1)).toEqual([["image", true], ["image_sha256", true]]);
+    expect(await common(6)).toEqual([["image", false]]); // text, not a URI: unusable, so no image object
+    expect(await common(7)).toEqual([["name", true]]);
 
     // The image bytes: same origin, raster type from the bytes, no sniffing, no script, cacheable.
     for (const [path, bytes, type] of [[png, PNG, "image/png"], [jpg, JPEG, "image/jpeg"], [png.toUpperCase().replace("/V1/IMAGES/", "/v1/images/"), PNG, "image/png"]] as const) {

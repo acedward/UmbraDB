@@ -53,7 +53,7 @@ describe("MIP-0018 explorer page: build/test guard", () => {
     }
   }, 60_000);
 
-  it("[[mip0018.ui.page-guard]] the served document parses: one inline script and one inline style whose SHA-256 are the CSP's, the script compiles, pure ASCII, no inline handler/style attribute/external reference, every id the script uses exists once, and the script has no markup sink, no other network client, no clock and only /v1 API paths", async () => {
+  it("[[mip0018.ui.page-guard]] the served document parses: one inline script and one inline style whose SHA-256 are the CSP's, the script compiles, pure ASCII, no inline handler/style attribute/external reference, every id the script uses exists once, and the script has no markup sink, no other network client, no clock and only /v1 API paths; its one image source is the API's same-origin imageUrl, checked against /v1/images/{64 hex}", async () => {
     const h = await serve({ sql: NO_SQL, network: "stagenet", apiOnly: true, port: 0, log: () => {} });
     handles.push(h);
     const base = `http://127.0.0.1:${h.port}`;
@@ -140,12 +140,18 @@ describe("MIP-0018 explorer page: build/test guard", () => {
     for (const [re, what] of forbidden) expect(re.test(code), what).toBe(false);
     expect([...code.matchAll(/\bfetch\(/g)]).toHaveLength(1);
     expect([...code.matchAll(/\.href\s*=/g)]).toHaveLength(1); // link(): hash routes built from validated hex
+    // Images: one <img>, whose only source is the API's imageUrl once it matches this origin's /v1/images/{64 hex}.
+    expect([...code.matchAll(/\.src\s*=/g)]).toHaveLength(1);
+    expect([...code.matchAll(/createElement\(\s*["']img["']\s*\)/g)]).toHaveLength(1);
+    expect(code).toContain("var IMAGE_PATH = /^\\/v1\\/images\\/[0-9a-f]{64}$/;");
+    expect(code).toMatch(/IMAGE_PATH\.test\(img\.imageUrl\)[\s\S]{0,600}pic\.src = img\.imageUrl;/);
+    expect(/\.(srcset|srcdoc)\b|new\s+Image\b|background(-image)?\s*[:=]|url\(/.test(code), "another image source").toBe(false);
     expect(code).toContain('var API = "/v1";');
     const firstSegments = [...code.matchAll(/apiPath\(\s*\[\s*"([a-z]+)"/g)].map((m) => m[1]!);
     expect(new Set(firstSegments)).toEqual(new Set(["status", "tokens", "identities", "contracts", "events"]));
     // The endpoints the header comment declares are the API's (API.md), the two activity endpoints included.
     const declared = [...script.matchAll(/^ \*   GET (\/v1\/\S+)/gm)].map((m) => m[1]!.split("?")[0]!);
-    expect(declared).toEqual(["/v1/status", "/v1/tokens", "/v1/tokens/{color}", "/v1/identities/{contract}/{domainSep}/{kind}", "/v1/contracts/{address}/tokens", "/v1/events", "/v1/tokens/{color}/activity", "/v1/contracts/{address}/activity"]);
+    expect(declared).toEqual(["/v1/status", "/v1/tokens", "/v1/tokens/{color}", "/v1/identities/{contract}/{domainSep}/{kind}", "/v1/contracts/{address}/tokens", "/v1/events", "/v1/tokens/{color}/activity", "/v1/contracts/{address}/activity", "/v1/images/{id}"]);
     const apiMd = readFileSync(new URL("token-indexer/API.md", REPO), "utf8");
     for (const p of declared.filter((d) => !d.endsWith("/activity"))) expect(apiMd, p).toContain(`GET ${p}`);
     expect(apiMd).toContain("/v1/tokens/{color}/activity");

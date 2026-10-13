@@ -54,7 +54,8 @@ const BODY = `<header>
 <main id="view" aria-live="polite"></main>
 <footer class="foot">Every value is read from this indexer's API; heights only. Names and symbols are claims that
   each contract makes about its own tokens, not curation; standards tags are self-declared. URI values are shown as
-  text and never fetched.</footer>`;
+  text, never as links; a token image is shown only from this indexer, after its image fetcher checked it, with a
+  warning when it is not verified.</footer>`;
 
 export function sha256Source(text: string): string {
   return `'sha256-${createHash("sha256").update(text, "utf8").digest("base64")}'`;
@@ -62,9 +63,10 @@ export function sha256Source(text: string): string {
 
 /**
  * The page's Content-Security-Policy: nothing loads unless named here — this page's own script and style (by hash),
- * fetches, the font and the icon from this origin only. Trusted Types with no policy make every HTML-parsing sink
- * (`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, …) throw in the browser, so a regression that
- * assigned markup could not render it.
+ * fetches, the font, the icon and token images (`img-src 'self'`: only the indexer's checked `/v1/images/{id}` bytes)
+ * from this origin only. Trusted Types with no policy make every HTML-parsing sink (`innerHTML`, `outerHTML`,
+ * `insertAdjacentHTML`, `document.write`, …) throw in the browser, so a regression that assigned markup could not
+ * render it.
  */
 export const UI_CSP = [
   "default-src 'none'",

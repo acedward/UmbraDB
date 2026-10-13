@@ -15,14 +15,18 @@
  *   GET /v1/events?contract=&tx=&limit=&cursor=
  *   GET /v1/tokens/{color}/activity?limit=&cursor=        (a 404 means "not served by this API")
  *   GET /v1/contracts/{address}/activity?limit=&cursor=   (a 404 means "not served by this API")
+ *   GET /v1/images/{id}                                   (an <img> source only: the imageUrl the API gives)
  *
  * Safety properties (MIP-0018 Security considerations, "Untrusted input"): every value reaches the
  * document as a text node or through a DOM property (textContent, title) \u2014 nothing is ever parsed as
  * markup; characters that change the layout of the text around them or cannot be seen (bidi controls,
  * zero-width characters, C0/C1 controls incl. NUL, tag characters, lone surrogates \u2026) are drawn as a
- * visible mark such as "\u27e8U+202E\u27e9"; every value has a drawing budget; a URI value is text, never fetched
- * and never a link; the only links are this page's own hash routes, built from validated hex. Heights
- * only: this script reads no clock and draws no date.
+ * visible mark such as "\u27e8U+202E\u27e9"; every value has a drawing budget; a URI value is text, never
+ * fetched by this page and never a link; the only links are this page's own hash routes, built from
+ * validated hex. The only images are this origin's /v1/images/{id} paths that the API gives as a token's
+ * imageUrl (bytes the indexer's image fetcher checked), drawn as <img> under the warning of their status;
+ * the page's CSP allows images from this origin only (img-src 'self'). Heights only: this script reads
+ * no clock and draws no date.
  */
 (function () {
   "use strict";
@@ -38,6 +42,7 @@
   var FIELDS_MAX = 500;                   // fields read and drawn per identity (the API pages them)
   var REASONS_MAX = 20;                   // rejection reasons named in a tooltip
   var ZERO = "0000000000000000000000000000000000000000000000000000000000000000";
+  var IMAGE_PATH = /^\/v1\/images\/[0-9a-f]{64}$/; // the only image source: a checked image of this origin
   var REFRESH_MS = refreshInterval();
 
   var state = {
@@ -742,7 +747,11 @@
     var v = f.value || {};
     if (own(v, "text") && v.text !== null) {
       var n = h("span", "val", data(v.text, VALUE_MAX, key));
-      if (f.valTypeName === "uri") n.appendChild(h("span", "note", "  (URI: text only, never fetched or followed)"));
+      if (f.valTypeName === "uri") {
+        n.appendChild(h("span", "note", f.key && f.key.utf8 === "image"
+          ? "  (URI: text only, never followed; the indexer checks the image, see image)"
+          : "  (URI: text only, never fetched or followed)"));
+      }
       return n;
     }
     if (own(v, "integer") && v.integer !== null) return h("span", "mono", data(v.integer, 80));
@@ -763,7 +772,53 @@
     for (var i = 0; i < fields.length; i++) {
       if (fields[i] && fields[i].key && fields[i].key.utf8 === k) return fieldValue(fields[i], null);
     }
-    return h("span", "no", k === "standards" ? "not set: no standards claimed" : "not set (no default is assumed)");
+    return h("span", "no", k === "standards" ? "not set: no standards claimed" : k === "image" || k === "image_sha256" ? "not set" : "not set (no default is assumed)");
+  }
+
+  // A token's image (MIP-0018 image / image_sha256), as the API's image object says: the image only for a
+  // verified or unverified check, an unverified one with a visible warning; a mismatch or a file that is not
+  // a raster image only as a warning (no image, no link); unreachable or not yet checked as a neutral note.
+  // The URL is text, never a link; the only source ever loaded is the API's same-origin imageUrl.
+  var IMAGE_TEXT = {
+    "verified": ["ok", "\u2713 verified: the image's SHA-256 equals the token's image_sha256"],
+    "unverified": ["warning", "\u26a0 not verified: the token sets no usable image_sha256, so nothing ties this image to the token, and its host can change it at any time"],
+    "mismatch": ["warning", "\u26a0 not displayed: the content at this URL does not match the token's image_sha256 (it may have been replaced)"],
+    "not-image": ["warning", "\u26a0 not displayed: the URL does not serve a PNG, JPEG, GIF or WebP image"],
+    "unreachable": ["note", "no image: the indexer could not fetch it; it tries again later"],
+    "pending": ["note", "no image yet: the indexer has not checked it"]
+  };
+  function imageOf(t) {
+    var i = t && t.image;
+    return i && typeof i === "object" && typeof i.url === "string" && typeof i.status === "string" ? i : null;
+  }
+  function imageSection(img) {
+    var sec = section("image", "image");
+    var box = h("div", "imgbox");
+    var st = own(IMAGE_TEXT, img.status) ? img.status : "pending";
+    var displayable = (st === "verified" || st === "unverified") && typeof img.imageUrl === "string" && IMAGE_PATH.test(img.imageUrl);
+    box.setAttribute("data-image-status", st);
+    if (displayable) {
+      var pic = document.createElement("img");
+      pic.className = "logo";
+      pic.alt = "token image (" + st + ")";
+      pic.referrerPolicy = "no-referrer";
+      pic.decoding = "async";
+      pic.src = img.imageUrl;
+      box.appendChild(pic);
+    }
+    var t = displayable || (st !== "verified" && st !== "unverified") ? IMAGE_TEXT[st] : ["note", "no image: the API gave no image of this origin to show"];
+    var msg = h("div", t[0] === "warning" ? "img-msg img-warn" : t[0] === "ok" ? "img-msg img-ok" : "img-msg", t[1]);
+    msg.setAttribute("data-image-msg", t[0]);
+    box.appendChild(msg);
+    box.appendChild(h("div", "img-url", [h("span", "note", "URL (text, not a link) "), data(img.url, VALUE_MAX, "image:url")]));
+    sec.appendChild(box);
+    return sec;
+  }
+  function imageSummary(img) {
+    var st = own(IMAGE_TEXT, img.status) ? img.status : "pending";
+    var label = h("span", IMAGE_TEXT[st][0] === "warning" ? "badge warn" : IMAGE_TEXT[st][0] === "ok" ? "badge ok" : "badge", st);
+    setTitle(label, IMAGE_TEXT[st][1]);
+    return h("span", null, [label, data(img.url, CELL_MAX)]);
   }
 
   function eventsSection(main, ev, withContract, title) {
@@ -890,6 +945,8 @@
     head.appendChild(sub);
     if (!t.described) head.appendChild(h("div", "note gap", "Not described: this token has no MIP-0018 metadata; it is listed because a mint of it was indexed."));
     main.appendChild(head);
+    var img = imageOf(t);
+    if (img !== null) main.appendChild(imageSection(img));
 
     var id = section("identity");
     var g = kv(id);
@@ -913,6 +970,8 @@
     kvRow(cg, "symbol", commonValue(t, "symbol"));
     kvRow(cg, "decimals", commonValue(t, "decimals"));
     kvRow(cg, "standards", commonValue(t, "standards"));
+    kvRow(cg, "image", img !== null ? imageSummary(img) : commonValue(t, "image"));
+    kvRow(cg, "image_sha256", commonValue(t, "image_sha256"));
     main.appendChild(cs);
 
     var fs = section("current fields", "fields");

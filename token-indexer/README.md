@@ -17,6 +17,10 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
   Node's `Intl.Segmenter`) before they are stored — the stored, served and grouped value is the cut one — symbol groups,
   the color lookup (`rawTokenType(domainSep, contractAddress)`), zero extension of trimmed ledger data. An event with
   any other name (other versions of this one included) is ignored like any other `Misc` event.
+- **Explorer page** (`mip0018/ui/`, at `/ui`): a token's image is shown on its view as checked — verified: the image;
+  unverified: the image with a "not verified" warning; a hash mismatch or a file that is not a raster image: a warning,
+  no image and no link; not reachable or not checked yet: a neutral note. The URL is always text, never a link, and
+  the page loads images from the indexer's own origin only (CSP `img-src 'self'`).
 - **Beyond the MIP**: hard-coded NIGHT and DUST rows, "seen" tokens (any color in public data, also without a known
   mint), each token's activity (mints, UTXOs created/spent, contract in/out, shielded offer deltas, metadata
   transactions) with Bech32m wallet addresses, and a ✓/⚠ mark per token (✓ = usable `name`, `symbol`, `decimals`, no
@@ -131,7 +135,7 @@ network: Stagenet data comes from recorded fixtures, and the image fetcher's tes
 | Recorded live range = replay | `test/mip0018-live-range.test.ts` |
 | Conformance table, the no-network check (only the image fetcher may use the network) and the fetcher's isolation | `test/mip0018-conformance.test.ts` |
 | Token images: address policy, statuses, SSRF refusals, caps, limits, resume, `/v1/images/{id}` | `test/mip0018-images.test.ts` |
-| API and page | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
+| API (defined keys only, cut `name`/`symbol` in every answer, the `image` object) and page (routes, hostile text, every image status in a real browser) | `test/mip0018-api.test.ts`, `test/mip0018-ui-*.test.ts` |
 
 Fixtures:
 
