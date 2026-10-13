@@ -224,19 +224,27 @@ describe("MIP-0018 read-only API", () => {
     expect(r.status).toBe(200);
     expect(r.json).toEqual({
       network: NET, genesisHash: loadManifest().genesisHash, startHeight: 714485, indexedHeight: 715183, archiveHeight: 715183,
-      mip: { id: "MIP-0018", pr: 372, url: "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372", checkedHead: MIP_PIN.checkedHead },
+      mip: {
+        id: "MIP-0018", repository: "midnightntwrk/midnight-improvement-proposals", commit: MIP_PIN.commit, path: "mips/mip-0018-on-chain-token-metadata.md",
+        sha256: MIP_PIN.sha256, url: `https://github.com/midnightntwrk/midnight-improvement-proposals/blob/${MIP_PIN.commit}/mips/mip-0018-on-chain-token-metadata.md`,
+        pr: "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372",
+      },
       vendored: { ...VENDORED_REFERENCE }, scanner: "off", unresolvedEvents: 0,
     });
     expect(KNOWN_GENESIS.stagenet).toBe(loadManifest().genesisHash);
     const source = readFileSync(new URL("token-indexer/vendor/mip0018/SOURCE.md", REPO), "utf8");
     expect(source).toContain(`| Pinned at | **\`${VENDORED_REFERENCE.commit}\`**`);
-    // The checked head is a full commit id, and the docs name the same PR and head.
-    expect(MIP_PIN.checkedHead).toMatch(/^[0-9a-f]{40}$/);
-    for (const doc of ["token-indexer/README.md", "token-indexer/API.md", "token-indexer/CONFORMANCE.md"]) {
+    // The pin is a full commit id and a file SHA-256, and the docs name the same text, commit, hash and PR.
+    expect(MIP_PIN.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(MIP_PIN.sha256).toMatch(/^[0-9a-f]{64}$/);
+    for (const doc of ["token-indexer/README.md", "token-indexer/API.md", "token-indexer/CONFORMANCE.md", "token-indexer/vendor/mip0018/SOURCE.md"]) {
       const text = readFileSync(new URL(doc, REPO), "utf8");
-      expect(text, doc).toContain(MIP_PIN.url);
-      expect(text, doc).toContain(MIP_PIN.checkedHead);
+      for (const v of [MIP_PIN.url, MIP_PIN.commit, MIP_PIN.pr]) expect(text, doc).toContain(v);
+      if (doc !== "token-indexer/vendor/mip0018/SOURCE.md") expect(text, doc).toContain(MIP_PIN.sha256);
     }
+    // UmbraDB's own vectors carry the same pin.
+    const own = JSON.parse(readFileSync(new URL("token-indexer/mip0018/vectors-umbradb/manifest.json", REPO), "utf8"));
+    expect(own.mip).toEqual({ ...MIP_PIN });
     // Headers of every JSON answer.
     expect(r.headers.get("content-type")).toBe("application/json; charset=utf-8");
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");

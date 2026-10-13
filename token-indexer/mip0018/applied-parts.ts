@@ -15,7 +15,7 @@
  * offers, Zswap offer deltas, unshielded transcript effects) are collected for the seen-token list; amounts and colors
  * are sorted so that the ledger's random `Map` order never leaks into stored rows.
  *
- * Authority: MIP-0018 as in PR #372:
+ * Authority: MIP-0018 as merged from PR #372:
  * - "Applying records": within a transaction, events are in the ledger's execution order — the guaranteed part of
  *   every intent (in ascending segment id), then each successful fallible segment (in ascending segment id); within
  *   a part, actions and their operations in order.

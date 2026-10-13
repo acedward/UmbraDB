@@ -4,8 +4,9 @@ The API serves what the MIP-0018 scan stored in Postgres (schema `mip0018`): the
 that is minted or described, the colors seen in public data, the current metadata fields, symbol groups, ✓/⚠ marks,
 the color lookup and the chain events with their classification.
 
-Authority: MIP-0018 as in [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372) (followed as it moves; checked against its head
-`338ea194bbe7c4e5d1829234a503b7c1b11ebf0f`). The explorer page uses only these endpoints.
+Authority: [MIP-0018](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md) on `midnightntwrk/midnight-improvement-proposals` `main` at
+`eb94bc182221cd937a84ed66a5f903b060f165ab`, as merged from [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372) (file SHA-256
+`8d4204e7aa24428faa44740ba99612f5556f628347c50e38903e4bea83f17245`). The explorer page uses only these endpoints.
 
 - Server: `node:http`, no framework. `GET` and `HEAD` only. Read-only: every request runs in one
   `REPEATABLE READ READ ONLY` transaction, so all parts of one answer come from one database state.
@@ -239,7 +240,10 @@ envelope.
   "startHeight": 714485,
   "indexedHeight": 715183,
   "archiveHeight": 715183,
-  "mip": { "id": "MIP-0018", "pr": 372, "url": "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372", "checkedHead": "338ea194bbe7c4e5d1829234a503b7c1b11ebf0f" },
+  "mip": { "id": "MIP-0018", "repository": "midnightntwrk/midnight-improvement-proposals", "commit": "eb94bc182221cd937a84ed66a5f903b060f165ab",
+           "path": "mips/mip-0018-on-chain-token-metadata.md", "sha256": "8d4204e7aa24428faa44740ba99612f5556f628347c50e38903e4bea83f17245",
+           "url": "https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md",
+           "pr": "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372" },
   "vendored": { "repository": "https://github.com/midnight-experiments/mip-0018", "commit": "e8295792d9363be37ff2f7f716c740fcdf3f195e" },
   "scanner": "following",
   "unresolvedEvents": 0
@@ -248,8 +252,8 @@ envelope.
 
 `startHeight` = the scan's first height, `indexedHeight` = the last scanned height (the scan cursor), `archiveHeight`
 = the chain archive's last height (all `null` before anything is scanned/archived). `genesisHash` is the configured
-network's (`null` when unknown). `mip` names the MIP text the indexer implements: the proposal PR it follows and
-`checkedHead`, the PR head commit this build was checked against. `vendored` is the reference commit the codec and
+network's (`null` when unknown). `mip` names the MIP text the indexer implements: the file (`path`, its `sha256`) at
+`commit` of `repository`'s `main`, the commit that merged `pr`. `vendored` is the reference commit the codec and
 vectors are copied from. `scanner`: `following` (this process runs the scan loop), `stalled` (the loop's last
 attempt failed; it retries), `off` (API only). `unresolvedEvents` = the stored `log` ops whose logged value the raw
 transaction does not show (`unresolved` in `/v1/events`; never applied — while a contract has one, its tokens'

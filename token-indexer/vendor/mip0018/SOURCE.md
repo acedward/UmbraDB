@@ -11,7 +11,7 @@ below in CI and fails on any modified, missing or unlisted file.
 | Pinned at | **`e8295792d9363be37ff2f7f716c740fcdf3f195e`** (2026-10-03) |
 | License | Apache-2.0 (upstream `LICENSE` and `NOTICE` vendored next to this file; UmbraDB is Apache-2.0 too) |
 | MIP text the upstream files are written against | MIP-0018 @ `274a84f221bcfc17e4b73e2c8b32fd8c028ea092` (per-key tombstones) |
-| MIP text UmbraDB implements | MIP-0018 as in [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372) (followed as it moves; `token-indexer/README.md` states what UmbraDB applies on top of the vendored codec) |
+| MIP text UmbraDB implements | [MIP-0018](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md) at `eb94bc182221cd937a84ed66a5f903b060f165ab` (`main`, as merged from [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372)); `token-indexer/README.md` states what UmbraDB applies on top of the vendored codec |
 
 Vendored parts:
 

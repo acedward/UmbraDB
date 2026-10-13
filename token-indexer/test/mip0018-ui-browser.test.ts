@@ -24,6 +24,7 @@ import { ChainArchiveSyncService } from "../../chain-archive-sync/sync-service.j
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { type ArchiveTape, startFakeChain } from "../../test/integration/fixtures/stagenet-archive/fake-chain-server.js";
 import { loadCaseIndex, loadRangeTape } from "../../test/integration/fixtures/stagenet-archive/stagenet-fixtures.js";
+import { MIP_PIN } from "../mip0018/api-views.ts";
 import { Mip0018Scanner } from "../mip0018/scan.ts";
 import { serve, type ServeHandle } from "../mip0018/serve-cli.ts";
 import { walletAddress } from "../mip0018/bech32m.ts";
@@ -362,6 +363,7 @@ describe("MIP-0018 explorer page in a real browser", () => {
     expect((await visit(page, "#/builtin/DUST")).view).toContain("DUST has no color and no activity rows.");
     const ss = await visit(page, "#/status");
     expect(ss.view).toContain("715183");
+    expect(ss.view).toMatch(new RegExp(`MIP\\s+MIP-0018 @ ${MIP_PIN.commit}`)); // the MIP text the API names
     expect(ss.strip).toMatch(/net: stagenet\s+\u00b7\s+indexed 715183/);
     expect((await visit(page, "#/nope")).view).toContain("no such page");
 

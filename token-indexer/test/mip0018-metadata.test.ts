@@ -9,7 +9,7 @@
  * shared rows, a partial token, a 31-byte integer).
  *
  * Expectations: the reference's case files (copied verbatim into `fixtures/mip0018-cases/`, SHA-256 checked against
- * that folder's `SOURCE.md`), and UmbraDB's own file where MIP-0018 as in PR #372 changes one
+ * that folder's `SOURCE.md`), and UmbraDB's own file where MIP-0018 as merged from PR #372 changes one
  * (`fixtures/mip0018-cases-umbradb/`: C07's non-UTF-8-key event is rejected). Single-member groups are excluded on both
  * sides.
  */

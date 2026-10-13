@@ -38,14 +38,17 @@ import {
 import { type BuiltinToken, builtinTokens, lookupColor } from "./tokens.ts";
 
 /**
- * MIP-0018 text UmbraDB implements: midnightntwrk/midnight-improvement-proposals PR #372, followed as it moves;
- * `checkedHead` = the PR head commit this build was checked against.
+ * The MIP-0018 text UmbraDB implements: `path` on midnightntwrk/midnight-improvement-proposals `main` at `commit`, the
+ * commit that merged PR #372 (`pr`); `sha256` is the file's SHA-256 at that commit.
  */
 export const MIP_PIN = {
   id: "MIP-0018",
-  pr: 372,
-  url: "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372",
-  checkedHead: "338ea194bbe7c4e5d1829234a503b7c1b11ebf0f",
+  repository: "midnightntwrk/midnight-improvement-proposals",
+  commit: "eb94bc182221cd937a84ed66a5f903b060f165ab",
+  path: "mips/mip-0018-on-chain-token-metadata.md",
+  sha256: "8d4204e7aa24428faa44740ba99612f5556f628347c50e38903e4bea83f17245",
+  url: "https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md",
+  pr: "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372",
 } as const;
 /** The reference commit the codec, vectors and runner are vendored from (`token-indexer/vendor/mip0018/SOURCE.md`). */
 export const VENDORED_REFERENCE = { repository: "https://github.com/midnight-experiments/mip-0018", commit: "e8295792d9363be37ff2f7f716c740fcdf3f195e" } as const;
@@ -809,7 +812,7 @@ export interface StatusJson {
   startHeight: number | null;
   indexedHeight: number | null;
   archiveHeight: number | null;
-  mip: { id: "MIP-0018"; pr: number; url: string; checkedHead: string };
+  mip: { id: "MIP-0018"; repository: string; commit: string; path: string; sha256: string; url: string; pr: string };
   vendored: { repository: string; commit: string };
   scanner: ScannerState;
   /**

@@ -13,8 +13,8 @@
  * - every case contract's metadata transactions = the transactions the reference index lists for it.
  *
  * Expectations are never edited: verbatim copies of the reference's case files in `fixtures/mip0018-cases/` (SHA-256
- * checked against that folder's `SOURCE.md`), read through `fixtures/mip0018-cases-umbradb/` where MIP-0018 as in
- * PR #372 changes them (C07's non-UTF-8-key event; see its README). Single-member groups are excluded on both sides.
+ * checked against that folder's `SOURCE.md`), read through `fixtures/mip0018-cases-umbradb/` where MIP-0018 as merged
+ * from PR #372 changes them (C07's non-UTF-8-key event; see its README). Single-member groups are excluded on both sides.
  */
 import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";

@@ -2,7 +2,7 @@
 /**
  * UmbraDB's MIP-0018 conformance run: the vendored runner, unchanged, over
  *   1. the vendored vectors except the ids UmbraDB keeps its own versions of, and
- *   2. UmbraDB's own versions of those ids (`./vectors-umbradb`: vectors whose expectation MIP-0018 as in PR #372
+ *   2. UmbraDB's own versions of those ids (`./vectors-umbradb`: vectors whose expectation MIP-0018 as merged from PR #372
  *      changes; see its README),
  * so each id runs exactly once, from UmbraDB's version when one exists.
  *

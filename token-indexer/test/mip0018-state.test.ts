@@ -1,5 +1,5 @@
 /**
- * UmbraDB's MIP-0018 state rules (MIP-0018 as in PR #372), beyond what the vectors cover: per-key tombstones at row
+ * UmbraDB's MIP-0018 state rules (MIP-0018 as merged from PR #372), beyond what the vectors cover: per-key tombstones at row
  * level, "not referenced at all", chain order, rollback, common fields, display and the mark.
  */
 import { describe, expect, it } from "vitest";

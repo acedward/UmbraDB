@@ -6,8 +6,10 @@ metadata in Postgres, and serves it as a read-only JSON API and an explorer page
 
 ## What it implements
 
-- **MIP-0018 as in [`midnightntwrk/midnight-improvement-proposals` PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372)** (followed as it moves; checked
-  against its head `338ea194bbe7c4e5d1829234a503b7c1b11ebf0f`): `Misc` events named exactly
+- **[MIP-0018](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md) as merged from
+  [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372)** (`midnightntwrk/midnight-improvement-proposals` `main` at
+  `eb94bc182221cd937a84ed66a5f903b060f165ab`; file SHA-256 `8d4204e7aa24428faa44740ba99612f5556f628347c50e38903e4bea83f17245`):
+  `Misc` events named exactly
   `mip-0018:token-metadata[v1]`, the payload checks, value types, keys that MUST be valid UTF-8 (an event with any
   other key is rejected whole; the vendored codec checks values only, UmbraDB's `mip0018/classify.ts` adds the key
   check), latest value per key, **per-key tombstones** (a Null record deletes its field), **defined keys only** (every
@@ -164,7 +166,7 @@ vectors and the vector runner of [`midnight-experiments/mip-0018`](https://githu
 @ `e8295792d9363be37ff2f7f716c740fcdf3f195e` (Apache-2.0; `LICENSE`, `NOTICE`). `vendor/mip0018/SOURCE.md` lists every
 file with its SHA-256; `[[mip0018.vendor.provenance]]` fails on any changed, missing or unlisted file. The vendored
 files are never edited. The state rules are UmbraDB's own (`mip0018/state.ts`). Every vendored vector runs through
-both adapters, except where MIP-0018 as in PR #372 changes its expectation: UmbraDB then runs its own version with
+both adapters, except where MIP-0018 as merged from PR #372 changes its expectation: UmbraDB then runs its own version with
 the same id (`mip0018/vectors-umbradb/`, see its README; today A3c, a non-UTF-8 key). Likewise for the Stagenet cases
 (`test/fixtures/mip0018-cases-umbradb/`: C07's non-UTF-8-key event).
 
@@ -175,7 +177,7 @@ Other copies: the explorer's Outfit font and icon come from the explorer in aced
 
 | Topic | Decision |
 |---|---|
-| Authority | MIP-0018 as in PR #372 only (followed as it moves), with per-key tombstones. |
+| Authority | MIP-0018 as merged from PR #372 (`main` at `eb94bc1`) only, with per-key tombstones. |
 | Vendoring | The reference codec, vectors and runner, verbatim (`vendor/mip0018/SOURCE.md`); the state rules are UmbraDB's own. |
 | Events | Decoded from archived raw transactions, applied parts only, with the ledger's `decode_event` rule; the indexer's `contractEvents` is a test cross-check; logs the raw transaction does not show are stored as `unresolved`, never applied. |
 | State | Latest value per key, no history; a tombstone deletes its key; every key stored with a `defined` flag, only defined keys served; an identity without a defined key is not referenced; shared entries derived from the defined field rows. |

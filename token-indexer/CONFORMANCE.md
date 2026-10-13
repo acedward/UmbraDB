@@ -6,7 +6,7 @@ listed and marked not applicable.
 
 | | |
 |---|---|
-| MIP pin | [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372) (followed as it moves), checked against head `338ea194bbe7c4e5d1829234a503b7c1b11ebf0f` |
+| MIP pin | [`midnightntwrk/midnight-improvement-proposals@eb94bc182221cd937a84ed66a5f903b060f165ab` `mips/mip-0018-on-chain-token-metadata.md`](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/eb94bc182221cd937a84ed66a5f903b060f165ab/mips/mip-0018-on-chain-token-metadata.md) (`main`, as merged from [PR #372](https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372)), SHA-256 `8d4204e7aa24428faa44740ba99612f5556f628347c50e38903e4bea83f17245` |
 | Rows extracted from | [`midnightntwrk/midnight-improvement-proposals@274a84f221bcfc17e4b73e2c8b32fd8c028ea092` `mips/mip-0018-on-chain-token-metadata.md`](https://github.com/midnightntwrk/midnight-improvement-proposals/blob/274a84f221bcfc17e4b73e2c8b32fd8c028ea092/mips/mip-0018-on-chain-token-metadata.md) (PR #340 head), SHA-256 `e64fe1429b9f7589077f1323572cf5c3ffa90c7c96690242a9e76d2658058d8b` |
 | Rows | 36: every sentence or table row containing MUST or SHOULD outside code blocks, except the RFC 2119 boilerplate — extracted mechanically with the reference implementation's rule (`midnight-experiments/mip-0018` `tools/lib/requirements.mjs` @ `daec1f1`) |
 | Result | **26 covered, 10 not applicable** |

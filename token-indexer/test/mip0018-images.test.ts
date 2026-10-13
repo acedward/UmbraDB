@@ -449,7 +449,7 @@ describe("MIP-0018 token images", () => {
     expect(lim.reserve(["a", "c"], 0)).toBe(0);
   }, 30_000);
 
-  it("[[mip0018.images.statuses]] the background fetcher checks every image an identity names: verified (image_sha256 set and equal: PNG), unverified (no usable image_sha256, or one of 31 bytes: JPEG, WebP over IPv6), mismatch (hash differs, even for a raster), not-image (SVG, SVG served as image/png, HTML, an empty body, even when its hash matches), unreachable (404, unknown name, refused connection) retried with doubling back-off; bytes are stored only for verified and unverified rasters; a verified image is final and the others are checked again later; a failed re-check keeps the earlier result; an unusable image, and an identity that no longer exists, name nothing; the table refuses stored bytes for any other status", async () => {
+  it("[[mip0018.images.statuses]] the background fetcher checks every image an identity names: verified (image_sha256 set and equal: PNG), unverified (no usable image_sha256, or one of 31 bytes: JPEG, WebP over IPv6), mismatch (hash differs, even for a raster), not-image (SVG, SVG served as image/png, HTML, an empty body, even when its hash matches), unreachable (404, unknown name, refused connection) retried with doubling back-off; bytes are stored only for verified and unverified rasters; a verified image is final and the others are checked again later; a failed re-check keeps the earlier result; an unusable image, and a withdrawn identity, name nothing; the table refuses stored bytes for any other status", async () => {
     const db = await fresh("st");
     const seed: Array<[number, MetadataRecord[]]> = [
       [1, img("http://img.test/ok.png", createHash("sha256").update(PNG).digest())],
@@ -471,7 +471,7 @@ describe("MIP-0018 token images", () => {
       [19, img("http://img.test/ok.png?withdrawn")],
     ];
     for (const [n, recs] of seed) await publish(db, ds(n), recs);
-    // An identity that no longer exists names no image: its image deleted by a Null record (it had no other field).
+    // A withdrawn identity names no image: its image deleted by a Null record (it had no other field).
     await publish(db, ds(19), [record.tombstone("image")]);
     // Two identities naming the same image share one cache row; the same URL with another hash is another row.
     await publish(db, ds(17), img("http://img.test/ok.jpg"));

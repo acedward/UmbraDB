@@ -3,7 +3,7 @@
  * and, through `recordEffects` (with `fieldUsable`), `symbolGroups`, `displayAmount` and `tokenMark`, by the Postgres
  * apply path (`fields.ts`) and its read helpers (`metadata.ts`) — so both paths share every rule.
  *
- * Authority: MIP-0018 as in PR #372 (per-key tombstones), sections "Keys", "Applying records", "Common fields" and
+ * Authority: MIP-0018 as merged from PR #372 (per-key tombstones), sections "Keys", "Applying records", "Common fields" and
  * "Symbol grouping": only the latest value per key, no history; groups of two or more members; a Null record deletes
  * its key's row; only defined keys are served and make an identity exist; an identity without a defined key is not
  * referenced anywhere; plus UmbraDB's ✓/⚠ marks. Classification is `classify.ts` (the vendored reference codec,
