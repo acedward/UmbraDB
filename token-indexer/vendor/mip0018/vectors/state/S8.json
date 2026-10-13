@@ -1,0 +1,51 @@
+{
+  "id": "S8",
+  "mip": {
+    "commit": "274a84f221bcfc17e4b73e2c8b32fd8c028ea092",
+    "testId": "S8"
+  },
+  "normative": true,
+  "description": "Display: with decimals = 2, the raw amount 123456 displays as 1234.56.",
+  "steps": [
+    {
+      "op": "apply",
+      "network": "testnet-a",
+      "block": 1,
+      "tx": 0,
+      "event": 0,
+      "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "Misc",
+      "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+      "payload_hex": "11111111111111111111111111111111111111111111111111111111111111110308646563696d616c7302010200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "expect": {
+    "identities": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 3,
+        "fields": {
+          "646563696d616c73": {
+            "key_text": "decimals",
+            "valType": 2,
+            "value_hex": "02",
+            "usable": true
+          }
+        }
+      }
+    ],
+    "display": [
+      {
+        "network": "testnet-a",
+        "contractAddress": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "domainSep": "1111111111111111111111111111111111111111111111111111111111111111",
+        "kind": 3,
+        "raw": "123456",
+        "decimals": "2",
+        "text": "1234.56"
+      }
+    ]
+  }
+}

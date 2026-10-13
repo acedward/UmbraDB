@@ -1,0 +1,22 @@
+{
+  "id": "A3c",
+  "mip": {
+    "commit": "eb94bc182221cd937a84ed66a5f903b060f165ab",
+    "pr": "https://github.com/midnightntwrk/midnight-improvement-proposals/pull/372",
+    "testId": "R5"
+  },
+  "normative": true,
+  "description": "Keys MUST be valid UTF-8: an event whose only record has the non-UTF-8 key ff 6b 65 79 is rejected whole (MIP Testing R5: invalid UTF-8 in a key).",
+  "basis": "UmbraDB's own version of the vendored vector A3c: the same event; the expectation follows MIP-0018 as merged from PR #372 (\"Keys MUST be valid UTF-8\"), where the vendored file accepts the key.",
+  "event": {
+    "type": "Misc",
+    "name_hex": "6d69702d303031383a746f6b656e2d6d657461646174615b76315d0000000000",
+    "payload_hex": "11111111111111111111111111111111111111111111111111111111111111110304ff6b657901026f6b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "payload_file": "A3c.bin"
+  },
+  "expect": {
+    "result": "reject",
+    "reason": "invalid-utf8",
+    "offset": 33
+  }
+}

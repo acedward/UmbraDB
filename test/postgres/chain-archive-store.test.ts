@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type UmbraDBSql } from "../../src/postgres/client.js";
 import { PgChainArchiveStore } from "../../src/postgres/chain-archive-store.js";
 import { BlobIntegrityError, BlobMissingError } from "../../src/interfaces/chain-archive-store.js";
+import { ValidationError } from "../../src/interfaces/storage-errors.js";
 import { runMigrations } from "../../src/postgres/migrate.js";
 import { chainArchiveMigrations } from "../../src/postgres/migrations/chain_archive/index.js";
 
@@ -409,6 +410,90 @@ describe("PgChainArchiveStore", () => {
         WHERE net = ${net} AND block_height = ${height}
       `;
       expect(obsRows[0]!.n).toBe(1); // the previously-missing bridge observation is now present
+    });
+  });
+
+  /**
+   * `transactions.segments` (migration `002_transaction_segments`) round-trips next to `result`,
+   * its shape is enforced in Postgres, and `putBlockBundle`'s optional `watermark` commits
+   * atomically WITH the block.
+   */
+  describe("transaction outcomes and the atomic per-block checkpoint", () => {
+    function outcomeBundle(net: string, height: number, tag: number) {
+      const blockHash = h(height, tag);
+      const block = { ...makeBlock(net, height, blockHash, h(0), tag), isCanonical: true, status: "canonical" as const, finalized: true };
+      const tx = (i: number, extra: Record<string, unknown>) => ({
+        net, txHash: h(height * 10 + i, 0x7), blockHeight: height, blockHash, position: i,
+        kind: "regular" as const, protocolVersion: 2_000_000,
+        rawBytes: new TextEncoder().encode(`tx-${net}-${height}-${i}`), ...extra,
+      });
+      return {
+        block,
+        transactions: [
+          tx(0, { result: "success" }),
+          tx(1, { result: "partial_success", segments: [{ id: 5392, success: false }, { id: 1, success: true }] }),
+          tx(2, { result: "failure", segments: null }),
+          { ...tx(3, {}), kind: "system" as const },
+        ],
+        bridgeObservations: [],
+      };
+    }
+
+    it("[[archive.store.outcomes-roundtrip]] result and per-segment outcomes round-trip (sorted by id; null = no list) and a malformed list is rejected", async () => {
+      const net = "outcomes_net";
+      const bundle = outcomeBundle(net, 950, 0xe);
+      await store.putBlockBundle(bundle);
+      const stored = await store.getTransactionsForBlock(net, bundle.block.blockHash);
+      expect(stored.map((t) => [t.result, t.segments])).toEqual([
+        ["success", undefined],
+        ["partial_success", [{ id: 1, success: true }, { id: 5392, success: false }]],
+        ["failure", undefined],
+        [undefined, undefined],
+      ]);
+      const byHash = await store.getTransactionsByHash(net, bundle.transactions[1]!.txHash);
+      expect(byHash[0]!.segments).toEqual([{ id: 1, success: true }, { id: 5392, success: false }]);
+
+      // Store-side validation names the transaction before anything is written...
+      const bad = outcomeBundle(net, 951, 0xe);
+      (bad.transactions[1] as unknown as { segments: unknown }).segments = [{ id: 1, success: true }, { id: 1, success: false }];
+      await expect(store.putBlockBundle(bad)).rejects.toBeInstanceOf(ValidationError);
+      (bad.transactions[1] as unknown as { segments: unknown }).segments = [{ id: 70_000, success: true }];
+      await expect(store.putBlockBundle(bad)).rejects.toBeInstanceOf(ValidationError);
+      expect(await store.getBlocksAtHeight(net, 951)).toHaveLength(0);
+
+      // ...and the CHECK holds the same shape inside Postgres for any other writer.
+      const txHash = Buffer.from(bundle.transactions[0]!.txHash, "hex");
+      for (const malformed of ['"[{\\"id\\":1,\\"success\\":true}]"', '{"id":1}', '[{"id":1}]', '[{"id":"1","success":true}]', '[{"id":1.5,"success":true}]', '[{"id":-1,"success":true}]', '[{"id":1,"success":"yes"}]', '[1]']) {
+        await expect(sql`UPDATE ${sql(schema)}.transactions SET segments = ${sql.json(JSON.parse(malformed) as never)}::jsonb WHERE net = ${net} AND tx_hash = ${txHash}`)
+          .rejects.toMatchObject({ code: "23514", constraint_name: "transactions_segments_shape" });
+      }
+      // (Values go through `sql.json`: a plain string bound to a jsonb parameter is stored as a JSON
+      // string scalar by postgres.js -- which is itself the first malformed case above.)
+      await sql`UPDATE ${sql(schema)}.transactions SET segments = ${sql.json([{ id: 0, success: true }, { id: 65535, success: false }])}::jsonb WHERE net = ${net} AND tx_hash = ${txHash}`;
+      expect((await store.getTransactionsByHash(net, bundle.transactions[0]!.txHash))[0]!.segments)
+        .toEqual([{ id: 0, success: true }, { id: 65535, success: false }]);
+    });
+
+    it("[[archive.store.checkpoint-atomic]] a bundle's watermark commits with the block, never without it, and never moves backwards", async () => {
+      const net = "checkpoint_net";
+      const key = `sync_cursor:${net}`;
+      await store.putBlockBundle({ ...outcomeBundle(net, 960, 0xd), watermark: { key, value: { height: 960, startHeight: 960 } } });
+      expect(await store.getWatermark(key)).toEqual({ height: 960, startHeight: 960 });
+      expect(await store.getBlocksAtHeight(net, 960)).toHaveLength(1);
+
+      // A bundle that fails part-way (a malformed segment list on its second transaction, after the
+      // block row and the first transaction were inserted) rolls back the block AND the cursor.
+      const failing = outcomeBundle(net, 961, 0xd);
+      (failing.transactions[1] as unknown as { segments: unknown }).segments = [{ id: -3, success: true }];
+      await expect(store.putBlockBundle({ ...failing, watermark: { key, value: { height: 961, startHeight: 960 } } }))
+        .rejects.toBeInstanceOf(ValidationError);
+      expect(await store.getWatermark(key)).toEqual({ height: 960, startHeight: 960 });
+      expect(await store.getBlocksAtHeight(net, 961)).toHaveLength(0);
+
+      // A re-ingest of an older height keeps the later cursor (monotonic guard inside the bundle).
+      await store.putBlockBundle({ ...outcomeBundle(net, 962, 0xd), watermark: { key, value: { height: 962, startHeight: 960 } } });
+      await store.putBlockBundle({ ...outcomeBundle(net, 960, 0xd), watermark: { key, value: { height: 960, startHeight: 960 } } });
+      expect(await store.getWatermark(key)).toEqual({ height: 962, startHeight: 960 });
     });
   });
 

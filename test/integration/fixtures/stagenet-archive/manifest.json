@@ -1,0 +1,204 @@
+{
+ "format": "umbradb-stagenet-fixtures/1",
+ "$comment": "Recorded Stagenet fixtures of UmbraDB. Public, finalized, read-only chain data captured once by a live polite sync (record-tape.ts --capture) and packed by record-tape.ts --pack. CI replays the tapes through the unchanged chain-archive-sync and must reproduce each range's live archive digest (test/integration/stagenet-fixtures*.test.ts).",
+ "network": "stagenet",
+ "genesisHash": "0x2f76825abc239fecf6107c9df99016de57037b451ae57a4394b76c8cf53a9491",
+ "nodeUrl": "https://rpc.stagenet.shielded.tools",
+ "indexerUrl": "https://indexer.stagenet.shielded.tools/api/v4/graphql",
+ "recordedAt": "2026-10-03T02:45:57.438Z",
+ "finalizedHeightAtRecording": 725621,
+ "indexerTipAtRecording": 725621,
+ "recorder": "test/integration/fixtures/stagenet-archive/record-tape.ts",
+ "ledgerV9": "1.0.0-rc.3",
+ "queries": {
+  "indexerBlockSha256": "dc84b432521919a5d61d80b76f22ad17284cf125215320eb2c7cbeb6764a31ae",
+  "contractEventsSha256": "406811007ada6cacdd83c3d512b8d28df1ff5d7d9578ef6d37015fed20b58061"
+ },
+ "ranges": [
+  {
+   "name": "idx",
+   "from": 714485,
+   "to": 715183,
+   "file": "stagenet-714485-715183.tape.json.br",
+   "blocks": 699,
+   "transactions": 69,
+   "results": {
+    "SUCCESS": 69
+   },
+   "callPairs": 60,
+   "liveSync": {
+    "net": "stagenet",
+    "schema": "stagenet_capture_714485_715183",
+    "concurrency": 4,
+    "minIntervalMs": {
+     "node": 250,
+     "indexer": 250
+    },
+    "batches": 7,
+    "elapsedMs": 502729,
+    "retries": 3,
+    "throttled": 0,
+    "archiveDigest": {
+     "tables": {
+      "blocks": {
+       "rows": 699,
+       "sha256": "a9fb6256f4f76fa15d4cc6de652d8649d3698f9fad861072c3653ecf52cdfaef"
+      },
+      "bridge_observations": {
+       "rows": 1,
+       "sha256": "dffc7e275eaf31d139c6c388933f100e4f4ef10863283c9f4eb346fb2d70887d"
+      },
+      "chain_blob_roles": {
+       "rows": 1468,
+       "sha256": "be1b8e15119e2c143aa9039824cc5322e7a778e7f6448dcc7578bfa2e9fc9123"
+      },
+      "chain_blobs": {
+       "rows": 1468,
+       "sha256": "3002bfd07865cd8895b6aace5aa3e8fbfb1791057e9c9367e802712da52398fd"
+      },
+      "transactions": {
+       "rows": 69,
+       "sha256": "a232cfb3537eac20a984fbf86f9e4370becb44122ff35f1f5e6142ca8fba5d8c"
+      },
+      "verifier_key_observations": {
+       "rows": 1,
+       "sha256": "36273a43b0daef05b1b22504aaa7a5eb7a24c8e93ab0bfe2f98d8136f08180b6"
+      },
+      "watermarks": {
+       "rows": 1,
+       "sha256": "086398579e16d99c4998ed72f478a36e3de4b8ee58d9d51684ab6bd70182545e"
+      }
+     },
+     "sha256": "cb0d5e213730ccffc135984c537b9e31d92c984d2b83f06854971a3a74e5b119"
+    }
+   },
+   "requests": {
+    "chain_getBlock": 699,
+    "chain_getBlockHash": 699,
+    "chain_getFinalizedHead": 7,
+    "chain_getHeader": 7,
+    "indexer.block": 702,
+    "indexer.block:http-502": 1,
+    "indexer.block:transport-error": 2,
+    "indexer.tip": 7
+   }
+  },
+  {
+   "name": "u1",
+   "from": 715402,
+   "to": 715433,
+   "file": "stagenet-715402-715433.tape.json.br",
+   "blocks": 32,
+   "transactions": 4,
+   "results": {
+    "SUCCESS": 4
+   },
+   "callPairs": 2,
+   "liveSync": {
+    "net": "stagenet",
+    "schema": "stagenet_capture_715402_715433",
+    "concurrency": 4,
+    "minIntervalMs": {
+     "node": 250,
+     "indexer": 250
+    },
+    "batches": 1,
+    "elapsedMs": 20108,
+    "retries": 0,
+    "throttled": 0,
+    "archiveDigest": {
+     "tables": {
+      "blocks": {
+       "rows": 32,
+       "sha256": "8b45c8d5f142738e848dc1cbceb7d5bc438ccf505038acfbb9f429b627186061"
+      },
+      "bridge_observations": {
+       "rows": 1,
+       "sha256": "12bf95ff323374808c122664fb10bbb0733ffc59875e9a5703c8e30d89fb3167"
+      },
+      "chain_blob_roles": {
+       "rows": 69,
+       "sha256": "809db059b48b21ea4de4151fd846e40fe4283a00a45bba777f650247949e11a7"
+      },
+      "chain_blobs": {
+       "rows": 69,
+       "sha256": "a5b0c0990ad94339b0f6fc7a795823c5e1f373525f0f2cfe21662e5b5f6c52a1"
+      },
+      "transactions": {
+       "rows": 4,
+       "sha256": "b5d02c37474c4231a8c62cc92c3e97c30d30279eb04716032416a4af7d64240d"
+      },
+      "verifier_key_observations": {
+       "rows": 1,
+       "sha256": "36273a43b0daef05b1b22504aaa7a5eb7a24c8e93ab0bfe2f98d8136f08180b6"
+      },
+      "watermarks": {
+       "rows": 1,
+       "sha256": "9a6011f6c8259d6c16258ffae40e19a6f5e3893289d848f039ce8625ad2de2a5"
+      }
+     },
+     "sha256": "fa89d909911b0408fd7651ad58be68430b96e8d1cada804683d5206eaface959"
+    }
+   },
+   "requests": {
+    "chain_getBlock": 32,
+    "chain_getBlockHash": 32,
+    "chain_getFinalizedHead": 1,
+    "chain_getHeader": 1,
+    "indexer.block": 32,
+    "indexer.tip": 1
+   }
+  }
+ ],
+ "contractEvents": {
+  "file": "stagenet-contract-events.json.gz",
+  "pairs": 62,
+  "events": 50,
+  "byType": {
+   "MiscContractEvent": 50
+  },
+  "requests": 109
+ },
+ "caseIndex": {
+  "file": "case-index.json"
+ },
+ "aliases": {
+  "c04-714637-714663.tape.json": {
+   "heights": "714637-714663",
+   "comment": "Case C04 of midnight-experiments/mip-0018 (deploy 714637, shielded mint 714643, unshielded mint 714649, mintLedger 714655, publish 714663), every block of the range."
+  },
+  "cases-sparse.tape.json": {
+   "heights": "714501,714557,714617,714683,714689,714802,714813,714891,715109,715177,715183,715409,715428,715433",
+   "comment": "One block per reference Stagenet case transaction kind: C01 publish 714501, C02 shielded mint 714557, C03 unshielded mint 714617, C05 mints 714683/714689, IDX third-party shielded mint 714802, C06 withdraw 714813, C07 raw emitter 714891, C08 two events 715109, C10 publish 715177 and VerifierKeyRemove 715183, U1 mint 715409, VerifierKeyInsert 715428, upgraded call 715433."
+  }
+ },
+ "files": [
+  {
+   "path": "stagenet-714485-715183.tape.json.br",
+   "bytes": 841792,
+   "sha256": "014875e6b864a53f5f51f5419a71a5019450826a81f3a82e012b34591c1815b2",
+   "role": "tape"
+  },
+  {
+   "path": "stagenet-715402-715433.tape.json.br",
+   "bytes": 43583,
+   "sha256": "bdc6b4dccfff3983e50ea373d6a79c5e41d660234ad7425e994af55266df4923",
+   "role": "tape"
+  },
+  {
+   "path": "stagenet-contract-events.json.gz",
+   "bytes": 10522,
+   "sha256": "4e1eef37f4cf07427d4d7e9c2f80d144cdb157a91a94dc19c2d1021973f25e1a",
+   "role": "contract-events"
+  },
+  {
+   "path": "case-index.json",
+   "bytes": 39032,
+   "sha256": "5296c3d575b9c5508343faefba25aa3159e6a9c888409b85b44c60e151261382",
+   "role": "case-index"
+  }
+ ],
+ "totalBytes": 934929,
+ "sizeTargetBytes": 1000000,
+ "totalRequests": 2333
+}

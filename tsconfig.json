@@ -8,12 +8,14 @@
     "noEmit": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "declaration": false
+    "declaration": false,
+    "allowImportingTsExtensions": true
   },
   "include": [
     "src/**/*.ts",
     "test/**/*.ts",
     "chain-archive-sync/**/*.ts",
+    "token-indexer/**/*.ts",
     "wallet-monitor/**/*.ts",
     "evm-rpc/**/*.ts",
     "bench/**/*.ts"

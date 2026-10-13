@@ -1,4 +1,5 @@
 import { publicEndpoint, publicErrorCause, publicErrorMessage } from "../wallet-monitor/log.js";
+import { defaultMinIntervalMs, parseRetryAfterMs, RequestPacer } from "./polite-http.js";
 
 /**
  * Minimal Substrate JSON-RPC client for a Midnight node -- plain `fetch`, no SDK dependency
@@ -34,7 +35,15 @@ export interface SubstrateBlock {
 }
 
 export class NodeRpcError extends Error {
-  constructor(message: string, readonly cause?: unknown) {
+  /**
+   * `httpStatus` is set exactly when the transport completed with a non-2xx status (429/403/5xx are
+   * the throttling/outage answers the sync backs off on), with `retryAfterMs` from a `Retry-After`
+   * header; `cause` is set exactly when the transport itself failed (DNS, connection, timeout
+   * abort). An error with neither is a JSON-RPC protocol error, which is never retried.
+   */
+  constructor(
+    message: string, readonly cause?: unknown, readonly httpStatus?: number, readonly retryAfterMs?: number,
+  ) {
     super(message);
     this.name = "NodeRpcError";
   }
@@ -68,6 +77,9 @@ export interface NodeRpcClientOptions {
   /** Per-request timeout in milliseconds -- a hung/black-holed node otherwise stalls the entire
    *  sync service indefinitely with no way to recover (Fix 3). Default: 20_000. */
   timeoutMs?: number;
+  /** Minimum spacing between two request starts. Default: 250 ms for a public
+   *  Midnight host (`polite-http.ts`), 0 otherwise. */
+  minIntervalMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -81,16 +93,24 @@ export class NodeRpcClient {
   private readonly publicUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly pacer: RequestPacer;
 
   constructor(opts: NodeRpcClientOptions) {
     this.url = opts.url;
     this.publicUrl = publicEndpoint(opts.url);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.pacer = new RequestPacer(opts.minIntervalMs ?? defaultMinIntervalMs(opts.url));
+  }
+
+  /** The effective request spacing (logged by the CLI). */
+  get minIntervalMs(): number {
+    return this.pacer.minIntervalMs;
   }
 
   private async call<T>(method: string, params: unknown[]): Promise<T> {
     const id = nextId++;
+    await this.pacer.wait();
     let res: Response;
     try {
       res = await this.fetchImpl(this.url, {
@@ -105,7 +125,10 @@ export class NodeRpcClient {
       );
     }
     if (!res.ok) {
-      throw new NodeRpcError(`${method}: HTTP ${res.status} from ${this.publicUrl}`);
+      throw new NodeRpcError(
+        `${method}: HTTP ${res.status} from ${this.publicUrl}`,
+        undefined, res.status, parseRetryAfterMs(res.headers.get("retry-after")),
+      );
     }
     let body: { result?: T; error?: { code: number; message: string } };
     try {

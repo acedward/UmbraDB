@@ -37,7 +37,7 @@ describe("chainArchiveMigrations (design/full-chain-storage-design.md, Tier-1.5)
       const firstRun = await sql<{ name: string }[]>`
         select name from ${sql(schema)}._migrations order by name
       `;
-      expect(firstRun.map((r) => r.name)).toEqual(["000_schema", "001_chain_archive_core"]);
+      expect(firstRun.map((r) => r.name)).toEqual(["000_schema", "001_chain_archive_core", "002_transaction_segments"]);
 
       // --- idempotent re-run: applies zero additional migrations ---
       await runMigrations(sql, { schema, migrations: chainArchiveMigrations });

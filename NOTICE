@@ -6,3 +6,16 @@ you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+Outfit (brand face of the MIP-0018 token explorer page)
+--------------------------------------------------------------------------------
+token-indexer/mip0018/ui/fonts/Outfit-Variable-latin.woff2 is the Outfit
+variable font (Latin subset), copied unmodified from acedward/UmbraDB PR #19
+(feat/00020-token-indexer @ 11af38e66a917be3d2f2efbbadaa81b96bfbcdfd,
+token-indexer/ui/fonts/; SHA-256 92684e4acde79ef07758cd09380b7e01e9824d8b061eddeda046f78c166d7b12).
+
+    Copyright 2021 The Outfit Project Authors (https://github.com/Outfitio/Outfit-Fonts)
+
+It is licensed under the SIL Open Font License, Version 1.1; the full licence
+text is in token-indexer/mip0018/ui/fonts/OFL.txt.

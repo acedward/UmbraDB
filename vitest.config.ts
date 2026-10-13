@@ -77,6 +77,10 @@ export default defineConfig({
         "src/postgres/chain-archive-rollover.ts",
         "src/interfaces/chain-archive-store.ts",
         "src/postgres/migrations/chain_archive/**",
+        // Vendored MIP-0018 reference code (byte-for-byte, SHA-256 pinned in SOURCE.md). Its
+        // `codec/src/` path matches the include glob; it is exercised by the full vector run, not
+        // held to UmbraDB's per-file floors.
+        "token-indexer/vendor/**",
       ],
       reporter: ["text", "json-summary", "html"],
       reportsDirectory: "./coverage",

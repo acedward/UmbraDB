@@ -6,9 +6,14 @@ import type {
   ChainArchiveStore,
   Hex32,
   TransactionRecord,
+  TransactionResult,
+  TransactionSegmentResult,
 } from "../src/interfaces/chain-archive-store.js";
-import { IndexerClient, type IndexerBlock, type IndexerClientOptions } from "./indexer-client.js";
+import {
+  IndexerClient, type IndexerBlock, type IndexerClientOptions, type IndexerTransaction,
+} from "./indexer-client.js";
 import { NodeRpcClient, type NodeRpcClientOptions, type SubstrateHeader } from "./node-rpc-client.js";
+import { type BackoffOptions, type RetryCounters, withRetry } from "./retry.js";
 
 /**
  * The real ingestion/sync service that populates the `chain_archive` schema from a live Midnight
@@ -73,7 +78,58 @@ function hexNoPrefix(hex: string): string {
   return hex.startsWith("0x") ? hex.slice(2) : hex;
 }
 
+
 const SYSTEM_TX_TAG = "midnight:system-transaction";
+
+/**
+ * The indexer's `TransactionResultStatus` mapped onto the archive's
+ * `transactions.result` enum. `undefined` = the source reported no result (a `SystemTransaction`
+ * or `BridgeClaimTransaction` has no `transactionResult` field); it stays NULL, never defaulted to
+ * `success`, because a consumer that cannot tell "succeeded" from "unknown" would count parts the
+ * ledger discarded. An unknown status is a hard error: a new enum member must stop the sync here
+ * rather than silently disarm the per-segment logic downstream.
+ */
+export function mapTransactionResult(status: string | undefined): TransactionResult | undefined {
+  switch (status) {
+    case undefined: return undefined;
+    case "SUCCESS": return "success";
+    case "PARTIAL_SUCCESS": return "partial_success";
+    case "FAILURE": return "failure";
+    default:
+      throw new Error(
+        `unknown indexer TransactionResultStatus ${JSON.stringify(status)} -- the archive has no ` +
+        "mapping for it; extend mapTransactionResult before ingesting further",
+      );
+  }
+}
+
+/** Raised for a `--from`/`--to` request the archive cannot honour without a gap or a backfill.
+ *  Never retried: the operator has to pick another range or schema. */
+export class SyncRangeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SyncRangeError";
+  }
+}
+
+/** The sync cursor stored under `sync_cursor:<net>`: the last archived height plus the first
+ *  height this archive ever ingested, so a later `--from` below it is refused instead of leaving a
+ *  silent hole. `startHeight` is optional: a cursor without it leaves the archive's first height
+ *  unknown. */
+export interface SyncCursor {
+  height: number;
+  startHeight?: number;
+}
+
+/** Everything one height needs from the network, gathered before any store write touches it, so a
+ *  window of heights can be FETCHED concurrently while blocks are still WRITTEN in height order. */
+interface FetchedBlock {
+  height: number;
+  blockHash: Hex32;
+  header: SubstrateHeader;
+  extrinsics: string[];
+  indexerBlock: IndexerBlock;
+}
 
 export interface ChainArchiveSyncServiceOptions {
   sql: UmbraDBSql;
@@ -81,16 +137,48 @@ export interface ChainArchiveSyncServiceOptions {
   schema?: string;
   node: NodeRpcClientOptions;
   indexer: IndexerClientOptions;
+  /** `--from`: where a FIRST run (no cursor yet) begins; default genesis (0). Once a cursor exists
+   *  it is the only authority: a value inside the archived range is a no-op (resume continues at
+   *  cursor + 1), a value above cursor + 1 or below the archive's first height is refused with
+   *  {@link SyncRangeError}. The first archived block may therefore have no archived parent; no
+   *  reader may assume the archive begins at genesis. */
+  startHeight?: number;
+  /** `--to`: the last height to ingest, inclusive. `syncOnce` never goes past it and reports
+   *  `reachedEnd` once the cursor is there. */
+  endHeight?: number;
+  /** How many heights are FETCHED at once (bounded 1..16). Blocks are still WRITTEN strictly in
+   *  ascending height order, one atomic checkpoint each. Default 1. */
+  concurrency?: number;
+  /** Per-network-call retry/back-off on throttling and outages (`retry.ts`). */
+  backoff?: BackoffOptions;
+  /** Ends back-off waits early on shutdown. */
+  signal?: AbortSignal;
 }
 
 export interface SyncOnceResult {
   ingestedBlocks: number;
   fromHeight: number | undefined;
   toHeight: number | undefined;
-  targetTipHeight: number;
+  /** `min(node finalized head, indexer tip)`; `undefined` when the call returned before asking
+   *  (the configured `endHeight` was already reached). */
+  targetTipHeight: number | undefined;
+  /** The cursor after this call has reached the configured `endHeight`. */
+  reachedEnd: boolean;
+  /** Network calls retried after a retryable failure, and how many of those were 429/403. */
+  retries: number;
+  throttled: number;
+  elapsedMs: number;
 }
 
 const WATERMARK_KEY_PREFIX = "sync_cursor:";
+const DEFAULT_CONCURRENCY = 1;
+const MAX_CONCURRENCY = 16;
+
+function checkHeight(name: string, value: number | undefined): void {
+  if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+    throw new RangeError(`${name} must be a non-negative safe integer, got ${value}`);
+  }
+}
 
 export class ChainArchiveSyncService {
   /** Honest scope declaration (Sol-audit fix round, Finding 5): this service does NOT ingest
@@ -112,13 +200,17 @@ export class ChainArchiveSyncService {
   private readonly net: string;
   private readonly sql: UmbraDBSql;
   private readonly schema: string;
-  /** Last-seen D-parameter, in-memory, this instance's lifetime only -- used to dedupe
-   *  `bridge_observations` inserts (§"stub/initial pass") so a healthy chain with an unchanging
-   *  D-parameter doesn't get one near-duplicate row per block. Deliberately not persisted: a
-   *  fresh service instance re-inserting one observation on its first synced block after a
-   *  restart is a correct, harmless re-observation, not a bug (`bridge_observations` has no
-   *  uniqueness constraint on content, only on `(net, block_height, block_hash,
-   *  observation_index)`, so this can never produce a duplicate-key error either way). */
+  private readonly startHeight: number | undefined;
+  private readonly endHeight: number | undefined;
+  private readonly concurrency: number;
+  private readonly backoff: BackoffOptions;
+  private readonly signal: AbortSignal | undefined;
+  private counters: RetryCounters = { retries: 0, throttled: 0 };
+  /** Last-seen D-parameter, used to dedupe `bridge_observations` inserts so a chain with an
+   *  unchanging D-parameter does not get one near-duplicate row per block. When it is unknown (a
+   *  fresh service instance resuming an existing archive) it is re-seeded from the last archived
+   *  observation before the next block is written, so a killed-and-resumed sync writes the same
+   *  rows as an uninterrupted one. */
   private lastDParameterJson: string | undefined;
 
   constructor(opts: ChainArchiveSyncServiceOptions) {
@@ -128,20 +220,81 @@ export class ChainArchiveSyncService {
     this.node = new NodeRpcClient(opts.node);
     this.indexer = new IndexerClient(opts.indexer);
     this.net = opts.net;
+    checkHeight("startHeight", opts.startHeight);
+    checkHeight("endHeight", opts.endHeight);
+    if (opts.startHeight !== undefined && opts.endHeight !== undefined && opts.endHeight < opts.startHeight) {
+      throw new SyncRangeError(`endHeight ${opts.endHeight} is below startHeight ${opts.startHeight}`);
+    }
+    this.startHeight = opts.startHeight;
+    this.endHeight = opts.endHeight;
+    const requested = opts.concurrency ?? DEFAULT_CONCURRENCY;
+    if (!Number.isSafeInteger(requested) || requested < 1) {
+      throw new RangeError(`concurrency must be a positive integer, got ${requested}`);
+    }
+    this.concurrency = Math.min(requested, MAX_CONCURRENCY);
+    this.backoff = opts.backoff ?? {};
+    this.signal = opts.signal;
+  }
+
+  /** The effective fetch concurrency after the 1..16 clamp. */
+  get fetchConcurrency(): number {
+    return this.concurrency;
+  }
+
+  /** The effective request spacing per endpoint (`polite-http.ts`). */
+  get minIntervalMs(): { node: number; indexer: number } {
+    return { node: this.node.minIntervalMs, indexer: this.indexer.minIntervalMs };
   }
 
   private watermarkKey(): string {
     return `${WATERMARK_KEY_PREFIX}${this.net}`;
   }
 
-  /** Resumable sync cursor -- the last successfully-ingested height, or `undefined` if this net
-   *  has never been synced. Matches this codebase's existing watermark convention
-   *  (`src/interfaces/watermarks.ts`): a plain last-write-wins cursor, no history. */
-  async getSyncedHeight(): Promise<number | undefined> {
+  private retry<T>(operation: string, call: () => Promise<T>): Promise<T> {
+    return withRetry(operation, call, this.backoff, this.counters, this.signal);
+  }
+
+  /** The stored sync cursor, or `undefined` if this net has never been synced. */
+  async getSyncCursor(): Promise<SyncCursor | undefined> {
     const wm = await this.store.getWatermark(this.watermarkKey());
     if (wm === undefined) return undefined;
-    const parsed = wm as { height: number };
-    return parsed.height;
+    const parsed = wm as { height: number; startHeight?: number };
+    return parsed.startHeight === undefined
+      ? { height: parsed.height }
+      : { height: parsed.height, startHeight: parsed.startHeight };
+  }
+
+  /** Resumable sync cursor -- the last successfully-ingested height, or `undefined` if this net
+   *  has never been synced. A plain last-write-wins cursor with a monotonic guard, no history. */
+  async getSyncedHeight(): Promise<number | undefined> {
+    return (await this.getSyncCursor())?.height;
+  }
+
+  /**
+   * Resolves where the next batch starts and refuses a range the archive cannot honour: never a gap
+   * (a `--from` above cursor + 1) and never a silent hole below the archive's first height (a
+   * `--from` below it cannot be backfilled into one cursor).
+   */
+  private resolveStart(cursor: SyncCursor | undefined): { start: number; archiveStart: number | undefined } {
+    if (cursor === undefined) {
+      const start = this.startHeight ?? 0;
+      return { start, archiveStart: start };
+    }
+    if (this.startHeight !== undefined) {
+      if (this.startHeight > cursor.height + 1) {
+        throw new SyncRangeError(
+          `--from ${this.startHeight} would leave a gap: net ${this.net} is archived up to ${cursor.height}; ` +
+          "use --from <= " + String(cursor.height + 1) + " or a fresh schema",
+        );
+      }
+      if (cursor.startHeight !== undefined && this.startHeight < cursor.startHeight) {
+        throw new SyncRangeError(
+          `--from ${this.startHeight} is below this archive's first height ${cursor.startHeight} ` +
+          `(net ${this.net}); heights below it cannot be backfilled into the same cursor -- use a fresh schema`,
+        );
+      }
+    }
+    return { start: cursor.height + 1, archiveStart: cursor.startHeight };
   }
 
   /**
@@ -158,11 +311,26 @@ export class ChainArchiveSyncService {
    * extension is out of this sprint's scope (see the final report's judgment-calls section).
    */
   async syncOnce(opts?: { maxBlocks?: number }): Promise<SyncOnceResult> {
+    const startedAt = Date.now();
+    this.counters = { retries: 0, throttled: 0 };
+    const finish = (r: Omit<SyncOnceResult, "retries" | "throttled" | "elapsedMs">): SyncOnceResult => ({
+      ...r, retries: this.counters.retries, throttled: this.counters.throttled, elapsedMs: Date.now() - startedAt,
+    });
     const maxBlocks = opts?.maxBlocks ?? 100;
-    const finalizedHash = await this.node.getFinalizedHead();
+    if (!Number.isSafeInteger(maxBlocks) || maxBlocks < 1) throw new RangeError(`maxBlocks must be a positive integer, got ${maxBlocks}`);
+
+    // Range checks before any network call: a refused range must not cost the endpoints anything.
+    const cursor = await this.getSyncCursor();
+    const { start: startHeight, archiveStart } = this.resolveStart(cursor);
+    const synced = cursor?.height;
+    if (this.endHeight !== undefined && startHeight > this.endHeight) {
+      return finish({ ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight: undefined, reachedEnd: true });
+    }
+
+    const finalizedHash = await this.retry("chain_getFinalizedHead", () => this.node.getFinalizedHead());
     const [nodeFinalizedHeight, indexerTipHeight] = await Promise.all([
-      this.node.getHeightOf(finalizedHash),
-      this.indexer.getTipHeight(),
+      this.retry("chain_getHeader", () => this.node.getHeightOf(finalizedHash)),
+      this.retry("indexer.tip", () => this.indexer.getTipHeight()),
     ]);
     // The indexer supplies transaction metadata/raw payloads for every block. Bounding the batch
     // here prevents the normal "node is ahead of indexer" state from entering ingestOneBlock,
@@ -170,8 +338,6 @@ export class ChainArchiveSyncService {
     // highest height both independent sources can currently serve.
     const targetTipHeight = Math.min(nodeFinalizedHeight, indexerTipHeight);
 
-    const synced = await this.getSyncedHeight();
-    const startHeight = synced === undefined ? 0 : synced + 1;
     if (startHeight > targetTipHeight) {
       // `updated_at` doubles as the dashboard liveness heartbeat. A same-height call to the
       // store's monotonic setWatermark is intentionally a no-op, so refresh it explicitly only
@@ -183,17 +349,53 @@ export class ChainArchiveSyncService {
           WHERE kind = 'chain_archive' AND key = ${this.watermarkKey()}
         `;
       }
-      return { ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight };
+      return finish({ ingestedBlocks: 0, fromHeight: undefined, toHeight: undefined, targetTipHeight, reachedEnd: false });
     }
-    const endHeight = Math.min(targetTipHeight, startHeight + maxBlocks - 1);
+    const endHeight = Math.min(
+      targetTipHeight, startHeight + maxBlocks - 1, this.endHeight ?? Number.MAX_SAFE_INTEGER,
+    );
 
-    let ingested = 0;
-    for (let height = startHeight; height <= endHeight; height++) {
-      await this.ingestOneBlock(height);
-      await this.store.setWatermark(this.watermarkKey(), { height });
-      ingested++;
+    if (this.lastDParameterJson === undefined && synced !== undefined) {
+      this.lastDParameterJson = await this.loadLastDParameterJson(synced);
     }
-    return { ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight };
+
+    // Fetch a window of heights concurrently (three latency-bound round trips per block), then
+    // WRITE them strictly in ascending order, one atomic checkpoint (block + transactions +
+    // outcomes + cursor) per block. A fetch failure inside a window does not discard the lower
+    // heights already fetched: they are written first, then the failure is rethrown and the
+    // caller's loop resumes from the new cursor.
+    let ingested = 0;
+    for (let windowStart = startHeight; windowStart <= endHeight; windowStart += this.concurrency) {
+      const windowEnd = Math.min(endHeight, windowStart + this.concurrency - 1);
+      const heights: number[] = [];
+      for (let h = windowStart; h <= windowEnd; h++) heights.push(h);
+      // allSettled, not all: a rejection on a higher height must not leave the lower heights'
+      // promises unhandled while they are committed.
+      const fetched = await Promise.allSettled(heights.map((h) => this.fetchBlock(h)));
+      for (const outcome of fetched) {
+        if (outcome.status === "rejected") throw outcome.reason;
+        await this.storeFetchedBlock(outcome.value, archiveStart);
+        ingested++;
+      }
+    }
+    return finish({
+      ingestedBlocks: ingested, fromHeight: startHeight, toHeight: endHeight, targetTipHeight,
+      reachedEnd: this.endHeight !== undefined && endHeight >= this.endHeight,
+    });
+  }
+
+  /** The last D-parameter value archived at or below `height` (as the exact JSON text stored), so
+   *  a resumed service dedupes exactly like an uninterrupted one. `undefined` when none exists. */
+  private async loadLastDParameterJson(height: number): Promise<string | undefined> {
+    const rows = await this.sql<{ raw_blob_hash: Buffer }[]>`
+      SELECT raw_blob_hash FROM ${this.sql(this.schema)}.bridge_observations
+      WHERE net = ${this.net} AND kind = 'system_parameters_d' AND block_height <= ${height}
+      ORDER BY block_height DESC, observation_index DESC
+      LIMIT 1
+    `;
+    if (rows.length === 0) return undefined;
+    const bytes = await this.store.getBlob(rows[0]!.raw_blob_hash.toString("hex"));
+    return new TextDecoder().decode(bytes);
   }
 
   /**
@@ -219,45 +421,66 @@ export class ChainArchiveSyncService {
    * no-op rather than a wedge.
    */
   private async ingestOneBlock(height: number): Promise<void> {
-    const blockHash = hexNoPrefix(await this.node.getBlockHash(height));
-    const { block } = await this.node.getBlock(`0x${blockHash}`);
-    const header = block.header;
+    const cursor = await this.getSyncCursor();
+    await this.storeFetchedBlock(await this.fetchBlock(height), cursor === undefined ? height : cursor.startHeight);
+  }
+
+  /**
+   * The NETWORK half of ingestion: performs no store write at all, which keeps Fix 1's "the
+   * indexer-not-synced throw happens with zero writes" property true by construction, and lets a
+   * window of heights be fetched concurrently.
+   */
+  private async fetchBlock(height: number): Promise<FetchedBlock> {
+    const blockHash = hexNoPrefix(await this.retry("chain_getBlockHash", () => this.node.getBlockHash(height)));
+    const { block } = await this.retry("chain_getBlock", () => this.node.getBlock(`0x${blockHash}`));
 
     // One indexer fetch per block, shared by the transaction-ingestion and bridge-observation
-    // paths below -- avoids two redundant GraphQL round trips for the same block. Fetched BEFORE
-    // any store write (Fix 1) so the throw immediately below never leaves a partially-ingested
-    // block behind.
-    const indexerBlock = await this.indexer.getBlockByHeight(height);
+    // paths below. Fetched BEFORE any store write (Fix 1) so the throw immediately below never
+    // leaves a partially-ingested block behind.
+    const indexerBlock = await this.retry("indexer.block", () => this.indexer.getBlockByHeight(height));
     if (indexerBlock === undefined) {
-      // Indexer hasn't synced this height yet -- do NOT advance the watermark past it (syncOnce
-      // only advances the watermark after this whole method returns successfully), so a later
-      // syncOnce() call re-attempts this exact height once the indexer catches up. No store write
-      // has happened yet at this point, so that retry starts completely fresh.
+      // Indexer hasn't synced this height yet -- the cursor is not advanced past it, so a later
+      // syncOnce() re-attempts this exact height once the indexer catches up.
       throw new Error(`indexer has not yet synced height ${height} (node has); retry later`);
     }
+    return { height, blockHash, header: block.header, extrinsics: block.extrinsics, indexerBlock };
+  }
 
+  /**
+   * The STORE half: builds every record from already-fetched data and writes ONE atomic bundle --
+   * block, transactions with their results and per-segment outcomes, bridge observations AND the
+   * sync cursor. Called strictly in ascending height order, which is what the D-parameter dedup
+   * cursor needs (it compares against the previous height's value).
+   */
+  private async storeFetchedBlock(fetched: FetchedBlock, archiveStart: number | undefined): Promise<void> {
+    const { height, blockHash, header, extrinsics, indexerBlock } = fetched;
     const blockRecord: BlockRecord = {
       net: this.net,
       blockHash,
       height,
       parentHash: hexNoPrefix(header.parentHash),
-      // Substrate genesis's parentHash is all-zero (32 zero bytes) -- 000...0 (32 bytes = 64
-      // hex chars), which already satisfies the schema's `CHECK (octet_length(parent_hash)
-      // = 32)`; no special-casing needed.
+      // Substrate genesis's parentHash is all-zero (32 zero bytes), which already satisfies the
+      // schema's `CHECK (octet_length(parent_hash) = 32)`; no special-casing needed.
       stateRoot: hexNoPrefix(header.stateRoot),
       extrinsicsRoot: hexNoPrefix(header.extrinsicsRoot),
       headerBytes: headerBytes(header),
-      bodyBytes: extrinsicsBytes(block.extrinsics),
+      bodyBytes: extrinsicsBytes(extrinsics),
       isCanonical: true,
       status: "canonical",
       finalized: true,
     };
 
-    const transactions = this.buildTransactionRecords(height, blockHash, block.extrinsics, indexerBlock);
+    const transactions = this.buildTransactionRecords(height, blockHash, extrinsics, indexerBlock);
     const { records: bridgeObservations, newDParameterJson } =
       this.buildBridgeObservationRecords(height, blockHash, indexerBlock);
 
-    await this.store.putBlockBundle({ block: blockRecord, transactions, bridgeObservations });
+    // A cursor without `startHeight` keeps it unknown rather than having it replaced by a guess (the
+    // first height of this run is not the archive's first height).
+    const cursor: SyncCursor = archiveStart === undefined ? { height } : { height, startHeight: archiveStart };
+    await this.store.putBlockBundle({
+      block: blockRecord, transactions, bridgeObservations,
+      watermark: { key: this.watermarkKey(), value: cursor },
+    });
 
     // Fix 2 (sprint-fix round, HIGH): only advance the in-memory D-parameter dedup cursor AFTER
     // the durable write above has succeeded -- see `buildBridgeObservationRecords`'s own doc for
@@ -265,6 +488,39 @@ export class ChainArchiveSyncService {
     if (newDParameterJson !== undefined) {
       this.lastDParameterJson = newDParameterJson;
     }
+  }
+
+  /** The result and per-segment outcomes of one indexer transaction. A
+   *  `RegularTransaction` without a result is an error (the indexer has not reported it; the block
+   *  is retried rather than archived with an unknown outcome). */
+  private transactionOutcome(
+    height: number, tx: IndexerTransaction,
+  ): { result?: TransactionResult; segments?: TransactionSegmentResult[] } {
+    const reported = tx.transactionResult ?? undefined;
+    if (reported === undefined) {
+      if (tx.__typename === "RegularTransaction") {
+        throw new Error(
+          `indexer returned no transactionResult for regular transaction ${hexNoPrefix(tx.hash)} at height ${height}; retry later`,
+        );
+      }
+      return {};
+    }
+    const result = mapTransactionResult(reported.status);
+    const segments = reported.segments === null || reported.segments === undefined
+      ? undefined
+      : reported.segments.map((s) => ({ id: s.id, success: s.success }));
+    // A partial success says that SOME fallible segments failed; without the per-segment list nobody can tell which
+    // parts applied, so the block is not archived with that outcome.
+    if (result === "partial_success" && (segments === undefined || segments.length === 0)) {
+      throw new Error(
+        `indexer reported PARTIAL_SUCCESS without per-segment outcomes for transaction ${hexNoPrefix(tx.hash)} at height ${height}; ` +
+        "the archive cannot tell which fallible segments applied; retry later",
+      );
+    }
+    return {
+      ...(result === undefined ? {} : { result }),
+      ...(segments === undefined ? {} : { segments }),
+    };
   }
 
   /**
@@ -346,6 +602,7 @@ export class ChainArchiveSyncService {
         position,
         kind,
         protocolVersion: tx.protocolVersion,
+        ...this.transactionOutcome(height, tx),
         rawBytes,
       };
     });

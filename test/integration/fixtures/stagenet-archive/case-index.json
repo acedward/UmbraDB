@@ -1,0 +1,1354 @@
+{
+ "format": "umbradb-stagenet-case-index/1",
+ "$comment": "Which recorded Stagenet transactions belong to the MIP-0018 reference cases. Built by record-tape.ts --pack from the reference repository (read-only); every case transaction was found in the recorded tapes at the reference's inclusion height and block hash.",
+ "source": {
+  "repository": "https://github.com/midnight-experiments/mip-0018",
+  "commit": "daec1f19747b09f4e245885ab0dd9ecc789a82ce",
+  "path": "deployments/stagenet/cases",
+  "files": [
+   {
+    "path": "deployments/stagenet/cases/C01/case.json",
+    "sha256": "e93625ceca104f55bb5e39742fdd8836e8df1f01b3b57fb24c38b38494d2899c"
+   },
+   {
+    "path": "deployments/stagenet/cases/C01/expected.json",
+    "sha256": "9e9b137ec8cf1d9142a9ccc79c8aeb0c17d5ced410c46f51cc337efde80b14a6"
+   },
+   {
+    "path": "deployments/stagenet/cases/C01/record.json",
+    "sha256": "7b23e71d725e88387ca522cfbe5c40957c121fb957e2bd537e7fe3df18b22f59"
+   },
+   {
+    "path": "deployments/stagenet/cases/C02/case.json",
+    "sha256": "775e03501e700483f8c04f2f228e516ad4c4921e7259d148666fc01a016b9180"
+   },
+   {
+    "path": "deployments/stagenet/cases/C02/expected.json",
+    "sha256": "7036bc71d93288aaace0523c9417fcce695c6bb2637261519a9f3f24eac4da1b"
+   },
+   {
+    "path": "deployments/stagenet/cases/C02/record.json",
+    "sha256": "c55c6336333a478b654c4132e0dcd621682f19354ca815cf9abe68faed55ee6a"
+   },
+   {
+    "path": "deployments/stagenet/cases/C03/case.json",
+    "sha256": "c3c34ca2db930a378bcf3dbf48de259e2e8765304eccbee044e06c95ba916da8"
+   },
+   {
+    "path": "deployments/stagenet/cases/C03/expected.json",
+    "sha256": "029cd015a27ec4a9bb19bd528058f5e3b5696c5c335473734b0fee6be0d6a777"
+   },
+   {
+    "path": "deployments/stagenet/cases/C03/record.json",
+    "sha256": "7f6ec9b9d7e395ec73c46075a35d64ba1934bcb98f94d64071beb5755ca7aa46"
+   },
+   {
+    "path": "deployments/stagenet/cases/C04/case.json",
+    "sha256": "f8e4934d9b103d59c7d9a9d30356a93193a89bcab16fda7eec44f871ef7ccbb9"
+   },
+   {
+    "path": "deployments/stagenet/cases/C04/expected.json",
+    "sha256": "40563285e6de43a18b20fdc68617aff3b00a1177e4d6b78f973deda40f01813e"
+   },
+   {
+    "path": "deployments/stagenet/cases/C04/record.json",
+    "sha256": "517434f01eba8a39c907a5f0a5012bce36ae057f00110aad0b1802ea90805803"
+   },
+   {
+    "path": "deployments/stagenet/cases/C05/case.json",
+    "sha256": "19cc249899267b52b1d40395936add7c06538b823f6774c7c81b3f3974104634"
+   },
+   {
+    "path": "deployments/stagenet/cases/C05/expected.json",
+    "sha256": "9a3a7363c4c4966b598b56fc9fdfbc652fce87c2dbb1eeff8e02daac62180e80"
+   },
+   {
+    "path": "deployments/stagenet/cases/C05/record.json",
+    "sha256": "bb0854e639f80a6952f94e6608857f2cf890027b886242caa908b987c059dc7d"
+   },
+   {
+    "path": "deployments/stagenet/cases/C06/case.json",
+    "sha256": "524849b4810787760ba8766871431fc8ca5233623e4c37a8ed890006410bc771"
+   },
+   {
+    "path": "deployments/stagenet/cases/C06/expected-after-publish.json",
+    "sha256": "81a9d8e3fd70e9270f7db1a76edd5b8f07448c45e71842109cab83512620150c"
+   },
+   {
+    "path": "deployments/stagenet/cases/C06/expected-after-rename.json",
+    "sha256": "e47710bcac9eb952c6d7b20dae0b6a0633de01ac08732e1b494e51a95bb3cadb"
+   },
+   {
+    "path": "deployments/stagenet/cases/C06/expected-after-revive.json",
+    "sha256": "a0aac7647e5ff642cee209d83a7c5085291edfc1ba8f493cb3ed3c8fa4ffa7b8"
+   },
+   {
+    "path": "deployments/stagenet/cases/C06/expected-after-withdraw-again.json",
+    "sha256": "b14cdc6e51995747f38ba76d448edbd63b49f11a83785c70bf9587470be081ae"
+   },
+   {
+    "path": "deployments/stagenet/cases/C06/expected-after-withdraw.json",
+    "sha256": "b14cdc6e51995747f38ba76d448edbd63b49f11a83785c70bf9587470be081ae"
+   },
+   {
+    "path": "deployments/stagenet/cases/C06/expected.json",
+    "sha256": "a0aac7647e5ff642cee209d83a7c5085291edfc1ba8f493cb3ed3c8fa4ffa7b8"
+   },
+   {
+    "path": "deployments/stagenet/cases/C06/record.json",
+    "sha256": "bd7df33808e93fd1fa2e2caf40277153f1842aa7020c97be19d8afe2b03bd10d"
+   },
+   {
+    "path": "deployments/stagenet/cases/C07/case.json",
+    "sha256": "fdd047de13d5d3be29f3d7808d0958a8197f98c52436d6e38498acb91b77a41e"
+   },
+   {
+    "path": "deployments/stagenet/cases/C07/expected.json",
+    "sha256": "06a09a75bbbfb544920e92409c187bd9ef676274056b19c5ba785e89b06c07b1"
+   },
+   {
+    "path": "deployments/stagenet/cases/C07/record.json",
+    "sha256": "f3fa836210998b2e00b5d2328850b9a877f245061f81490696c75c4abf76e3cb"
+   },
+   {
+    "path": "deployments/stagenet/cases/C08/case.json",
+    "sha256": "a1864966ded76460820587a0ee030269752c66eb033958b443e79682bbdf1564"
+   },
+   {
+    "path": "deployments/stagenet/cases/C08/expected.json",
+    "sha256": "8ae6c8a1269b8ebb58302ae0f21886be82beed32800ec9ea2e39e666f5c03213"
+   },
+   {
+    "path": "deployments/stagenet/cases/C08/record.json",
+    "sha256": "9e3a10dc034de90762fb4785cc84d3cbaa2c67cd511f4476cea32507133f52be"
+   },
+   {
+    "path": "deployments/stagenet/cases/C09/case.json",
+    "sha256": "b2b469f7ed7f8745b9e37024bb94f14261ebb5efe0c1af27718fbfa68097cbed"
+   },
+   {
+    "path": "deployments/stagenet/cases/C09/expected.json",
+    "sha256": "9e9b137ec8cf1d9142a9ccc79c8aeb0c17d5ced410c46f51cc337efde80b14a6"
+   },
+   {
+    "path": "deployments/stagenet/cases/C09/record.json",
+    "sha256": "50e59e82ca118101c425ef5a861803851701e3ffa78aadbad3676e1a248f8dae"
+   },
+   {
+    "path": "deployments/stagenet/cases/C10/case.json",
+    "sha256": "a1fa91f388bc0f4918768eeb23dab198d6864c5594e46855eb2e9111a04ca4c8"
+   },
+   {
+    "path": "deployments/stagenet/cases/C10/expected.json",
+    "sha256": "81a9d8e3fd70e9270f7db1a76edd5b8f07448c45e71842109cab83512620150c"
+   },
+   {
+    "path": "deployments/stagenet/cases/C10/record.json",
+    "sha256": "12785a45c7c815607a2cab4543484075ca70076dcd8279762fbbe129fd3ca847"
+   },
+   {
+    "path": "deployments/stagenet/cases/IDX/case.json",
+    "sha256": "b4948e4331582576393b5669b4ef8d82fd4388c12dc6143359da9f49a98acdff"
+   },
+   {
+    "path": "deployments/stagenet/cases/IDX/expected.json",
+    "sha256": "02991b1d981761d71da8ecac63829fc0b7f4927a95586099198fc3f1957b042a"
+   },
+   {
+    "path": "deployments/stagenet/cases/IDX/index-summary.json",
+    "sha256": "31305788ea0bd84290064134ae752bd7245f36fc50a863d047966300a574ea5f"
+   },
+   {
+    "path": "deployments/stagenet/cases/U1/case.json",
+    "sha256": "69a78b004fb941d1857e4f173ef82c16b760d9819713dd3506439fce8ab240c1"
+   },
+   {
+    "path": "deployments/stagenet/cases/U1/expected.json",
+    "sha256": "f6bec0dd28926f1de43855101842c021a76ff62bdc5d0711c621d83163a709ae"
+   },
+   {
+    "path": "deployments/stagenet/cases/U1/index-summary.json",
+    "sha256": "af7aefb5463380600d0d88362dcb45c17266ec728b0f3503d16a2d0e879a47c0"
+   },
+   {
+    "path": "deployments/stagenet/cases/U1/record.json",
+    "sha256": "ee40c86c4b2bdb9c6966a9344459c558e4738b272727eba5d172b47e1ff1ac37"
+   }
+  ]
+ },
+ "cases": {
+  "C01": {
+   "title": "OpenZeppelin FungibleToken (kind 3): deploy, publish",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "dff2630c1fe9e20ab2ccdf7006e3e9687568db89b052d808da2b3cd8dadae95b",
+     "height": 714495,
+     "blockHash": "4e26b17baa74d085349d1ae8c2c8dce9b2efa4bb38b6b3b3062de242a1c67746",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "publish",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "a6fff9fb3f034aea393ff37fcd4343c418c3bfcc7cb22c502c1c1a6ffbc55dfd",
+     "height": 714501,
+     "blockHash": "787386ccc67dfc7c9285d6928d3a217ed91b88bcef86ce8420f6f8c7d386b3fd",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53431
+     ]
+    }
+   ],
+   "heights": [
+    714495,
+    714501
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "98a90519419e2ebb514b7c6ce87ee7f6f4f9753d9ee6f533c5d1c25b9d437dcf"
+  },
+  "C02": {
+   "title": "OpenZeppelin NativeShieldedToken (kind 1): deploy, mint, publish",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "f7324b4b330d79960e35320c1ce9b3d4234e8afaba2eff016aba578ad4add267",
+     "height": 714551,
+     "blockHash": "8258acc0bab855015e9332333e22002129e2ffca2b75d3c204bb9397e7d06057",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "mint",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "mint",
+     "txHash": "90dbd77e00c6c4dda189488ac7c45420089b43b81a6fff0b845db4a64853dfcd",
+     "height": 714557,
+     "blockHash": "6b446e1f915e3817b27d27ac22bacf973bdc29fbdcef3f1ac56791758d83ccfe",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "publish",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "133501d0ee8b313926579b8c1b1b9a5e17450d8091dc3b10666939ca4c30f809",
+     "height": 714564,
+     "blockHash": "49902cefcb355a4a058f25ba7d83c291304ce42c2fef1ba2fb0fad1686db42ba",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53436
+     ]
+    }
+   ],
+   "heights": [
+    714551,
+    714557,
+    714564
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "0ee5f31961f9df197055c49dda8f87275af50c3554ba701ffa1837537735e532"
+  },
+  "C03": {
+   "title": "Native unshielded token (kind 2; std-lib mintUnshieldedToken + OpenZeppelin Ownable): deploy, mint to wallet 1, publish",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "50b6507d00603a09c52637ce1cbd43431c062422612e85ed86792daf5b9ddd8b",
+     "height": 714611,
+     "blockHash": "80afb5186fb20c1d3bc3af76706528f7f2d508a85d32fe9f57f1978e1fe9aff8",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "mint",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "mint",
+     "txHash": "2ec3accadb3e77a05f0ca29d73ccbe879372d9c31587e109acc5d3076d9a437e",
+     "height": 714617,
+     "blockHash": "508be90a481425b09c46a0ee146926f0bfff3e686ce1a2832d991427dd6bcdfb",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "publish",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "7f7cc752db67acf3a91ce468a404bf0228f019799f9f31d521a54cdf4c8d2fa9",
+     "height": 714624,
+     "blockHash": "4680b49ba57657252a76d144aaea6bef072bbab32c25a5066d723768c7ba0661",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53446
+     ]
+    }
+   ],
+   "heights": [
+    714611,
+    714617,
+    714624
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "a3df52605d8b7210aa3e5cdc82de4bb2911975bc42c1a68be77044723b705f21"
+  },
+  "C04": {
+   "title": "One asset in kinds 1, 2, 3 (OpenZeppelin NativeShieldedToken + FungibleToken, std-lib unshielded): deploy, three mints, publish",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "98ba298ec6b1b3d242370568bf09be4f6a6391f14286b8aa71b472c8f11f4762",
+     "height": 714637,
+     "blockHash": "66bf0c201f750c9b870942bc142f8575455fe7e8aeac029940f5eb53b7f9515a",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "mint-shielded",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "mintShielded",
+     "txHash": "395076e79043745ffc02877f90f225a05eaa7437f798996aa1632bf454175ed1",
+     "height": 714643,
+     "blockHash": "6d84ad98077bd491bb748b720b35dfc8dfc77982fe12d2dd8ff131753e9d8edd",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "mint-unshielded",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "mintUnshielded",
+     "txHash": "7895124817e86946fae9da9865c3d35923e45e587852b8253c6310e37db2f0a7",
+     "height": 714649,
+     "blockHash": "bcb975e566ad371910b209780cadc2f4508fada572145cdfc71f8ff9fa49a0af",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "mint-ledger",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "mintLedger",
+     "txHash": "8640f459bfc4d1419f6dd4ba63cbb07827889a7d4744ea8dd4ee542ae69bb3f2",
+     "height": 714655,
+     "blockHash": "6bef36df839b6d94a2e04ce89346d4710d501c311a55504543a6691b016efd66",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "publish",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "13315bf9ef66ed0b69cba300acb04c9aca5a99cdd361fa2e53cd1704e1a95a06",
+     "height": 714663,
+     "blockHash": "867c741cca1501648a027299c56a282acdb2f42e53885a2e67512e2b1cd2ebe1",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53453,
+      53454,
+      53455
+     ]
+    }
+   ],
+   "heights": [
+    714637,
+    714643,
+    714649,
+    714655,
+    714663
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "86acf80ff386abb610aadbea0406039e7fe39893f440794c3c2bad86dd48570f"
+  },
+  "C05": {
+   "title": "OpenZeppelin NativeShieldedTokenFamily: deploy, mint gold + silver, publish three domains",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "96e30165faf8564f9cd5c146d592446b7f8daa8af05e5b0ada8206d71ef9fc9b",
+     "height": 714677,
+     "blockHash": "bbfac607bbbf982842dcb4b79756ac1ced68787993fdf8a2613ac97eff1676f3",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "mint-gold",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "mint",
+     "txHash": "bea96f3da8bc4b205f16f03742ebdcfe735fc1c63ca714d4dd2f666480568734",
+     "height": 714683,
+     "blockHash": "3b92c2f06b6e1901d418fd5fd7b7315d3a053b3cc675d73791fd6f486b8c3318",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "mint-silver",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "mint",
+     "txHash": "b126b3e2f3e00145ae7dbb3a678147f52f72a71ebd940b692db1055d9a8291e1",
+     "height": 714689,
+     "blockHash": "69570de0dcca47b7d723201790d5909984b8047d38de6773f73de84231e8dcac",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "publish-gold",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "ce45f95fde9706739139fbf0f53dd0e7b38dcd16f492f014fceff5c70e28a26f",
+     "height": 714696,
+     "blockHash": "d7a27e35b0f17bc715efc68ff32db414fba0e110b706e28a96888bbddf8d1a35",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53462
+     ]
+    },
+    {
+     "id": "publish-silver",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "a865ad4799b76eb9233affd9dd7da44c460105a7d5566b27bc063c6e11612e44",
+     "height": 714703,
+     "blockHash": "ed1721da135f5cd8bde79ba05b4b4a32bb7fe13dd8cc13b1d0648e8e5c7045ad",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53464
+     ]
+    },
+    {
+     "id": "publish-bronze",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "ed5b20cd4e071de0713079bdfe8c46095baa863b0a1318598be9f8da9a4f7e7a",
+     "height": 714712,
+     "blockHash": "c74ef59c8dfa73e4b1e9e3592585f8bc7a92c0302fb25a8f4ef99e7f8ecc3071",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53466
+     ]
+    }
+   ],
+   "heights": [
+    714677,
+    714683,
+    714689,
+    714696,
+    714703,
+    714712
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "f2d1b6ebfea446cf2624cd498fc585eeb86dddf94e33229ce47107038d2251d6"
+  },
+  "C06": {
+   "title": "Minimal OwnerKey (kind 3, no OpenZeppelin) lifecycle: deploy, publish, rename, tombstone, tombstone again, revive",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "530ed1bab05c4c1e82df46afc8303aaf8c9a96587426ba757c65d58fdcda770d",
+     "height": 714789,
+     "blockHash": "764c700cb75b4f8337efec5e764bd24168fa2990ec218722ec91b66c242a2741",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "publish",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "71fb2c2d9ade1a3906ad92b3d245e6578478d58cac52d4f3f4c01fdbea2fc7e2",
+     "height": 714796,
+     "blockHash": "63e97aadb5c5fbebf311936a5dd38d6f764d7ad4ed0f1b709efaa0d6e189e056",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53471
+     ],
+     "expectedAfter": "expected-after-publish.json"
+    },
+    {
+     "id": "rename",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "setMetadata",
+     "txHash": "2514eeca34a802c11ade6a3da9dd6bd19c44aa5dc9328d5f989a063a5cc9c2e9",
+     "height": 714804,
+     "blockHash": "854c6d8129ae198422ed366783d34f53209bcdd92e153f41825ac265dd3f9cb2",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53477
+     ],
+     "expectedAfter": "expected-after-rename.json"
+    },
+    {
+     "id": "withdraw",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "withdrawMetadata",
+     "txHash": "35858a38a3f507ce06b0e878b79d5b3e183a2bc73cac04e1b193ca5b4712a8d6",
+     "height": 714813,
+     "blockHash": "ab2e8a0400a3610a2f36dbbe221507bd661e09724d13a96af569f41dc4f3637b",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53485
+     ],
+     "expectedAfter": "expected-after-withdraw.json"
+    },
+    {
+     "id": "withdraw-again",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "withdrawMetadata",
+     "txHash": "2b093d32576032256e8d97fc504647e43e68e89de840c6944b52d532be0e087e",
+     "height": 714827,
+     "blockHash": "09da1fde0119a6afcde32fcb4098dfcaa33ea4db37061c6c00c12f490e44d797",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53493
+     ],
+     "expectedAfter": "expected-after-withdraw-again.json"
+    },
+    {
+     "id": "revive",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "setMetadata",
+     "txHash": "0b6a1497a203361bdb33cbc31be7c821d3deb5b4d864716f192bb8aa5b498a91",
+     "height": 714835,
+     "blockHash": "90fb2ea4b1f64b64c5a2a565770fec11de703367ae28842de9142a38a58a3f86",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53495
+     ],
+     "expectedAfter": "expected-after-revive.json"
+    }
+   ],
+   "heights": [
+    714789,
+    714796,
+    714804,
+    714813,
+    714827,
+    714835
+   ],
+   "expected": [
+    "expected-after-publish.json",
+    "expected-after-rename.json",
+    "expected-after-revive.json",
+    "expected-after-withdraw-again.json",
+    "expected-after-withdraw.json",
+    "expected.json"
+   ],
+   "contract": "9d93b91942530f66f381daf5d9856caf9dfaa24444f0803a6c5d02e8c28040e3"
+  },
+  "C07": {
+   "title": "Raw emitter (test-only): capacity, exact-bytes and non-tombstone edge cases accepted; malformed payloads rejected; other names ignored",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "41d74e421040513635a76ee904d4fb98543c573a4df9a189d56e69b1d229679c",
+     "height": 714883,
+     "blockHash": "ce8455cbe137e457dc7279e3e2ab13ea1e10561641622df50efc8f1d353ca75c",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "A2a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "a20cbf24e4f227a1e3f723fce51e16d22f0c378f8270b4c65d5bd5d654b35c35",
+     "height": 714891,
+     "blockHash": "8db36f87a9af8a891b0e34b62ba09d2d30f92c66969cc2fc2aac6edb9e4c7598",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53498
+     ]
+    },
+    {
+     "id": "R1",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "add090cf2b57b55ccee5e20c0ff4e0bdabbb9f3a3f341e4d252ba88cf35c1785",
+     "height": 714899,
+     "blockHash": "91ede436f7d6c6308315483cc61326d19c0fc0ae72ffdc79ee4e8d9333b2ba07",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53500
+     ]
+    },
+    {
+     "id": "A2b",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "5cc3f643dcbd3e17d03a5317a63266877fa513a645bdd51c7aba9b5ff3fc57cc",
+     "height": 714907,
+     "blockHash": "ca93e367ae47985193b3adea33b640c87f86413b6ae10a7a7dc73c2754c42aeb",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53504
+     ]
+    },
+    {
+     "id": "R2a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "1103ab6c110bea6a1e37913023adaf6ec701892c17b9e3342872e8ba303d8078",
+     "height": 714915,
+     "blockHash": "fc989636da929674c01b6c138acbf51a4228d00b8451fc2bb4ebea8b383b9704",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53506
+     ]
+    },
+    {
+     "id": "A3a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "999e6011a3f6a90f3ab62533d949a5154d040ef1b323b894b3b6e21694310dec",
+     "height": 714923,
+     "blockHash": "5f3e424d2dcb075cb3c20284de2e813736e05f36b240af212173d831239ef100",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53508
+     ]
+    },
+    {
+     "id": "R3a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "3581d73c8dd3dc5c116eeb80dd70f22a5d127fb3d2d6fa538ec96e22e18e280a",
+     "height": 714931,
+     "blockHash": "3c095fec46dd1548b64b4c9c59cbfd59a3c0b7dca714cfe259b961bb4ee4455f",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53510
+     ]
+    },
+    {
+     "id": "A3b",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "3bc49f9e2c89d4e51380f3b6ff8d2228cabe56bead23c707e66b202108e8e60b",
+     "height": 714942,
+     "blockHash": "4ef1c4f7546573ce6cd962b9441d6a9bea5744ea0a0de80de4c479aac03253e6",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53512
+     ]
+    },
+    {
+     "id": "R3b",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "9fbed24dda14d449718801b6d11d3a1b8afea64b64b9867a7b46931cfcf3e6f8",
+     "height": 714949,
+     "blockHash": "32aa865edc95ed59d64e7a9fc9af1572aa2128e5bf1837bd9c5d7c85458d82a1",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53514
+     ]
+    },
+    {
+     "id": "A3c",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "ea3e64f05d57dab178dc65b420857036fcf75809b4123a2525a0312c77a3a142",
+     "height": 714956,
+     "blockHash": "c9b4e60926477cc5b257111cd7442de42fbc157f515600dfaa9f2fe281623e3d",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53516
+     ]
+    },
+    {
+     "id": "R4a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "eb7413fcb12bb7d5516d17f2676b8263898f7b5b351bdd1fdbe1bdb5c71e1e3e",
+     "height": 714964,
+     "blockHash": "02cc0e5dc03f6aea571e5202a3ff8c84968408959e06d6c774aaf0089c4fbebd",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53518
+     ]
+    },
+    {
+     "id": "A4b",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "5921d60d0307851e8f1e159ee49def234d1c66e5f559ebb857c3be0a99b52713",
+     "height": 714972,
+     "blockHash": "4c387ed372e473dc9070902a11b39a7a47215ee9d2997974172ab705de63480e",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53520
+     ]
+    },
+    {
+     "id": "R5a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "b69041011ae6cbf9708d7abf3526fd13b79c842289b950a48039542e19cfffed",
+     "height": 714980,
+     "blockHash": "5a94a8d1ef2230b634348b49c7099dc208380473436bd88652f1bfb389470584",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53522
+     ]
+    },
+    {
+     "id": "A5a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "e71ebc1ab0fc4cde6ba9048994824401dceb6270e57c3cc169298a8cd999628c",
+     "height": 714988,
+     "blockHash": "4570e5784c9fcb7074f34c0529520e34367910794ec8c9fe72922959ab217682",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53524
+     ]
+    },
+    {
+     "id": "R5e",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "9e297d8d0312a07d9f03955c41032890a975773c834d4224969feab785443a17",
+     "height": 714996,
+     "blockHash": "bee3a1a61352c6be43455008c4a47e7320e7fbd6315dd79695846244494e7e81",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53529
+     ]
+    },
+    {
+     "id": "A5b",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "86b668c478ea445fbb70ba721adecb4604fe99cc8a2b796a12d1ed4a1a0501aa",
+     "height": 715004,
+     "blockHash": "ea313ccc19c296033ddaf97f00c295e095a883f283c2a73b616b525640e27a3a",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53531
+     ]
+    },
+    {
+     "id": "R5h",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "d6fba088b353296bb3ad4616172edd41e6d41713cdb4105dbdac72803a037c8c",
+     "height": 715012,
+     "blockHash": "878056fc10007bd5ab5aff1983e8bf82313a8c4116e3455fb42cb555618f2062",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53534
+     ]
+    },
+    {
+     "id": "A5c",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "e4ec50b55430e0bf621e6c13c9735fd5ccb5afa43e67cf1a1722d1619786b5a2",
+     "height": 715019,
+     "blockHash": "076a3e6bff065ee33b0eea5b0eec9b4fd669470b6cc791cf678e64110c6ad850",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53536
+     ]
+    },
+    {
+     "id": "R6b",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "8b9b82cd60b891d9816297c1911ee85b1b780f5b0f6dae7ba77fdf5b11532cd7",
+     "height": 715026,
+     "blockHash": "3b24ba1c5e1a9c9cfddd48960178e06303179c0fd3053ad0135a708d65f33772",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53539
+     ]
+    },
+    {
+     "id": "I1a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "a973897871476169087e53cba19dba3c80f2d276a8e4ce1a41d139eceddc8d0d",
+     "height": 715033,
+     "blockHash": "67aa6c93beb7f247ee96eb703dd27063c608c5c0e77551eded07a4dd0b2c1226",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53541
+     ]
+    },
+    {
+     "id": "I1b",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "3dfba209fd317f3e1d82da1e783e3ddb4589d85623e15ed34430bb6303884b20",
+     "height": 715041,
+     "blockHash": "9d1c2257d9027a4c2a63b7211215bef3e13a2022557d7383b06b7062fac28ba9",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53544
+     ]
+    },
+    {
+     "id": "I2a",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "1f261a619b5fc4ba57847b09a07190805d5b80fde04f285ea92b9ef2fc1461cf",
+     "height": 715049,
+     "blockHash": "ff82d1b1de7299710d76bd376c2dd692a627d09ab2a3dfbe0b6b5033e7d81093",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53546
+     ]
+    },
+    {
+     "id": "I2b",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitRaw",
+     "txHash": "284c3e26f5aa2de9fc40dc3607c733ddbf5b971243d234bd2a70de5b3e93ddd2",
+     "height": 715063,
+     "blockHash": "5ab87621500b1343778f8adb020f834bf065a291995ccc02f27274633402e060",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53550
+     ]
+    }
+   ],
+   "heights": [
+    714883,
+    714891,
+    714899,
+    714907,
+    714915,
+    714923,
+    714931,
+    714942,
+    714949,
+    714956,
+    714964,
+    714972,
+    714980,
+    714988,
+    714996,
+    715004,
+    715012,
+    715019,
+    715026,
+    715033,
+    715041,
+    715049,
+    715063
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "23aa27cbc948fb6df9072750b879e9b7f78206f77c638674a8e01b418ee3355b"
+  },
+  "C08": {
+   "title": "Raw emitter (test-only): emitTwo(valid, malformed) in one transaction",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "be73bf3cc7b4092126484e22e8f4489a85a2bb32de8c3547eee5b632357f7264",
+     "height": 715098,
+     "blockHash": "48abf17e344fe3a3b83ba79e397b23c6d8e15c304dca8f8bf8101af123687fce",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "emit-two",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "emitTwo",
+     "txHash": "75c43430395cc8608ccad188a9c0cb45051476f2cc7759d46f34f95204cb86c9",
+     "height": 715109,
+     "blockHash": "bfa51938b909338366575fff813932ad85eb82d322954ccad3f7e7c63fe54ead",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53553,
+      53554
+     ]
+    }
+   ],
+   "heights": [
+    715098,
+    715109
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "65553c655286664ccb3f69f9313bf725900c46eee2289ae611d18fdf6f90ceb9"
+  },
+  "C09": {
+   "title": "Access control: wallet 2 calls C01's owner-only setMetadata",
+   "dependsOn": [
+    "C01"
+   ],
+   "steps": [
+    {
+     "id": "non-owner-set-metadata",
+     "kind": "call",
+     "state": "pending",
+     "circuit": "setMetadata"
+    }
+   ],
+   "heights": [],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "98a90519419e2ebb514b7c6ce87ee7f6f4f9753d9ee6f533c5d1c25b9d437dcf"
+  },
+  "C10": {
+   "title": "Minimal create-and-destroy (kind 3, Q4): deploy, publish, VerifierKeyRemove of publishMetadata, publish again",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "55147925c2967dea3aa0cef235765f1cd80f52968e44dd3ce87de2b05c9a1203",
+     "height": 715171,
+     "blockHash": "da8f362a8a9a3cd8252ec3c655928a1bab65c2a62eb7b0219dc5003f3c45cf71",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "publish",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "85d6f8a241ceff9935dc1aec51e5c5c1c51818dd0a41ebf7b850e2ff413a5b4d",
+     "height": 715177,
+     "blockHash": "6fd0b9bd9d100a68944f78e4f01ca150cf34c43a762d93dc228ac9ecc75ee7df",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0,
+     "observedEventIds": [
+      53557
+     ]
+    },
+    {
+     "id": "verifier-key-remove:publishMetadata",
+     "kind": "verifier-key-remove",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "1d8e26b699805c37ebf28a025218d6ef516b9ac9a8fd54a9b9543c411da4f422",
+     "height": 715183,
+     "blockHash": "90893e2595308a42a0d308418c765f8dd0015928388f6233d55eb50f891bd42c",
+     "status": "SUCCESS",
+     "range": "idx",
+     "txPosition": 0
+    },
+    {
+     "id": "publish-again",
+     "kind": "call",
+     "state": "pending",
+     "circuit": "publishMetadata"
+    }
+   ],
+   "heights": [
+    715171,
+    715177,
+    715183
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "contract": "048ec49aacdde9ef2fee1bd51c651df46d3224578e36a1e89bdbb88842edf0f6"
+  },
+  "IDX": {
+   "title": "Mint scanner over the matrix, then every color looked up (wallet-free)",
+   "dependsOn": [
+    "C02",
+    "C03",
+    "C04",
+    "C05"
+   ],
+   "steps": [],
+   "heights": [],
+   "expected": [
+    "expected.json"
+   ],
+   "scanRange": {
+    "from": 714485,
+    "to": 715183,
+    "range": "idx"
+   }
+  },
+  "U1": {
+   "title": "Existing-contract upgrade (S6): deploy a token without an emitting circuit, mint, VerifierKeyInsert(publishMetadata), publish",
+   "steps": [
+    {
+     "id": "deploy",
+     "kind": "deploy",
+     "state": "completed",
+     "txHash": "bee9d826bfe8256bbd065c69b55ed84f56364b7d29394faf5810b6f5f4a08cbb",
+     "height": 715403,
+     "blockHash": "e32951f0a62d62eedeebba68586d3bda0c90c1d9e232767149ab4f18e8ab9ad6",
+     "status": "SUCCESS",
+     "range": "u1",
+     "txPosition": 0
+    },
+    {
+     "id": "mint",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "mint",
+     "txHash": "173ad3b6344edc42b9468a42e001cff52dc9fb1136a51a9e3c1275ed6a2b3ad7",
+     "height": 715409,
+     "blockHash": "14f1539416be38eb19069e4f79764f63a45792ba252597a19fa7ebd3c7c21314",
+     "status": "SUCCESS",
+     "range": "u1",
+     "txPosition": 0
+    },
+    {
+     "id": "wrong-signer:insert",
+     "kind": "verifier-key-insert",
+     "state": "pending",
+     "circuit": "publishMetadata"
+    },
+    {
+     "id": "wrong-signer-forced:insert",
+     "kind": "verifier-key-insert",
+     "state": "failed",
+     "circuit": "publishMetadata",
+     "txHash": "1c2be0e245f694865424cf28b7787bde5582ff83dbccbc126b31efa5f4c6bbcb"
+    },
+    {
+     "id": "upgrade:insert",
+     "kind": "verifier-key-insert",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "4383f3cdca5b0936df6a742997bc7708d9e83ad55463c124083c40f4c21d1ff2",
+     "height": 715428,
+     "blockHash": "57acf696592fad7413fd5ef3a253616b00283b0d880ecddfd1789cbbdf76bd0b",
+     "status": "SUCCESS",
+     "range": "u1",
+     "txPosition": 0
+    },
+    {
+     "id": "upgrade:call",
+     "kind": "call",
+     "state": "completed",
+     "circuit": "publishMetadata",
+     "txHash": "884cc30b3079e56fc6dafc4a540f535c90982ff8a46add508b28be3db4c85124",
+     "height": 715433,
+     "blockHash": "6f367590a54a633d59cd1280e39dbc5b5db26933e5b015097227ba722f722fce",
+     "status": "SUCCESS",
+     "range": "u1",
+     "txPosition": 0,
+     "observedEventIds": [
+      53568
+     ]
+    }
+   ],
+   "heights": [
+    715403,
+    715409,
+    715428,
+    715433
+   ],
+   "expected": [
+    "expected.json"
+   ],
+   "scanRange": {
+    "from": 715402,
+    "to": 715433,
+    "range": "u1"
+   },
+   "contract": "11010832a39954d9ccce48f6b5fce25fc789abb1d700ee45b26b69af3e5dd63b"
+  }
+ },
+ "otherTransactions": [
+  {
+   "range": "idx",
+   "height": 714584,
+   "txHash": "3600f5ca38728a397582de0a071c5fc29c6b6e027f302dc1dc48b82c264d7fa9",
+   "txPosition": 0,
+   "calls": [
+    "7771c9e53afb45291ae2cecd48b5d55262734b08a98fc8276ed0f980031cd637",
+    "1df4ce25fc9f9c03dc6f4d0eb12ddf3d0db094995d4c70aca1142eebb3b77a5d"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714589,
+   "txHash": "f7719f6863802b86c9f0872a77d3ba238b4ad31c5cff7d8c63d698ed171719bb",
+   "txPosition": 0,
+   "calls": [
+    "1df4ce25fc9f9c03dc6f4d0eb12ddf3d0db094995d4c70aca1142eebb3b77a5d"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714601,
+   "txHash": "8e3e0d80d28a191814b0de111403be2216ce1b1d609e1f9c4ac6ba7e5fee3618",
+   "txPosition": 0,
+   "calls": [
+    "c2d472667388bb14019b130e9c649e94136a5277d01a8a1def69a393f5828beb"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714752,
+   "txHash": "588cefdfba113e181f350a4f1e2be50922964cedd9532a9579faf1c2302d678b",
+   "txPosition": 0,
+   "calls": [
+    "c2d472667388bb14019b130e9c649e94136a5277d01a8a1def69a393f5828beb"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714796,
+   "txHash": "d017237bd69b19073986dae0a574f86902176855e7443b778cec18cfe2115ce8",
+   "txPosition": 1,
+   "calls": [
+    "1df4ce25fc9f9c03dc6f4d0eb12ddf3d0db094995d4c70aca1142eebb3b77a5d"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714802,
+   "txHash": "eeb09e684fab8931b36f70de2691758d40f4766840db0979b0fd3e54fb1e6472",
+   "txPosition": 0,
+   "calls": [
+    "7771c9e53afb45291ae2cecd48b5d55262734b08a98fc8276ed0f980031cd637"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714807,
+   "txHash": "497eee9fc7576387f54b3dffecfd56e0e4089f0b6414ce2aeddc570ceacccc7f",
+   "txPosition": 0,
+   "calls": []
+  },
+  {
+   "range": "idx",
+   "height": 714813,
+   "txHash": "34757736d9e10aad4c5a59729a2f3ec25444f977b87ca05c41e25c87bb1b2cb3",
+   "txPosition": 1,
+   "calls": [
+    "7771c9e53afb45291ae2cecd48b5d55262734b08a98fc8276ed0f980031cd637",
+    "1df4ce25fc9f9c03dc6f4d0eb12ddf3d0db094995d4c70aca1142eebb3b77a5d"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714818,
+   "txHash": "c054212ae3c2a820fc04403105bdfb8e9567ed03e8472af6f215cf534fe51a68",
+   "txPosition": 0,
+   "calls": [
+    "1df4ce25fc9f9c03dc6f4d0eb12ddf3d0db094995d4c70aca1142eebb3b77a5d"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714903,
+   "txHash": "dff8cb4f3d753ce1bbbec4cf818ba01f3834cb25a56c81351f15d4f71013e776",
+   "txPosition": 0,
+   "calls": [
+    "c2d472667388bb14019b130e9c649e94136a5277d01a8a1def69a393f5828beb"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714988,
+   "txHash": "43f93510a8422e1619b8924532b67fecfc543e62f7c9bfadfd8d599bbbb2b35e",
+   "txPosition": 1,
+   "calls": [
+    "1df4ce25fc9f9c03dc6f4d0eb12ddf3d0db094995d4c70aca1142eebb3b77a5d"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 714994,
+   "txHash": "43b38a566c0f902f816ac7f6d47517a030416afa2a09e450aeafc27a17a3e141",
+   "txPosition": 0,
+   "calls": [
+    "7771c9e53afb45291ae2cecd48b5d55262734b08a98fc8276ed0f980031cd637"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 715006,
+   "txHash": "89574bf193e7376bc013ef36a01732cb6db12714d6e4573dbed9427177c0e677",
+   "txPosition": 0,
+   "calls": [
+    "05d3925a075046157711d01f9de7baf2a5946da32d9a70461962dfd0ccf5d4ef"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 715023,
+   "txHash": "c51fc91d1e0eb60c51c1747370976e9eeae2f8c9682ce34b258cc2292e64850e",
+   "txPosition": 0,
+   "calls": [
+    "05d3925a075046157711d01f9de7baf2a5946da32d9a70461962dfd0ccf5d4ef"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 715040,
+   "txHash": "5a0eb26093a936822eb3c7c87d4fa348b8c0cdee5bf0925ce5df6740eed5057e",
+   "txPosition": 0,
+   "calls": [
+    "05d3925a075046157711d01f9de7baf2a5946da32d9a70461962dfd0ccf5d4ef"
+   ]
+  },
+  {
+   "range": "idx",
+   "height": 715055,
+   "txHash": "a0ef693671ae8b5d3b3e141f048aa0aa0581e827461bb6f806cd152b4b7e0221",
+   "txPosition": 0,
+   "calls": [
+    "c2d472667388bb14019b130e9c649e94136a5277d01a8a1def69a393f5828beb"
+   ]
+  }
+ ]
+}
